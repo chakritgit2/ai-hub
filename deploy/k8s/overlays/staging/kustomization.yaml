@@ -1,0 +1,10 @@
+# Placeholder staging overlay. PRD-001 §11, §6.3 (staging/production environments).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ai-console-staging
+
+resources:
+  - ../../base
+
+# TODO: staging-specific replica counts, resource limits, and environment ConfigMap/Secret refs.

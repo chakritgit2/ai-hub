@@ -1,0 +1,204 @@
+openapi: 3.0.3
+info:
+  title: Dynamiq AI Internal API
+  description: >
+    Internal API served by ai-runtime on port 8081, reachable only from console-api pods
+    (NetworkPolicy). PRD-001 §9.2. Auth: 60-second JWT signed by console-api (aud=ai-internal)
+    + X-Company-Id + traceparent (PRD §7.1/7.6).
+  version: "0.1.0"
+servers:
+  - url: /internal/v1
+security:
+  - internalJwt: []
+components:
+  securitySchemes:
+    internalJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Signed by console-api, aud=ai-internal, 60s lifetime.
+  parameters:
+    XCompanyId:
+      name: X-Company-Id
+      in: header
+      required: true
+      schema: { type: string }
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    Placeholder:
+      type: object
+      additionalProperties: true
+    CompileRequest:
+      type: object
+      required: [spec, role]
+      properties:
+        spec: { type: object, additionalProperties: true, description: Agent spec JSON (PRD §6.1). }
+        role: { type: string, enum: [admin, developer, viewer], description: Publisher role — gates the node-type allowlist. }
+    CompileResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        compiled_definition: { type: object, additionalProperties: true, nullable: true }
+        compiler_version: { type: string, nullable: true }
+        dynamiq_version: { type: string, nullable: true }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              message: { type: string }
+    RecompileAllResult:
+      type: object
+      properties:
+        recompiled: { type: integer }
+        failed:
+          type: array
+          items:
+            type: object
+            properties:
+              agent_version_id: { type: string }
+              error: { type: string }
+    TestResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        detail: { type: string }
+paths:
+  /agents/compile:
+    post:
+      operationId: compileAgentSpec
+      summary: Validate spec + role-based node-type allowlist, compile to a Dynamiq definition (PRD §4.4-A, §6.1).
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompileRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompileResult' }
+
+  /agents/recompile-all:
+    post:
+      operationId: recompileAllAgents
+      summary: Recompile every published version after a Dynamiq/compiler upgrade (PRD §12).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecompileAllResult' }
+
+  /connections/{id}/secret:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    put:
+      operationId: putConnectionSecret
+      summary: Envelope-encrypt with the company's DEK into runtime.connection_secrets (PRD §7.4/7.7).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [secret]
+              properties:
+                secret: { type: string }
+      responses:
+        "204": { description: Stored }
+
+  /connections/{id}/test:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: testConnection
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestResult' }
+
+  /kb/{id}/documents:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: enqueueKbDocumentIndexing
+      x-phase: 2
+      summary: Enqueue OKF indexing (converting other formats to OKF first) on ai-worker (PRD §6.6).
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Placeholder' }
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+
+  /kb/{id}/search:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: searchKnowledgeBase
+      x-phase: 2
+      summary: Test search — vector or hybrid retrieval with alpha (PRD §6.6).
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Placeholder' }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+
+  /kb/{id}/export:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: exportKnowledgeBase
+      x-phase: 2
+      responses:
+        "200": { description: OK, content: { application/zip: { schema: { type: string, format: binary } } } }
+
+  /evals/estimate:
+    post:
+      operationId: estimateEvalCost
+      x-phase: 3
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /evals:
+    post:
+      operationId: createEvalRun
+      x-phase: 3
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /evals/{id}/cancel:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: cancelEvalRun
+      x-phase: 3
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /approvals/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: decideApproval
+      x-phase: 2
+      summary: Approve/reject a write tool call from the console (PRD §6.5).
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }

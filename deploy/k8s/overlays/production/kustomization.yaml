@@ -1,0 +1,12 @@
+# Placeholder production overlay. PRD-001 §11, §6.3 (staging/production environments).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ai-console
+
+resources:
+  - ../../base
+
+# TODO: production replica counts (console-web 2, console-api 2, ai-runtime 2, ai-gateway 2-6 HPA,
+# ai-worker 1-4 HPA), resource limits, terminationGracePeriodSeconds: 150 for ai-runtime/ai-gateway,
+# and environment ConfigMap/Secret refs.

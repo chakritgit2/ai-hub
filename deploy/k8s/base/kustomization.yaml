@@ -1,0 +1,13 @@
+# Placeholder — namespace ai-console, deployments console-web/console-api/ai-runtime/ai-gateway/
+# ai-worker per PRD-001 §11. Resource manifests (Deployment/Service/NetworkPolicy/Ingress) are not
+# yet written; this file exists so the overlay structure and build order are settled.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ai-console
+
+resources: []
+# TODO: console-web-deployment.yaml, console-api-deployment.yaml, ai-runtime-deployment.yaml
+#   (two Services: port 8080 internal ingress, port 8081 no ingress + NetworkPolicy allowing only
+#   console-api pods), ai-gateway-deployment.yaml (HPA 2-6), ai-worker-deployment.yaml (HPA on
+#   queue length), networkpolicies.yaml, ingress-internal.yaml, ingress-public.yaml

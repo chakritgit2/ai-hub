@@ -1,0 +1,23 @@
+# PHP / console-api
+console-api/vendor/
+console-api/.env
+console-api/.phpunit.result.cache
+
+# Python / ai
+ai/.venv/
+ai/__pycache__/
+ai/**/__pycache__/
+ai/.env
+ai/.pytest_cache/
+ai/.ruff_cache/
+ai/*.egg-info/
+
+# Node / web
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/.env
+
+# General
+.DS_Store
+*.log

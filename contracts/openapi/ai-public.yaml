@@ -1,0 +1,221 @@
+openapi: 3.0.3
+info:
+  title: Dynamiq AI Public & Playground API
+  description: >
+    Two path groups served from the same ai-runtime/ai-gateway image (PRD-001 §4.2, §9.3-9.4):
+    /ai/v1/* is the Playground API on ai-runtime (port 8080, runtime-token auth);
+    /v1/deployments/* is the public gateway API on ai-gateway (API key / session token auth).
+  version: "0.1.0"
+components:
+  securitySchemes:
+    runtimeToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 5-minute JWT issued by console-api POST /admin/v1/runtime-token.
+    gatewayApiKey:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: "Company gateway API key, prefix ak_{company_code}_ (PRD §7.7). Server-to-server only."
+    sessionToken:
+      type: http
+      scheme: bearer
+      description: 5-minute browser session token issued by POST /v1/deployments/{slug}/session.
+  parameters:
+    Slug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string }
+      description: "Deployment slug, <company_code>-<name>."
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    Placeholder:
+      type: object
+      additionalProperties: true
+    RunRequest:
+      type: object
+      required: [input]
+      properties:
+        input: { type: string }
+        conversation_id: { type: string, nullable: true, description: Omit to start a new conversation. }
+        user:
+          type: object
+          nullable: true
+          description: Server-to-server only — end-user identity to propagate to delegated tools (PRD §7.5).
+          properties:
+            external_id: { type: string }
+            claims: { type: object, additionalProperties: true }
+    RunResult:
+      type: object
+      properties:
+        conversation_id: { type: string }
+        output: { type: string }
+        tokens_in: { type: integer }
+        tokens_out: { type: integer }
+        cost_usd: { type: number }
+        latency_ms: { type: integer }
+        trace_id: { type: string }
+    SessionRequest:
+      type: object
+      properties:
+        external_user_id: { type: string }
+        claims: { type: object, additionalProperties: true }
+    SessionResponse:
+      type: object
+      properties:
+        session_token: { type: string }
+        expires_in: { type: integer, example: 300 }
+    DeploymentInfo:
+      type: object
+      properties:
+        display_name: { type: string }
+        role: { type: string }
+        languages:
+          type: array
+          items: { type: string }
+    Jwks:
+      type: object
+      properties:
+        keys:
+          type: array
+          items: { type: object, additionalProperties: true }
+paths:
+  /ai/v1/playground/run:
+    post:
+      operationId: runPlayground
+      summary: Run a given agent version synchronously (PRD §4.4-B).
+      security: [{ runtimeToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunResult' }
+
+  /ai/v1/playground/stream:
+    post:
+      operationId: runPlaygroundStream
+      summary: >
+        Run a given agent version over SSE. Events: token, step (thought/tool_call/tool_result),
+        guardrail, final, error, usage; heartbeat every 15s (PRD §6.2).
+      security: [{ runtimeToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunRequest' }
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /ai/v1/runs/{id}/cancel:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    post:
+      operationId: cancelRun
+      security: [{ runtimeToken: [] }]
+      responses:
+        "200": { description: OK }
+
+  /v1/deployments/{slug}/run:
+    parameters: [{ $ref: '#/components/parameters/Slug' }]
+    post:
+      operationId: runDeployment
+      summary: Server-to-server synchronous run (PRD §4.4-C).
+      security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunResult' }
+
+  /v1/deployments/{slug}/stream:
+    parameters: [{ $ref: '#/components/parameters/Slug' }]
+    post:
+      operationId: streamDeployment
+      summary: SSE run, from a server or directly from an end-user browser using a session token (PRD §4.4-C).
+      security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunRequest' }
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /v1/deployments/{slug}/session:
+    parameters: [{ $ref: '#/components/parameters/Slug' }]
+    post:
+      operationId: createDeploymentSession
+      summary: Issue a 5-minute browser session token embedding end-user identity (PRD §7.5).
+      security: [{ gatewayApiKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionResponse' }
+
+  /v1/deployments/{slug}/info:
+    parameters: [{ $ref: '#/components/parameters/Slug' }]
+    get:
+      operationId: getDeploymentInfo
+      summary: display_name, role, languages only — never instructions (PRD §6.1a).
+      security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentInfo' }
+
+  /v1/deployments/{slug}/approvals/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Slug' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: decideApproval
+      x-phase: 2
+      summary: Approve/reject a write tool call from the calling app (PRD §6.5).
+      security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Placeholder' }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+
+  /.well-known/jwks.json:
+    get:
+      operationId: getJwks
+      summary: Public keys for verifying delegated identity tokens (PRD §7.5/7.6). No auth.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Jwks' }

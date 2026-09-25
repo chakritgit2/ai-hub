@@ -1,0 +1,716 @@
+openapi: 3.0.3
+info:
+  title: Dynamiq Console API
+  description: >
+    Control-plane API served by console-api (Phalcon). PRD-001 §9.1.
+    Every /admin/v1/* route except /me and /companies requires the X-Company-Id header.
+  version: "0.1.0"
+servers:
+  - url: /admin/v1
+security:
+  - ssoJwt: []
+components:
+  securitySchemes:
+    ssoJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: SSO JWT issued by the existing Phalcon system (RS256 + JWKS), PRD §7.1/7.6.
+  parameters:
+    XCompanyId:
+      name: X-Company-Id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Company context for this request; checked against membership (PRD §7.2).
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    NotImplemented:
+      description: Not implemented yet (skeleton stub).
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: not_implemented
+  schemas:
+    Placeholder:
+      type: object
+      description: Placeholder body for a not-yet-designed (phase 2/3) endpoint.
+      additionalProperties: true
+    Company:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        external_ref: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        monthly_budget_usd: { type: number }
+    Me:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        is_platform_admin: { type: boolean }
+        companies:
+          type: array
+          items:
+            type: object
+            properties:
+              company_id: { type: string }
+              role: { type: string, enum: [admin, developer, viewer] }
+    RuntimeTokenResponse:
+      type: object
+      properties:
+        token: { type: string }
+        expires_in: { type: integer, example: 300 }
+    Connection:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        name: { type: string }
+        type: { type: string, example: dynamiq.connections.OpenAI }
+        api_base: { type: string }
+        masked_hint: { type: string }
+        max_concurrency: { type: integer }
+    ConnectionSecretInput:
+      type: object
+      required: [secret]
+      properties:
+        secret: { type: string }
+    Agent:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string }
+        archived_at: { type: string, format: date-time, nullable: true }
+    AgentVersion:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        agent_id: { type: string }
+        version_no: { type: integer }
+        spec: { type: object, additionalProperties: true }
+        spec_version: { type: string }
+        compiled_definition: { type: object, additionalProperties: true, nullable: true }
+        compiler_version: { type: string, nullable: true }
+        dynamiq_version: { type: string, nullable: true }
+        is_published: { type: boolean }
+        published_by: { type: string, nullable: true }
+        published_at: { type: string, format: date-time, nullable: true }
+    Deployment:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        slug: { type: string }
+        environment: { type: string, enum: [staging, production] }
+        agent_version_id: { type: string }
+        rate_limit_per_min: { type: integer }
+        daily_token_limit: { type: integer }
+        daily_cost_limit_usd: { type: number }
+        allowed_origins: { type: array, items: { type: string } }
+        guardrail_overrides: { type: object, additionalProperties: true }
+        output_mode: { type: string, enum: [stream, buffered] }
+        allow_write_tools: { type: boolean }
+        conversation_ttl_days: { type: integer }
+        config_version: { type: integer }
+        enabled: { type: boolean }
+    ApiKey:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        name: { type: string }
+        prefix: { type: string, example: ak_advws_ }
+        allowed_ips: { type: array, items: { type: string } }
+        rate_limit_per_min: { type: integer }
+        daily_cost_limit_usd: { type: number }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        created_by: { type: string }
+        revoked_at: { type: string, format: date-time, nullable: true }
+    ApiKeyCreated:
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          properties:
+            key:
+              type: string
+              description: Full key value, shown once.
+    Run:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        agent_version_id: { type: string }
+        deployment_id: { type: string, nullable: true }
+        conversation_id: { type: string, nullable: true }
+        source: { type: string, enum: [playground, api, eval] }
+        status: { type: string, enum: [success, error, blocked, interrupted, truncated, cancelled] }
+        agent_name: { type: string }
+        model: { type: string }
+        tokens_in: { type: integer }
+        tokens_out: { type: integer }
+        cost_usd: { type: number }
+        latency_ms: { type: integer }
+        trace_id: { type: string }
+        created_at: { type: string, format: date-time }
+    DashboardSummary:
+      type: object
+      properties:
+        runs_today: { type: integer }
+        tokens_this_month: { type: object, properties: { in: { type: integer }, out: { type: integer } } }
+        cost_this_month_usd: { type: number }
+        error_rate: { type: number }
+        guardrail_triggers: { type: integer }
+paths:
+  /me:
+    get:
+      operationId: getMe
+      summary: Current user, their companies and roles.
+      security: [{ ssoJwt: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+
+  /runtime-token:
+    post:
+      operationId: issueRuntimeToken
+      summary: Issue a 5-minute Playground runtime JWT (PRD §4.4-B, §7.6).
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_version_id]
+              properties:
+                agent_version_id: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuntimeTokenResponse' }
+
+  /connections:
+    get:
+      operationId: listConnections
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Connection' } }
+    post:
+      operationId: createConnection
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Connection' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+  /connections/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getConnection
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connection' } } } }
+    patch:
+      operationId: updateConnection
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Connection' }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Connection' } } } }
+    delete:
+      operationId: deleteConnection
+      responses:
+        "204": { description: Deleted }
+  /connections/{id}/secret:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    put:
+      operationId: putConnectionSecret
+      summary: Forwarded internally to PUT /internal/v1/connections/{id}/secret; never persisted on the PHP side (PRD §7.4).
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionSecretInput' }
+      responses:
+        "204": { description: Stored }
+  /connections/{id}/test:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: testConnection
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  detail: { type: string }
+
+  /agents:
+    get:
+      operationId: listAgents
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Agent' } } } } }
+    post:
+      operationId: createAgent
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Agent' }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } } }
+  /agents/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getAgent
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } } }
+    patch:
+      operationId: updateAgent
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Agent' }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } } }
+  /agents/{id}/clone:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: cloneAgent
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } } }
+  /agents/{id}/export:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: exportAgent
+      x-phase: 3
+      responses:
+        "200": { description: OK, content: { application/yaml: { schema: { type: string } } } }
+  /agents/{id}/import:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: importAgent
+      x-phase: 3
+      requestBody:
+        content:
+          application/yaml:
+            schema: { type: string }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } } }
+  /agents/{id}/versions:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: listAgentVersions
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AgentVersion' } } } } }
+    post:
+      operationId: createAgentVersion
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentVersion' }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/AgentVersion' } } } }
+  /agents/{id}/versions/{vid}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+      - { name: vid, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getAgentVersion
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AgentVersion' } } } }
+    patch:
+      operationId: updateAgentVersion
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentVersion' }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AgentVersion' } } } }
+  /agents/{id}/versions/{vid}/publish:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+      - { name: vid, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: publishAgentVersion
+      summary: Recompiles via ai-runtime, sets is_published=true, bumps dependent deployments' config_version (PRD §4.4-A).
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AgentVersion' } } } }
+
+  /deployments:
+    get:
+      operationId: listDeployments
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Deployment' } } } } }
+    post:
+      operationId: createDeployment
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Deployment' }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Deployment' } } } }
+  /deployments/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getDeployment
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Deployment' } } } }
+    patch:
+      operationId: updateDeployment
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Deployment' }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Deployment' } } } }
+    delete:
+      operationId: deleteDeployment
+      responses:
+        "204": { description: Deleted }
+  /deployments/{id}/promote:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: promoteDeployment
+      x-phase: 3
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Deployment' } } } }
+
+  /api-keys:
+    get:
+      operationId: listApiKeys
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ApiKey' } } } } }
+    post:
+      operationId: createApiKey
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiKey' }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ApiKeyCreated' } } } }
+  /api-keys/{id}/revoke:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: revokeApiKey
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ApiKey' } } } }
+
+  /runs:
+    get:
+      operationId: listRuns
+      parameters:
+        - { $ref: '#/components/parameters/XCompanyId' }
+        - { name: agent_id, in: query, schema: { type: string } }
+        - { name: deployment_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Run' } } } } }
+  /runs/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getRun
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Run' } } } }
+  /runs/{id}/conversation:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getRunConversation
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+  /runs/{id}/guardrail-events:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: listRunGuardrailEvents
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /dashboard:
+    get:
+      operationId: getDashboardSummary
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/DashboardSummary' } } } }
+
+  /tools:
+    get:
+      operationId: listTools
+      x-phase: 2
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+    post:
+      operationId: createTool
+      x-phase: 2
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+  /tools/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    patch:
+      operationId: updateTool
+      x-phase: 2
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+    delete:
+      operationId: deleteTool
+      x-phase: 2
+      responses: { "204": { description: Deleted } }
+  /tools/{id}/test:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: testTool
+      x-phase: 2
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /datasets:
+    get:
+      operationId: listDatasets
+      x-phase: 3
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+    post:
+      operationId: createDataset
+      x-phase: 3
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /evals:
+    get:
+      operationId: listEvalRuns
+      x-phase: 3
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+    post:
+      operationId: createEvalRun
+      x-phase: 3
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+  /evals/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getEvalRun
+      x-phase: 3
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+  /evals/compare:
+    get:
+      operationId: compareEvalRuns
+      x-phase: 3
+      parameters:
+        - { $ref: '#/components/parameters/XCompanyId' }
+        - { name: a, in: query, required: true, schema: { type: string } }
+        - { name: b, in: query, required: true, schema: { type: string } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /approvals:
+    get:
+      operationId: listApprovals
+      x-phase: 2
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+  /approvals/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: decideApproval
+      x-phase: 2
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /kb:
+    get:
+      operationId: listKnowledgeBases
+      x-phase: 2
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+    post:
+      operationId: createKnowledgeBase
+      x-phase: 2
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+  /kb/{id}/import:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: importKnowledgeBaseFiles
+      x-phase: 2
+      requestBody: { content: { multipart/form-data: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "202": { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+  /kb/{id}/export:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: exportKnowledgeBase
+      x-phase: 2
+      responses: { "200": { description: OK, content: { application/zip: { schema: { type: string, format: binary } } } } }
+  /kb/{id}/search:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: searchKnowledgeBase
+      x-phase: 2
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /skills:
+    get:
+      operationId: listSkills
+      x-phase: 2
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+    post:
+      operationId: createSkill
+      x-phase: 2
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+  /skills/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    patch:
+      operationId: updateSkill
+      x-phase: 2
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+  /skills/{id}/publish:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: publishSkill
+      x-phase: 2
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /settings/users:
+    get:
+      operationId: listCompanyUsers
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+  /settings/egress-allowlist:
+    get:
+      operationId: listEgressAllowlist
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+    post:
+      operationId: createEgressAllowlistEntry
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+  /settings/egress-allowlist/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    delete:
+      operationId: deleteEgressAllowlistEntry
+      responses: { "204": { description: Deleted } }
+
+  /companies:
+    get:
+      operationId: listCompanies
+      summary: platform_admin only.
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Company' } } } } } }
+    post:
+      operationId: createCompany
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } } } }
+  /companies/{id}/suspend:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    post:
+      operationId: suspendCompany
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } } } }
+  /companies/{id}/activate:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    post:
+      operationId: activateCompany
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } } } }
+  /companies/{id}/destroy-dek:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    post:
+      operationId: destroyCompanyDek
+      summary: Crypto-shredding — secrets become undecryptable immediately (PRD §12).
+      responses: { "200": { description: OK } }
+  /companies/{id}/members:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    get:
+      operationId: listCompanyMembers
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }

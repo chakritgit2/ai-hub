@@ -1,0 +1,42 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+	/* Mirrors tailwind.config.ts theme.extend.colors, for use outside Tailwind classes
+	   (inline styles, third-party components, charts). */
+	--color-bg: #f4f3ef;
+	--color-sidebar: #16181b;
+	--color-primary: #0e6b66;
+	--color-primary-dark: #0a4a47;
+	--color-warning: #f59e0b;
+	--color-warning-dark: #b45309;
+	--color-danger: #dc2626;
+	--color-danger-dark: #991b1b;
+
+	--font-sans: 'IBM Plex Sans Thai', ui-sans-serif, system-ui, sans-serif;
+	--font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+html {
+	background: var(--color-bg);
+}
+
+body {
+	min-height: 100vh;
+}
+
+/* Visible focus rings everywhere real interactive elements receive keyboard focus
+   (PRD mockup accessibility note: status is never color-only, focus is never invisible). */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+	outline: 2px solid var(--color-primary);
+	outline-offset: 2px;
+	border-radius: 4px;
+}
