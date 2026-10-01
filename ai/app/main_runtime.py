@@ -26,12 +26,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.auth import InvalidTokenError, verify_internal_token, verify_runtime_token
-from app.core.crypto import decrypt_with_dek, encrypt_with_dek
+from app.core.crypto import encrypt_with_dek
 from app.core.otel import setup_tracing
 from app.integrations.dynamiq_adapter import build_llm
 from app.services.company_keys import get_or_create_company_dek
 from app.services.compiler import compile_spec
-from app.services.connection_secrets import get_connection_secret, upsert_connection_secret
+from app.services.connection_secrets import decrypt_connection_secret, upsert_connection_secret
 from app.services.connections import resolve_connection
 from app.services.runtime import run_playground_agent
 
@@ -156,16 +156,18 @@ async def runPlayground(
     """Run a given agent version synchronously (PRD §4.4-B).
 
     REAL: builds and runs an actual Dynamiq Agent via
-    `app.services.runtime.run_playground_agent`, with memory wired for real
-    (PRD §6.2), and real runtime-token verification (`require_runtime_auth`)
-    instead of trusting a client-supplied `X-Company-Id` header. In production
-    this would resolve the agent version/connection from Postgres per-company;
-    this skeleton always runs a single hardcoded OpenAI-backed agent — the
-    token's `agent_version_id` claim isn't used to pick one yet.
+    `app.services.runtime.run_playground_agent`, resolving the token's own
+    `agent_version_id`/`role` claims to the company's real agent spec, compiling it live
+    and running it against the connection's real decrypted secret - with memory (PRD
+    §6.2) and guardrails (PRD §6.4) both wired for real, and real runtime-token
+    verification (`require_runtime_auth`) instead of trusting a client-supplied
+    `X-Company-Id` header.
     """
     try:
         result = await run_playground_agent(
             body.input,
+            agent_version_id=claims["agent_version_id"],
+            role=claims["role"],
             company_id=claims["company_id"],
             external_user_id=body.user.external_id if body.user else None,
             conversation_id=body.conversation_id,
@@ -176,6 +178,9 @@ async def runPlayground(
     return RunResult(
         conversation_id=result["conversation_id"],
         output=result["output"],
+        tokens_in=result.get("tokens_in"),
+        tokens_out=result.get("tokens_out"),
+        cost_usd=result.get("cost_usd"),
         latency_ms=result["latency_ms"],
         trace_id=result["trace_id"],
     )
@@ -305,12 +310,10 @@ async def testConnection(id: str, claims: InternalAuth) -> Response:
         raise HTTPException(status_code=404, detail="connection_not_found")
 
     try:
-        stored_secret = await get_connection_secret(company_id, id)
-        if stored_secret is None:
+        secret = await decrypt_connection_secret(company_id, id)
+        if secret is None:
             return TestResult(ok=False, detail="no secret stored for this connection")
 
-        company_dek = await get_or_create_company_dek(company_id)
-        secret = decrypt_with_dek(stored_secret.ciphertext, stored_secret.nonce, company_dek.dek).decode()
         _connection_obj, llm = build_llm(connection.type, {"api_key": secret, "url": connection.api_base})
     except ValueError as exc:
         return TestResult(ok=False, detail=str(exc))

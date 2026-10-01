@@ -66,7 +66,7 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
     compiled_definition["agent"]["llm"]["type"] = llm_type
 
     try:
-        _construct_agent(compiled_definition)
+        build_agent(compiled_definition, _COMPILE_TIME_PLACEHOLDER_API_KEY)
     except Exception as exc:  # proves compiled_definition is actually buildable
         logger.exception("agent spec compilation failed to construct an Agent")
         return _failure([{"path": "model", "message": f"failed to construct agent: {exc}"}])
@@ -105,7 +105,14 @@ def _build_compiled_definition(doc: AgentSpecDoc, connection: ConnectionRow) -> 
     }
 
 
-def _construct_agent(compiled_definition: dict) -> None:
+def build_agent(compiled_definition: dict, api_key: str, memory=None):
+    """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
+    (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
+    `_COMPILE_TIME_PLACEHOLDER_API_KEY`, no memory, and the result discarded (only
+    proving it's buildable), and Playground's agent-version resolution
+    (`app.services.runtime`), with the connection's real decrypted secret, real
+    conversation memory when available, and the returned Agent actually run.
+    """
     from dynamiq.nodes.agents import Agent
 
     agent_def = compiled_definition["agent"]
@@ -115,19 +122,20 @@ def _construct_agent(compiled_definition: dict) -> None:
     _connection, llm = build_llm(
         connection_def["type"],
         {
-            "api_key": _COMPILE_TIME_PLACEHOLDER_API_KEY,
+            "api_key": api_key,
             "model": llm_def["model"],
             "temperature": llm_def.get("temperature"),
             "max_tokens": llm_def.get("max_tokens"),
         },
     )
 
-    Agent(
+    return Agent(
         name=agent_def["name"],
         llm=llm,
         role=agent_def["role"],
         max_loops=agent_def["max_loops"],
         tools=[],
+        memory=memory,
     )
 
 

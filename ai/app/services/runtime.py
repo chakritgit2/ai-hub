@@ -1,29 +1,25 @@
-"""Playground/gateway run service - the one fully real, load-bearing piece of
-this skeleton: it builds and runs an actual Dynamiq `Agent`.
+"""Playground run service - the one fully real, load-bearing piece of this skeleton: it
+resolves a company's own agent version, compiles it live, and runs a real Dynamiq
+`Agent` built from a real decrypted connection secret.
 
-Real production behaviour (PRD §4.4-B/C, §6.1, §6.2) resolves the agent's
-compiled definition, connection secrets and guardrails from Postgres
-per-company; this skeleton hardcodes a single OpenAI-backed agent so the
-`/ai/v1/playground/run` route is genuinely executable end-to-end. Memory
-(PRD §6.2) *is* wired for real - see `app.services.conversations`.
+Memory (PRD §6.2) and Guardrails (PRD §6.4) are both wired for real - see
+`app.services.conversations` / `app.services.guardrails`.
 """
 import asyncio
-import os
 import time
 from typing import Any
 from uuid import uuid4
 
 from dynamiq.callbacks.base import BaseCallbackHandler
-from dynamiq.runnables.base import RunnableConfig
+from dynamiq.runnables.base import RunnableConfig, RunnableStatus
 
-from app.integrations.dynamiq_adapter import build_llm
 from app.services.agent_spec import GuardrailsSpec
+from app.services.agent_versions import resolve_agent_version
+from app.services.compiler import build_agent, compile_spec
+from app.services.connection_secrets import decrypt_connection_secret
 from app.services.conversations import get_or_create_conversation
 from app.services.guardrails import log_guardrail_events, run_checks
 from app.services.runs import RunUsage, log_run
-
-AGENT_NAME = "playground-agent"
-MODEL_NAME = "gpt-4o-mini"
 
 
 class _UsageCollector(BaseCallbackHandler):
@@ -52,54 +48,68 @@ class _UsageCollector(BaseCallbackHandler):
         )
 
 
+async def _resolve_and_compile(company_id: str, agent_version_id: str, role: str) -> dict:
+    """Resolves `agent_version_id` within `company_id` and compiles its *current* spec
+    live (PRD §4.4-B) - never the `compiled_definition` a Publish may have snapshotted,
+    since a runtime token's agent_version_id is never required to be published
+    (RuntimeTokenController::issueRuntimeToken only checks it exists in the caller's
+    company - Playground is explicitly a pre-publish testing tool). Raises ValueError
+    (not found / compile failure) - callers let it bubble up to the existing
+    "genuine failure -> 502" handling in app.main_runtime, no new error shape needed.
+    """
+    version = await resolve_agent_version(company_id, agent_version_id)
+    if version is None:
+        raise ValueError(f"agent_version_id {agent_version_id!r} not found for this company")
+
+    result = await compile_spec(version.spec, role, company_id)
+    if not result["ok"]:
+        raise ValueError(f"agent version {agent_version_id!r} failed to compile: {result['errors']}")
+
+    return result["compiled_definition"]
+
+
 async def run_playground_agent(
     input_text: str,
+    agent_version_id: str,
+    role: str,
     company_id: str = "",
     external_user_id: str | None = None,
     conversation_id: str | None = None,
     deployment_id: str | None = None,
-    guardrails: GuardrailsSpec | None = None,
 ) -> dict:
-    """Build a minimal Dynamiq Agent and run it, with memory when a
+    """Resolve `agent_version_id`, compile it live, build a real Agent from the
+    company's own decrypted connection secret, and run it - with memory when a
     `company_id`/`external_user_id` are available to scope it to.
 
     Returns `{"output": str, "trace_id": str, "latency_ms": int,
     "conversation_id": str | None, "guardrail_events": list}`.
 
-    Raises whatever the underlying Dynamiq/OpenAI call raises (e.g. missing
-    API key, provider error) - callers (see `app.main_runtime`) are
-    responsible for turning that into an HTTP error response. A `logs.runs`
-    row with status="error" is still written before re-raising.
+    Raises whatever resolution/compilation/secret-lookup or the underlying Dynamiq/
+    OpenAI call itself raises - callers (see `app.main_runtime`) are responsible for
+    turning that into an HTTP error response. A `logs.runs` row with status="error" is
+    still written before re-raising, for every failure past the point a run_id exists.
 
-    `company_id`/`external_user_id` are optional - when either is missing the
-    run proceeds without memory (same behaviour as before this was wired up).
-    When both are given, `company_id` is trusted as-is even though real auth
-    isn't wired yet (`app.core.auth` is still a stub); callers currently
-    source it from the `X-Company-Id` header, matching the existing
-    internal-API convention, with the trust boundary left as a documented gap
-    until `verify_runtime_token`/`verify_gateway_api_key` replace it.
+    `company_id`/`external_user_id` are optional - when either is missing the run
+    proceeds without memory (unchanged from before this was wired up). When both are
+    given, `company_id` is trusted as-is even though real auth isn't wired yet
+    (`app.core.auth` is still a stub); callers currently source it from the verified
+    runtime token, with the trust boundary left as a documented gap until
+    `verify_gateway_api_key` needs the same treatment on the gateway side.
 
-    `guardrails` (PRD §6.4) is optional and defaults to no checks at all -
-    this skeleton has no way to resolve a deployment's/agent version's real
-    compiled guardrails config yet (Playground always runs the one hardcoded
-    agent above, not a real compiled definition), so nothing passes this in
-    today; it exists so the guardrail engine itself is callable and tested
-    end-to-end ahead of that larger, separate piece of work. When a block
-    fires on the input side, the agent is never called at all - no LLM cost
-    for a request that was always going to be rejected.
-
-    Every call writes one `logs.runs` row (PRD §6.8) - `agent_version_id`/
-    `deployment_id` stay NULL for now since Playground doesn't resolve a real
-    compiled agent version yet (same pre-existing, separately-tracked gap as
-    above); `source` is hardcoded "playground" since that's the only real
-    caller today.
+    Guardrails (PRD §6.4) are never caller-injectable - they come only from the
+    resolved agent version's own compiled definition, same reasoning as why the public
+    Playground route itself can't accept a client-supplied guardrails config.
     """
-    from dynamiq.nodes.agents import Agent
-
     run_id = str(uuid4())
     trace_id = str(uuid4())
     started = time.monotonic()
-    guardrails = guardrails or GuardrailsSpec()
+
+    compiled_definition = await _resolve_and_compile(company_id, agent_version_id, role)
+    agent_def = compiled_definition["agent"]
+    connection_id = agent_def["llm"]["connection"]["connection_id"]
+    agent_name = agent_def["name"]
+    model_name = agent_def["llm"]["model"]
+    guardrails = GuardrailsSpec.model_validate(compiled_definition["guardrails"])
 
     input_outcome = await run_checks(input_text, guardrails.input, stage="input")
     if input_outcome.blocked:
@@ -111,8 +121,10 @@ async def run_playground_agent(
             company_id=company_id,
             trace_id=trace_id,
             status="blocked",
-            agent_name=AGENT_NAME,
-            model=MODEL_NAME,
+            agent_version_id=agent_version_id,
+            deployment_id=deployment_id,
+            agent_name=agent_name,
+            model=model_name,
             input_text=input_text,
             output_text=input_outcome.fallback_message,
             latency_ms=latency_ms,
@@ -126,10 +138,9 @@ async def run_playground_agent(
             "guardrail_events": input_outcome.events,
         }
 
-    _connection, llm = build_llm(
-        "dynamiq.connections.OpenAI",
-        {"api_key": os.environ.get("OPENAI_API_KEY"), "model": MODEL_NAME},
-    )
+    secret = await decrypt_connection_secret(company_id, connection_id)
+    if secret is None:
+        raise ValueError(f"no secret stored for connection {connection_id!r}")
 
     memory = None
     user_id = None
@@ -141,14 +152,7 @@ async def run_playground_agent(
             company_id, deployment_id, external_user_id, conversation_id
         )
 
-    agent = Agent(
-        name=AGENT_NAME,
-        llm=llm,
-        tools=[],
-        role="You are a helpful assistant.",
-        max_loops=3,
-        memory=memory,
-    )
+    agent = build_agent(compiled_definition, secret, memory=memory)
 
     usage_collector = _UsageCollector()
 
@@ -171,6 +175,13 @@ async def run_playground_agent(
             },
             config=RunnableConfig(callbacks=[usage_collector]),
         )
+        # Agent.run() does NOT raise on an LLM/tool failure (e.g. a rejected API key) -
+        # it returns a RunnableResult with status=FAILURE and the error captured in
+        # .error instead. Confirmed live: a bad connection secret produced a 200 with
+        # empty output until this check was added, silently hiding a real run failure.
+        if result.status != RunnableStatus.SUCCESS:
+            message = result.error.message if result.error else f"agent run ended with status {result.status}"
+            raise RuntimeError(message)
     except Exception as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
         await log_run(
@@ -178,8 +189,10 @@ async def run_playground_agent(
             company_id=company_id,
             trace_id=trace_id,
             status="error",
-            agent_name=AGENT_NAME,
-            model=MODEL_NAME,
+            agent_version_id=agent_version_id,
+            deployment_id=deployment_id,
+            agent_name=agent_name,
+            model=model_name,
             input_text=input_outcome.text,
             conversation_id=resolved_conversation_id,
             usage=usage_collector.total_usage(),
@@ -195,18 +208,21 @@ async def run_playground_agent(
     final_output = output_outcome.fallback_message if output_outcome.blocked else output_outcome.text
 
     latency_ms = int((time.monotonic() - started) * 1000)
+    usage = usage_collector.total_usage()
 
     await log_run(
         run_id=run_id,
         company_id=company_id,
         trace_id=trace_id,
         status="blocked" if output_outcome.blocked else "success",
-        agent_name=AGENT_NAME,
-        model=MODEL_NAME,
+        agent_version_id=agent_version_id,
+        deployment_id=deployment_id,
+        agent_name=agent_name,
+        model=model_name,
         input_text=input_outcome.text,
         output_text=final_output,
         conversation_id=resolved_conversation_id,
-        usage=usage_collector.total_usage(),
+        usage=usage,
         latency_ms=latency_ms,
     )
     await log_guardrail_events(
@@ -219,4 +235,7 @@ async def run_playground_agent(
         "latency_ms": latency_ms,
         "conversation_id": resolved_conversation_id,
         "guardrail_events": [*input_outcome.events, *output_outcome.events],
+        "tokens_in": usage.tokens_in,
+        "tokens_out": usage.tokens_out,
+        "cost_usd": usage.cost_usd,
     }

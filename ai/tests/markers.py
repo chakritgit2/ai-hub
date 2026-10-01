@@ -47,17 +47,24 @@ requires_openai_key = pytest.mark.skipif(
 )
 
 
-def fake_runtime_claims(company_id: str = ""):
+def fake_runtime_claims(
+    company_id: str = "",
+    agent_version_id: str = "00000000-0000-0000-0000-000000000000",
+    role: str = "developer",
+):
     """Stands in for a verified runtime token (PRD §4.4-B) via FastAPI's
     `dependency_overrides` — company_id defaults to "" (no memory), matching the
-    pre-auth default of an absent X-Company-Id header."""
+    pre-auth default of an absent X-Company-Id header. agent_version_id defaults to a
+    zero-UUID that resolves to nothing (app.services.agent_versions.resolve_agent_version
+    requires a real row) - tests exercising a real run must pass a real one, e.g. from
+    conftest.py's make_agent_version fixture."""
 
     def _claims() -> dict:
         return {
             "company_id": company_id,
             "user_id": "test-user",
-            "role": "developer",
-            "agent_version_id": "00000000-0000-0000-0000-000000000000",
+            "role": role,
+            "agent_version_id": agent_version_id,
         }
 
     return _claims

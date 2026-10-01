@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import psycopg
@@ -55,13 +56,23 @@ async def _fresh_engine():
 @pytest.fixture
 async def company_ids():
     """Hands out fresh company ids and, after the test, deletes every
-    runtime.conversations / runtime.agent_memory row created under them.
+    runtime.conversations / runtime.agent_memory / logs.guardrail_events / logs.runs /
+    runtime.connection_secrets / runtime.company_keys row created under them - the full
+    set of runtime.*/logs.* tables any Playground-resolution test
+    (resolvable_agent_version, run_playground_agent) can write to for a given company.
 
     Only touches the DB during teardown, and only if an id was handed out,
-    so tests that never use it don't need Postgres.
+    so tests that never use it don't need Postgres. guardrail_events is deleted before
+    runs - its run_id is a foreign key into runs.
     """
     from app.core.db import get_company_session
-    from app.db.tables import conversations_table
+    from app.db.tables import (
+        company_keys_table,
+        connection_secrets_table,
+        conversations_table,
+        guardrail_events_table,
+        runs_table,
+    )
 
     issued: list[str] = []
 
@@ -73,10 +84,11 @@ async def company_ids():
     yield new_company_id
 
     for company_id in issued:
+        company_uuid = uuid.UUID(company_id)
         async with get_company_session(company_id) as session:
             result = await session.execute(
                 conversations_table.delete()
-                .where(conversations_table.c.company_id == uuid.UUID(company_id))
+                .where(conversations_table.c.company_id == company_uuid)
                 .returning(conversations_table.c.id)
             )
             session_ids = [str(row[0]) for row in result.fetchall()]
@@ -85,6 +97,14 @@ async def company_ids():
                     sa.text("DELETE FROM runtime.agent_memory WHERE metadata ->> 'session_id' = ANY(:ids)"),
                     {"ids": session_ids},
                 )
+            await session.execute(
+                guardrail_events_table.delete().where(guardrail_events_table.c.company_id == company_uuid)
+            )
+            await session.execute(runs_table.delete().where(runs_table.c.company_id == company_uuid))
+            await session.execute(
+                connection_secrets_table.delete().where(connection_secrets_table.c.company_id == company_uuid)
+            )
+            await session.execute(company_keys_table.delete().where(company_keys_table.c.company_id == company_uuid))
 
 
 @pytest.fixture
@@ -131,3 +151,115 @@ def make_connection():
             conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
             conn.execute("DELETE FROM console.connections WHERE id = %s", (connection_id,))
             conn.commit()
+
+
+@pytest.fixture
+def make_agent_version():
+    """Inserts `console.agents` + `console.agent_versions` rows as `console_app` (same
+    convention as make_connection) and deletes them afterward. Used by
+    test_playground_run.py / test_playground_guardrails.py to give
+    run_playground_agent's mandatory agent_version_id a real, resolvable row -
+    app.services.agent_versions.resolve_agent_version has no fallback for a missing one."""
+    settings = get_settings()
+    created: list[tuple[str, str, str]] = []  # (company_id, agent_id, version_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(
+        company_id: str,
+        connection_id: str,
+        guardrails: dict | None = None,
+        model: str = "gpt-4o-mini",
+    ) -> str:
+        agent_id = str(uuid.uuid4())
+        version_id = str(uuid.uuid4())
+        spec = {
+            "identity": {
+                "name": "test-agent",
+                "display_name": "Test Agent",
+                "owner": "qa",
+                "role": "answers test questions",
+                "languages": ["en"],
+            },
+            "model": {"connection_id": connection_id, "model": model},
+        }
+        if guardrails is not None:
+            spec["guardrails"] = guardrails
+
+        with _connect() as conn:
+            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
+            # own freshly generated uuid4, never external input.
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.agents (id, company_id, name) VALUES (%s, %s, %s)",
+                (agent_id, company_id, "test-agent"),
+            )
+            conn.execute(
+                """INSERT INTO console.agent_versions
+                   (id, company_id, agent_id, version_no, spec, spec_version)
+                   VALUES (%s, %s, %s, 1, %s, '1')""",
+                (version_id, company_id, agent_id, json.dumps(spec)),
+            )
+            conn.commit()
+        created.append((company_id, agent_id, version_id))
+        return version_id
+
+    yield _make
+
+    for company_id, agent_id, version_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.agent_versions WHERE id = %s", (version_id,))
+            conn.execute("DELETE FROM console.agents WHERE id = %s", (agent_id,))
+            conn.commit()
+
+
+@pytest.fixture
+async def store_connection_secret():
+    """Encrypts and stores a real connection secret via the same services the real
+    putConnectionSecret endpoint uses (app.services.company_keys/connection_secrets) -
+    called directly, no HTTP round trip needed since tests run in-process."""
+    from app.core.crypto import encrypt_with_dek
+    from app.services.company_keys import get_or_create_company_dek
+    from app.services.connection_secrets import upsert_connection_secret
+
+    async def _store(company_id: str, connection_id: str, secret: str) -> None:
+        dek = await get_or_create_company_dek(company_id)
+        ciphertext, nonce = encrypt_with_dek(secret.encode(), dek.dek)
+        await upsert_connection_secret(
+            company_id=company_id,
+            connection_id=connection_id,
+            ciphertext=ciphertext,
+            nonce=nonce,
+            dek_version=dek.dek_version,
+        )
+
+    return _store
+
+
+@pytest.fixture
+def resolvable_agent_version(make_connection, make_agent_version, store_connection_secret):
+    """One-call setup for a fully resolvable Playground run: a real connection, a real
+    stored secret, and a real agent version referencing both - returns
+    (company_id, agent_version_id). The secret defaults to a syntactically-valid-looking
+    but fake key (true negative - OpenAI deterministically rejects it, no
+    @requires_openai_key needed to prove the resolution pipeline itself works)."""
+
+    async def _make(
+        company_id: str,
+        secret: str = "sk-test-garbage-key-0000000000000000",
+        guardrails: dict | None = None,
+        model: str = "gpt-4o-mini",
+    ) -> str:
+        connection_id = make_connection(company_id)
+        await store_connection_secret(company_id, connection_id, secret)
+        return make_agent_version(company_id, connection_id, guardrails=guardrails, model=model)
+
+    return _make

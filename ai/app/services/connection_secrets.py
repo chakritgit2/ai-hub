@@ -5,8 +5,10 @@ from dataclasses import dataclass
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core.crypto import decrypt_with_dek
 from app.core.db import get_company_session
 from app.db.tables import connection_secrets_table
+from app.services.company_keys import get_or_create_company_dek
 
 
 @dataclass(frozen=True)
@@ -51,3 +53,16 @@ async def get_connection_secret(company_id: str, connection_id: str) -> Connecti
         ).mappings().one_or_none()
 
     return None if row is None else ConnectionSecretRow(**row)
+
+
+async def decrypt_connection_secret(company_id: str, connection_id: str) -> str | None:
+    """The stored secret in plaintext, or `None` if nothing has been stored for this
+    connection yet. Shared by `testConnection` and Playground's agent-version resolution
+    (`app.services.runtime`) - both need the same decrypt-with-the-company's-own-DEK
+    dance, previously duplicated inline in `app.main_runtime::testConnection`."""
+    stored = await get_connection_secret(company_id, connection_id)
+    if stored is None:
+        return None
+
+    company_dek = await get_or_create_company_dek(company_id)
+    return decrypt_with_dek(stored.ciphertext, stored.nonce, company_dek.dek).decode()

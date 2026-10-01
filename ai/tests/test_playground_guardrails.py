@@ -3,10 +3,10 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
+from dynamiq.runnables.base import RunnableStatus
 
 from app.core.db import get_company_session
 from app.db.tables import guardrail_events_table, runs_table
-from app.services.agent_spec import GuardrailCheckSpec, GuardrailsSpec
 from app.services.runtime import _UsageCollector, run_playground_agent
 
 from .markers import requires_postgres
@@ -21,15 +21,19 @@ _FAKE_USAGE = {
 
 class _RecordingAgent:
     """Like test_playground_run.py's _FakeAgent, but records the input it was called
-    with and lets the test control what it "replies" (and whether it raises) - needed
-    here to prove a blocked input never reaches the agent at all, to exercise
-    output-side checks against a specific reply, and to exercise the error path.
-    Also fires a fake usage_data callback, like a real LLM node would, to prove the
+    with and lets the test control what it "replies" (and whether it raises or fails
+    without raising) - needed here to prove a blocked input never reaches the agent at
+    all, to exercise output-side checks against a specific reply, and to exercise both
+    failure shapes dynamiq's real Agent.run() can produce: a raised exception, and a
+    returned RunnableResult with status=FAILURE and no exception at all (the real shape
+    behind a rejected API key - confirmed live, see runtime.py's status check). Also
+    fires a fake usage_data callback, like a real LLM node would, to prove the
     run_playground_agent -> _UsageCollector -> logs.runs wiring end-to-end."""
 
     calls: ClassVar[list[dict]] = []
     reply: ClassVar[str] = "fake reply"
     raises: ClassVar[Exception | None] = None
+    fails_with_status: ClassVar[bool] = False
 
     def __init__(self, **kwargs) -> None:
         self.memory = kwargs.get("memory")
@@ -41,20 +45,29 @@ class _RecordingAgent:
                 callback.on_node_execute_run({}, usage_data=_FAKE_USAGE)
         if type(self).raises is not None:
             raise type(self).raises
-        return SimpleNamespace(output={"content": type(self).reply})
+        if type(self).fails_with_status:
+            return SimpleNamespace(
+                output=None,
+                status=RunnableStatus.FAILURE,
+                error=SimpleNamespace(message="authentication failed (fake)"),
+            )
+        return SimpleNamespace(output={"content": type(self).reply}, status=RunnableStatus.SUCCESS)
 
 
 @pytest.fixture
 def recording_agent(monkeypatch):
     import dynamiq.nodes.agents
 
-    from app.services import runtime
+    from app.services import compiler
 
     _RecordingAgent.calls = []
     _RecordingAgent.reply = "fake reply"
     _RecordingAgent.raises = None
+    _RecordingAgent.fails_with_status = False
     monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _RecordingAgent)
-    monkeypatch.setattr(runtime, "build_llm", lambda *_args, **_kwargs: (None, None))
+    # build_llm is called from app.services.compiler.build_agent now (resolution/compile
+    # lives there), not directly from app.services.runtime - see compiler.py.
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
     return _RecordingAgent
 
 
@@ -70,49 +83,71 @@ async def _fetch_run_by_trace(company_id: str, trace_id: str) -> dict | None:
     return dict(row) if row is not None else None
 
 
-async def test_blocked_input_never_reaches_the_agent(recording_agent):
-    guardrails = GuardrailsSpec(input=[GuardrailCheckSpec(check_type="max_length", action="block", max_length=5)])
+@requires_postgres
+async def test_blocked_input_never_reaches_the_agent(recording_agent, company_ids, resolvable_agent_version):
+    company_id = company_ids()
+    guardrails = {"input": [{"check_type": "max_length", "action": "block", "max_length": 5}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
 
-    result = await run_playground_agent("this input is way too long", guardrails=guardrails)
+    result = await run_playground_agent(
+        "this input is way too long", agent_version_id=version_id, role="developer", company_id=company_id
+    )
 
     assert result["output"] == "I can't help with that request."
     assert recording_agent.calls == []
     assert result["guardrail_events"][0].check == "max_length"
 
 
-async def test_masked_input_is_what_the_agent_actually_sees(recording_agent):
-    guardrails = GuardrailsSpec(input=[GuardrailCheckSpec(check_type="pii", action="mask")])
+@requires_postgres
+async def test_masked_input_is_what_the_agent_actually_sees(recording_agent, company_ids, resolvable_agent_version):
+    company_id = company_ids()
+    guardrails = {"input": [{"check_type": "pii", "action": "mask"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
 
-    await run_playground_agent("my email is test@example.com", guardrails=guardrails)
+    await run_playground_agent(
+        "my email is test@example.com", agent_version_id=version_id, role="developer", company_id=company_id
+    )
 
     assert len(recording_agent.calls) == 1
     assert "test@example.com" not in recording_agent.calls[0]["input"]
     assert "EMAIL_REDACTED" in recording_agent.calls[0]["input"]
 
 
-async def test_blocked_output_replaces_the_reply(recording_agent):
+@requires_postgres
+async def test_blocked_output_replaces_the_reply(recording_agent, company_ids, resolvable_agent_version):
     recording_agent.reply = "here is a secret word"
-    guardrails = GuardrailsSpec(
-        output=[GuardrailCheckSpec(check_type="regex_blocklist", action="block", pattern=r"\bsecret\b")]
-    )
+    company_id = company_ids()
+    guardrails = {"output": [{"check_type": "regex_blocklist", "action": "block", "pattern": r"\bsecret\b"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
 
-    result = await run_playground_agent("hi", guardrails=guardrails)
+    result = await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
 
     assert result["output"] == "I can't help with that request."
 
 
-async def test_masked_output_is_returned_instead_of_the_raw_reply(recording_agent):
+@requires_postgres
+async def test_masked_output_is_returned_instead_of_the_raw_reply(
+    recording_agent, company_ids, resolvable_agent_version
+):
     recording_agent.reply = "my email is test@example.com"
-    guardrails = GuardrailsSpec(output=[GuardrailCheckSpec(check_type="pii", action="mask")])
+    company_id = company_ids()
+    guardrails = {"output": [{"check_type": "pii", "action": "mask"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
 
-    result = await run_playground_agent("hi", guardrails=guardrails)
+    result = await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
 
     assert "test@example.com" not in result["output"]
     assert "EMAIL_REDACTED" in result["output"]
 
 
-async def test_no_guardrails_configured_behaves_exactly_as_before(recording_agent):
-    result = await run_playground_agent("hi")
+@requires_postgres
+async def test_no_guardrails_configured_behaves_exactly_as_before(
+    recording_agent, company_ids, resolvable_agent_version
+):
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+
+    result = await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
 
     assert result["output"] == "fake reply"
     assert result["guardrail_events"] == []
@@ -144,111 +179,126 @@ def test_usage_collector_with_no_calls_reports_none():
 
 
 @requires_postgres
-async def test_triggered_checks_are_persisted_to_guardrail_events_for_a_real_company(recording_agent):
-    """The full run_playground_agent -> logs.guardrail_events write path, with a real
-    company_id (unlike the other tests above, which all use the default "" and so never
-    reach the DB at all) - proves the wiring actually lands rows, not just that
-    log_guardrail_events works in isolation (already covered by test_guardrails.py)."""
-    company_id = str(uuid.uuid4())
-    guardrails = GuardrailsSpec(input=[GuardrailCheckSpec(check_type="pii", action="flag")])
+async def test_triggered_checks_are_persisted_to_guardrail_events_for_a_real_company(
+    recording_agent, company_ids, resolvable_agent_version
+):
+    """The full run_playground_agent -> logs.guardrail_events write path - proves the
+    wiring actually lands rows, not just that log_guardrail_events works in isolation
+    (already covered by test_guardrails.py)."""
+    company_id = company_ids()
+    guardrails = {"input": [{"check_type": "pii", "action": "flag"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
 
-    try:
-        result = await run_playground_agent(
-            "my email is test@example.com", company_id=company_id, guardrails=guardrails
+    result = await run_playground_agent(
+        "my email is test@example.com", agent_version_id=version_id, role="developer", company_id=company_id
+    )
+    assert result["guardrail_events"]
+
+    async with get_company_session(company_id) as session:
+        rows = (
+            (
+                await session.execute(
+                    guardrail_events_table.select().where(guardrail_events_table.c.company_id == uuid.UUID(company_id))
+                )
+            )
+            .mappings()
+            .all()
         )
-        assert result["guardrail_events"]
 
-        async with get_company_session(company_id) as session:
-            rows = (
-                (
-                    await session.execute(
-                        guardrail_events_table.select().where(
-                            guardrail_events_table.c.company_id == uuid.UUID(company_id)
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-
-        assert len(rows) == 1
-        assert rows[0]["check"] == "pii"
-        assert rows[0]["stage"] == "input"
-        # The FK only succeeds if logs.runs' row was written before this one - proves
-        # log_run() -> log_guardrail_events() ordering, not just that each works alone.
-        assert rows[0]["run_id"] is not None
-    finally:
-        async with get_company_session(company_id) as session:
-            await session.execute(
-                guardrail_events_table.delete().where(guardrail_events_table.c.company_id == uuid.UUID(company_id))
-            )
-            await session.execute(runs_table.delete().where(runs_table.c.company_id == uuid.UUID(company_id)))
+    assert len(rows) == 1
+    assert rows[0]["check"] == "pii"
+    assert rows[0]["stage"] == "input"
+    # The FK only succeeds if logs.runs' row was written before this one - proves
+    # log_run() -> log_guardrail_events() ordering, not just that each works alone.
+    assert rows[0]["run_id"] is not None
 
 
 @requires_postgres
-async def test_successful_run_is_persisted_to_logs_runs_with_real_usage(recording_agent):
-    company_id = str(uuid.uuid4())
+async def test_successful_run_is_persisted_to_logs_runs_with_real_usage(
+    recording_agent, company_ids, resolvable_agent_version
+):
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
 
-    try:
-        result = await run_playground_agent("hi there", company_id=company_id)
-        run = await _fetch_run_by_trace(company_id, result["trace_id"])
+    result = await run_playground_agent(
+        "hi there", agent_version_id=version_id, role="developer", company_id=company_id
+    )
+    run = await _fetch_run_by_trace(company_id, result["trace_id"])
 
-        assert run is not None
-        assert run["status"] == "success"
-        assert run["source"] == "playground"
-        assert run["agent_name"] == "playground-agent"
-        assert run["output"] == "fake reply"
-        assert run["tokens_in"] == 12
-        assert run["tokens_out"] == 7
-        assert float(run["cost_usd"]) == pytest.approx(0.0042)
-    finally:
-        async with get_company_session(company_id) as session:
-            await session.execute(runs_table.delete().where(runs_table.c.company_id == uuid.UUID(company_id)))
-
-
-@requires_postgres
-async def test_blocked_run_is_persisted_with_blocked_status(recording_agent):
-    company_id = str(uuid.uuid4())
-    guardrails = GuardrailsSpec(input=[GuardrailCheckSpec(check_type="max_length", action="block", max_length=5)])
-
-    try:
-        result = await run_playground_agent("this is way too long", company_id=company_id, guardrails=guardrails)
-        run = await _fetch_run_by_trace(company_id, result["trace_id"])
-
-        assert run is not None
-        assert run["status"] == "blocked"
-        assert recording_agent.calls == []
-    finally:
-        async with get_company_session(company_id) as session:
-            # guardrail_events.run_id FKs to runs - delete it first, same lesson as
-            # runtime.py's own log_run()-before-log_guardrail_events() write ordering.
-            await session.execute(
-                guardrail_events_table.delete().where(
-                    guardrail_events_table.c.company_id == uuid.UUID(company_id)
-                )
-            )
-            await session.execute(runs_table.delete().where(runs_table.c.company_id == uuid.UUID(company_id)))
+    assert run is not None
+    assert run["status"] == "success"
+    assert run["source"] == "playground"
+    assert run["agent_name"] == "test-agent"
+    assert str(run["agent_version_id"]) == version_id
+    assert run["output"] == "fake reply"
+    assert run["tokens_in"] == 12
+    assert run["tokens_out"] == 7
+    assert float(run["cost_usd"]) == pytest.approx(0.0042)
+    assert result["tokens_in"] == 12
+    assert result["tokens_out"] == 7
 
 
 @requires_postgres
-async def test_agent_error_is_persisted_with_error_status_and_still_raises(recording_agent):
-    company_id = str(uuid.uuid4())
+async def test_blocked_run_is_persisted_with_blocked_status(recording_agent, company_ids, resolvable_agent_version):
+    company_id = company_ids()
+    guardrails = {"input": [{"check_type": "max_length", "action": "block", "max_length": 5}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+
+    result = await run_playground_agent(
+        "this is way too long", agent_version_id=version_id, role="developer", company_id=company_id
+    )
+    run = await _fetch_run_by_trace(company_id, result["trace_id"])
+
+    assert run is not None
+    assert run["status"] == "blocked"
+    assert recording_agent.calls == []
+
+
+@requires_postgres
+async def test_agent_error_is_persisted_with_error_status_and_still_raises(
+    recording_agent, company_ids, resolvable_agent_version
+):
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
     recording_agent.raises = RuntimeError("boom from the fake agent")
 
-    try:
-        with pytest.raises(RuntimeError, match="boom from the fake agent"):
-            await run_playground_agent("hi", company_id=company_id)
+    with pytest.raises(RuntimeError, match="boom from the fake agent"):
+        await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
 
-        async with get_company_session(company_id) as session:
-            rows = (
-                (await session.execute(runs_table.select().where(runs_table.c.company_id == uuid.UUID(company_id))))
-                .mappings()
-                .all()
-            )
+    async with get_company_session(company_id) as session:
+        rows = (
+            (await session.execute(runs_table.select().where(runs_table.c.company_id == uuid.UUID(company_id))))
+            .mappings()
+            .all()
+        )
 
-        assert len(rows) == 1
-        assert rows[0]["status"] == "error"
-        assert "boom from the fake agent" in rows[0]["error"]
-    finally:
-        async with get_company_session(company_id) as session:
-            await session.execute(runs_table.delete().where(runs_table.c.company_id == uuid.UUID(company_id)))
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert "boom from the fake agent" in rows[0]["error"]
+
+
+@requires_postgres
+async def test_agent_result_with_failure_status_is_treated_as_an_error(
+    recording_agent, company_ids, resolvable_agent_version
+):
+    """dynamiq's real Agent.run() doesn't always raise on failure - a rejected API key
+    comes back as a normal return value with status=FAILURE, confirmed live. Without this
+    check, run_playground_agent previously returned a 200 with empty output instead of
+    surfacing the failure."""
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+    recording_agent.fails_with_status = True
+
+    with pytest.raises(RuntimeError, match="authentication failed"):
+        await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
+
+    async with get_company_session(company_id) as session:
+        rows = (
+            (await session.execute(runs_table.select().where(runs_table.c.company_id == uuid.UUID(company_id))))
+            .mappings()
+            .all()
+        )
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert "authentication failed" in rows[0]["error"]
