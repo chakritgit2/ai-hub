@@ -177,6 +177,26 @@ components:
         cost_this_month_usd: { type: number }
         error_rate: { type: number }
         guardrail_triggers: { type: integer }
+    RunConversation:
+      type: object
+      description: Metadata only (PRD §6.9) - message content lives in runtime.agent_memory, a separate, larger piece of work.
+      properties:
+        id: { type: string }
+        deployment_id: { type: string, nullable: true }
+        source: { type: string }
+        external_user_id: { type: string, description: Hashed, not the raw identifier (PRD §7.4). }
+        last_message_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+    GuardrailEvent:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string, nullable: true }
+        stage: { type: string, enum: [input, output] }
+        check: { type: string }
+        action: { type: string, enum: [block, mask, flag] }
+        detail: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
 paths:
   /me:
     get:
@@ -481,8 +501,9 @@ paths:
       - { $ref: '#/components/parameters/IdParam' }
     get:
       operationId: getRunConversation
+      summary: Conversation metadata the run belongs to (not message content - that lives in runtime.agent_memory, out of scope here).
       responses:
-        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunConversation' } } } }
   /runs/{id}/guardrail-events:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
@@ -490,7 +511,7 @@ paths:
     get:
       operationId: listRunGuardrailEvents
       responses:
-        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } }
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/GuardrailEvent' } } } } }
 
   /dashboard:
     get:

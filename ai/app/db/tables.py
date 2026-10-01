@@ -51,6 +51,31 @@ connection_secrets_table = sa.Table(
     schema="runtime",
 )
 
+runs_table = sa.Table(
+    "runs",
+    _metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("agent_version_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("deployment_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("conversation_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("source", sa.String(length=32), nullable=False),
+    sa.Column("status", sa.String(length=32), nullable=False),
+    sa.Column("agent_name", sa.String(length=255), nullable=True),
+    sa.Column("model", sa.String(length=255), nullable=True),
+    sa.Column("input", sa.Text(), nullable=True),
+    sa.Column("output", sa.Text(), nullable=True),
+    sa.Column("tokens_in", sa.Integer(), nullable=True),
+    sa.Column("tokens_out", sa.Integer(), nullable=True),
+    sa.Column("cost_usd", sa.Numeric(), nullable=True),
+    sa.Column("guardrail_cost_usd", sa.Numeric(), nullable=True),
+    sa.Column("latency_ms", sa.Integer(), nullable=True),
+    sa.Column("trace_id", sa.String(length=64), nullable=False),
+    sa.Column("error", sa.Text(), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    schema="logs",
+)
+
 guardrail_events_table = sa.Table(
     "guardrail_events",
     _metadata,

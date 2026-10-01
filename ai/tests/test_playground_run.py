@@ -4,7 +4,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main_runtime import app as runtime_app, require_runtime_auth
+from app.main_runtime import app as runtime_app
+from app.main_runtime import require_runtime_auth
 from app.services import runtime
 from app.services.runtime import run_playground_agent
 
@@ -18,7 +19,7 @@ class _FakeAgent:
     def __init__(self, **kwargs) -> None:
         self.memory = kwargs.get("memory")
 
-    def run(self, input_data: dict) -> SimpleNamespace:
+    def run(self, input_data: dict, **_kwargs) -> SimpleNamespace:
         return SimpleNamespace(output={"content": "fake reply"})
 
 
@@ -80,17 +81,13 @@ async def test_route_persists_conversation_id(fake_agent, company_ids) -> None:
     body = {"input": "hi", "user": {"external_id": "route-memory-test-user"}}
     runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(company_id)
     try:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=runtime_app), base_url="http://test"
-        ) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
             resp1 = await client.post("/ai/v1/playground/run", json=body)
             assert resp1.status_code == 200
             conversation_id = resp1.json()["conversation_id"]
             assert conversation_id
 
-            resp2 = await client.post(
-                "/ai/v1/playground/run", json={**body, "conversation_id": conversation_id}
-            )
+            resp2 = await client.post("/ai/v1/playground/run", json={**body, "conversation_id": conversation_id})
         assert resp2.status_code == 200
         assert resp2.json()["conversation_id"] == conversation_id
     finally:
