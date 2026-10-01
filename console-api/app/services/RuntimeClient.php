@@ -17,10 +17,6 @@ use RuntimeException;
  * Every call signs a 60-second internal JWT (`aud=ai-internal`, TokenIssuer::issueInternalToken())
  * and sets `X-Company-Id` from the current request's CompanyContext plus the `traceparent`
  * captured by TraceparentMiddleware, so traces span both services (PRD §6.9, §7.6).
- *
- * `/internal/v1/*` itself is still a 501 stub on the ai-runtime side (the compiler isn't
- * built yet) — this class only owns the transport, not compile logic, so it doesn't need
- * to change once that lands.
  */
 class RuntimeClient
 {
@@ -44,22 +40,42 @@ class RuntimeClient
 
     /**
      * POST /internal/v1/agents/compile — compiles an agent spec into a runnable definition
-     * used by AgentsController::publishAgentVersion() (PRD §4.4-A). Not called from there
-     * yet — AgentsController is still its own 501 stub.
+     * used by AgentsController::publishAgentVersion() (PRD §4.4-A).
      *
      * @param array<string, mixed> $spec
      * @return array<string, mixed>
      */
     public function compileAgentSpec(array $spec, string $role): array
     {
-        return $this->post('agents/compile', ['spec' => $spec, 'role' => $role]);
+        return $this->request('POST', 'agents/compile', ['spec' => $spec, 'role' => $role]);
+    }
+
+    /**
+     * PUT /internal/v1/connections/{id}/secret — envelope-encrypts the secret with the
+     * company's own DEK and stores it, used by ConnectionsController::putConnectionSecret()
+     * (PRD §7.4/§7.7). console-api itself never persists the plaintext secret.
+     */
+    public function putConnectionSecret(string $connectionId, string $secret): void
+    {
+        $this->request('PUT', "connections/{$connectionId}/secret", ['secret' => $secret]);
+    }
+
+    /**
+     * POST /internal/v1/connections/{id}/test — makes a real, cheap call to the provider
+     * to confirm the stored secret actually works, used by ConnectionsController::testConnection().
+     *
+     * @return array<string, mixed>
+     */
+    public function testConnection(string $connectionId): array
+    {
+        return $this->request('POST', "connections/{$connectionId}/test", []);
     }
 
     /**
      * @param array<string, mixed> $body
      * @return array<string, mixed>
      */
-    private function post(string $path, array $body): array
+    private function request(string $method, string $path, array $body): array
     {
         if (!$this->companyContext->hasCompanyId()) {
             throw new RuntimeException('RuntimeClient: no company_id bound for this request.');
@@ -76,19 +92,19 @@ class RuntimeClient
         }
 
         try {
-            $response = $this->http->post($path, ['headers' => $headers, 'json' => $body]);
+            $response = $this->http->request($method, $path, ['headers' => $headers, 'json' => $body]);
         } catch (RequestException $exception) {
-            // A non-2xx here means ai-runtime itself failed (including its current 501
-            // stub) — a compile *failure* is still a 200 with ok:false per the contract,
-            // so this is always a transport/service problem, never a bad spec.
+            // A non-2xx here means ai-runtime itself failed — a compile/test *failure* is
+            // still a 200 with ok:false per the contract, so this is always a
+            // transport/service problem, never a bad spec or a bad secret.
             $detail = $exception->hasResponse()
                 ? (string) $exception->getResponse()->getBody()
                 : $exception->getMessage();
 
-            throw new RuntimeException("RuntimeClient: POST {$path} failed: {$detail}", 0, $exception);
+            throw new RuntimeException("RuntimeClient: {$method} {$path} failed: {$detail}", 0, $exception);
         } catch (GuzzleException $exception) {
             throw new RuntimeException(
-                "RuntimeClient: POST {$path} failed: " . $exception->getMessage(),
+                "RuntimeClient: {$method} {$path} failed: " . $exception->getMessage(),
                 0,
                 $exception
             );

@@ -15,17 +15,24 @@ PRD §7.1/§7.6) - but `runPlayground` is the only one with real business logic 
 that; everything else is still a 501 stub - this is a bootable skeleton, not a
 feature-complete service.
 """
+import asyncio
 import logging
 from typing import Annotated, Literal
 from uuid import UUID
 
+import openai
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.auth import InvalidTokenError, verify_internal_token, verify_runtime_token
+from app.core.crypto import decrypt_with_dek, encrypt_with_dek
 from app.core.otel import setup_tracing
+from app.integrations.dynamiq_adapter import build_llm
+from app.services.company_keys import get_or_create_company_dek
 from app.services.compiler import compile_spec
+from app.services.connection_secrets import get_connection_secret, upsert_connection_secret
+from app.services.connections import resolve_connection
 from app.services.runtime import run_playground_agent
 
 logger = logging.getLogger(__name__)
@@ -81,6 +88,14 @@ def _not_implemented(operation_id: str) -> JSONResponse:
         status_code=501,
         content={"error": "not_implemented", "operation_id": operation_id},
     )
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 @app.get("/healthz")
@@ -228,14 +243,89 @@ async def recompileAllAgents(claims: InternalAuth) -> Response:
     return _not_implemented("recompileAllAgents")
 
 
-@app.put("/internal/v1/connections/{id}/secret")
-async def putConnectionSecret(id: str, body: dict, claims: InternalAuth) -> Response:
-    return _not_implemented("putConnectionSecret")
+class ConnectionSecretInput(BaseModel):
+    # ai-runtime, not console-api, owns secret storage (PRD §7.4/§7.7) - this must enforce
+    # its own minimum independently of console-api's matching `strlen($secret) < 8` check
+    # in ConnectionsController::putConnectionSecret, since this internal endpoint is
+    # reachable by any caller holding a valid internal JWT, not just console-api. Without
+    # this, an empty/too-short stored secret would later make testConnection silently fall
+    # back to whatever OPENAI_API_KEY happens to be set in this process's environment
+    # (OpenAIConnection's own default) instead of failing - reporting ok:true using a key
+    # that has nothing to do with the company's actual connection.
+    secret: str = Field(min_length=8)
 
 
-@app.post("/internal/v1/connections/{id}/test")
+class TestResult(BaseModel):
+    ok: bool
+    detail: str | None = None
+
+
+@app.put("/internal/v1/connections/{id}/secret", status_code=204)
+async def putConnectionSecret(id: str, body: ConnectionSecretInput, claims: InternalAuth) -> Response:
+    """Envelope-encrypts `body.secret` with the company's own DEK and upserts it into
+    `runtime.connection_secrets` (PRD §7.4/§7.7). A malformed or cross-company `id` is
+    404, same "indistinguishable from not found" contract as `resolve_connection` itself
+    — never an unhandled UUID parse error turning into a 500.
+    """
+    company_id = claims["company_id"]
+    if not _is_uuid(id) or await resolve_connection(company_id, id) is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    try:
+        company_dek = await get_or_create_company_dek(company_id)
+        ciphertext, nonce = encrypt_with_dek(body.secret.encode(), company_dek.dek)
+        await upsert_connection_secret(
+            company_id=company_id,
+            connection_id=id,
+            ciphertext=ciphertext,
+            nonce=nonce,
+            dek_version=company_dek.dek_version,
+        )
+    except Exception as exc:  # surface as a clear upstream error, not a 500 crash
+        logger.exception("storing connection secret failed")
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+    return Response(status_code=204)
+
+
+@app.post("/internal/v1/connections/{id}/test", response_model=TestResult)
 async def testConnection(id: str, claims: InternalAuth) -> Response:
-    return _not_implemented("testConnection")
+    """Decrypts the stored secret and makes one cheap real call to the provider
+    (`client.models.list()`, no token cost) to prove it actually works. A connection that
+    exists but has no secret stored yet, or whose provider type isn't wired for building,
+    is a normal `ok: false` — never a 404/5xx, matching the compiler's
+    "bad input is still 200 ok:false" pattern; only a genuine infra failure (DB
+    unreachable, etc) becomes the 502 below.
+    """
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    connection = await resolve_connection(company_id, id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    try:
+        stored_secret = await get_connection_secret(company_id, id)
+        if stored_secret is None:
+            return TestResult(ok=False, detail="no secret stored for this connection")
+
+        company_dek = await get_or_create_company_dek(company_id)
+        secret = decrypt_with_dek(stored_secret.ciphertext, stored_secret.nonce, company_dek.dek).decode()
+        _connection_obj, llm = build_llm(connection.type, {"api_key": secret, "url": connection.api_base})
+    except ValueError as exc:
+        return TestResult(ok=False, detail=str(exc))
+    except Exception as exc:  # surface as a clear upstream error, not a 500 crash
+        logger.exception("connection test setup failed")
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+
+    try:
+        await asyncio.to_thread(llm.client.models.list)
+    except openai.AuthenticationError as exc:
+        return TestResult(ok=False, detail=f"authentication failed: {exc}")
+    except openai.APIError as exc:
+        return TestResult(ok=False, detail=f"provider error: {exc}")
+
+    return TestResult(ok=True)
 
 
 @app.post("/internal/v1/kb/{id}/documents")

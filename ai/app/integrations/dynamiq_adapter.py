@@ -18,7 +18,11 @@ from dynamiq.nodes.llms import OpenAI as OpenAILLM
 def _build_openai(config: dict[str, Any]) -> tuple[OpenAIConnection, BaseLLM]:
     api_key = config.get("api_key")
     kwargs: dict[str, Any] = {}
-    if api_key:
+    # `is not None`, not truthiness - an explicit empty string must still be passed
+    # through and rejected downstream, not silently treated as "not provided" and fall
+    # back to OpenAIConnection's own default (the ambient OPENAI_API_KEY env var), which
+    # has nothing to do with whatever connection this call is actually supposed to use.
+    if api_key is not None:
         kwargs["api_key"] = api_key
     if config.get("url"):
         kwargs["url"] = config["url"]

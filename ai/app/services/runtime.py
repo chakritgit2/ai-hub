@@ -13,7 +13,9 @@ import time
 from uuid import uuid4
 
 from app.integrations.dynamiq_adapter import build_llm
+from app.services.agent_spec import GuardrailsSpec
 from app.services.conversations import get_or_create_conversation
+from app.services.guardrails import log_guardrail_events, run_checks
 
 
 async def run_playground_agent(
@@ -22,12 +24,13 @@ async def run_playground_agent(
     external_user_id: str | None = None,
     conversation_id: str | None = None,
     deployment_id: str | None = None,
+    guardrails: GuardrailsSpec | None = None,
 ) -> dict:
     """Build a minimal Dynamiq Agent and run it, with memory when a
     `company_id`/`external_user_id` are available to scope it to.
 
     Returns `{"output": str, "trace_id": str, "latency_ms": int,
-    "conversation_id": str | None}`.
+    "conversation_id": str | None, "guardrail_events": list}`.
 
     Raises whatever the underlying Dynamiq/OpenAI call raises (e.g. missing
     API key, provider error) - callers (see `app.main_runtime`) are
@@ -40,11 +43,32 @@ async def run_playground_agent(
     source it from the `X-Company-Id` header, matching the existing
     internal-API convention, with the trust boundary left as a documented gap
     until `verify_runtime_token`/`verify_gateway_api_key` replace it.
+
+    `guardrails` (PRD §6.4) is optional and defaults to no checks at all -
+    this skeleton has no way to resolve a deployment's/agent version's real
+    compiled guardrails config yet (Playground always runs the one hardcoded
+    agent above, not a real compiled definition), so nothing passes this in
+    today; it exists so the guardrail engine itself is callable and tested
+    end-to-end ahead of that larger, separate piece of work. When a block
+    fires on the input side, the agent is never called at all - no LLM cost
+    for a request that was always going to be rejected.
     """
     from dynamiq.nodes.agents import Agent
 
     trace_id = str(uuid4())
     started = time.monotonic()
+    guardrails = guardrails or GuardrailsSpec()
+
+    input_outcome = await run_checks(input_text, guardrails.input, stage="input")
+    if input_outcome.blocked:
+        await log_guardrail_events(company_id, run_id=None, events=input_outcome.events)
+        return {
+            "output": input_outcome.fallback_message,
+            "trace_id": trace_id,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "conversation_id": None,
+            "guardrail_events": input_outcome.events,
+        }
 
     _connection, llm = build_llm(
         "dynamiq.connections.OpenAI",
@@ -82,18 +106,26 @@ async def run_playground_agent(
     result = await asyncio.to_thread(
         agent.run,
         input_data={
-            "input": input_text,
+            "input": input_outcome.text,
             "user_id": user_id,
             "session_id": resolved_conversation_id,
         },
     )
     output = result.output.get("content") if result.output else None
 
+    output_outcome = await run_checks(output or "", guardrails.output, stage="output")
+    final_output = output_outcome.fallback_message if output_outcome.blocked else output_outcome.text
+
+    await log_guardrail_events(
+        company_id, run_id=None, events=[*input_outcome.events, *output_outcome.events]
+    )
+
     latency_ms = int((time.monotonic() - started) * 1000)
 
     return {
-        "output": output,
+        "output": final_output,
         "trace_id": trace_id,
         "latency_ms": latency_ms,
         "conversation_id": resolved_conversation_id,
+        "guardrail_events": [*input_outcome.events, *output_outcome.events],
     }

@@ -27,3 +27,40 @@ conversations_table = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     schema="runtime",
 )
+
+company_keys_table = sa.Table(
+    "company_keys",
+    _metadata,
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("wrapped_dek", sa.LargeBinary(), nullable=False),
+    sa.Column("master_key_version", sa.Integer(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("destroyed_at", sa.DateTime(timezone=True), nullable=True),
+    schema="runtime",
+)
+
+connection_secrets_table = sa.Table(
+    "connection_secrets",
+    _metadata,
+    sa.Column("connection_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("ciphertext", sa.LargeBinary(), nullable=False),
+    sa.Column("nonce", sa.LargeBinary(), nullable=False),
+    sa.Column("dek_version", sa.Integer(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    schema="runtime",
+)
+
+guardrail_events_table = sa.Table(
+    "guardrail_events",
+    _metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("run_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("stage", sa.String(length=16), nullable=False),
+    sa.Column("check", sa.String(length=64), nullable=False),
+    sa.Column("action", sa.String(length=16), nullable=False),
+    sa.Column("detail", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    schema="logs",
+)

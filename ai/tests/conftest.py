@@ -1,11 +1,14 @@
 import uuid
 
+import psycopg
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.main_gateway import app as gateway_app
-from app.main_runtime import app as runtime_app, require_internal_auth, require_runtime_auth
+from app.main_runtime import app as runtime_app
+from app.main_runtime import require_internal_auth, require_runtime_auth
 
 from .markers import fake_internal_claims, fake_runtime_claims
 
@@ -82,3 +85,49 @@ async def company_ids():
                     sa.text("DELETE FROM runtime.agent_memory WHERE metadata ->> 'session_id' = ANY(:ids)"),
                     {"ids": session_ids},
                 )
+
+
+@pytest.fixture
+def make_connection():
+    """Inserts a `console.connections` row as `console_app` (console-api's own write
+    role — `ai_app` has no write grant on this table by design, PRD §8.1) and deletes it
+    afterward. Local-dev-only credentials, matching the `changeme_local_dev_only`
+    convention used everywhere else in this repo's local setup. Shared by
+    test_compiler.py and test_connection_secret_endpoints.py."""
+    settings = get_settings()
+    created: list[tuple[str, str]] = []  # (company_id, connection_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(
+        company_id: str,
+        connection_type: str = "dynamiq.connections.OpenAI",
+        name: str = "test-connection",
+    ) -> str:
+        connection_id = str(uuid.uuid4())
+        with _connect() as conn:
+            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
+            # own freshly generated uuid4, never external input.
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.connections (id, company_id, name, type) VALUES (%s, %s, %s, %s)",
+                (connection_id, company_id, name, connection_type),
+            )
+            conn.commit()
+        created.append((company_id, connection_id))
+        return connection_id
+
+    yield _make
+
+    for company_id, connection_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.connections WHERE id = %s", (connection_id,))
+            conn.commit()

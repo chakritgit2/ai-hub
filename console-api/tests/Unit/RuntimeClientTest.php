@@ -77,6 +77,63 @@ final class RuntimeClientTest extends TestCase
         self::assertSame(['name' => 'x'], $body['spec']['identity']);
     }
 
+    public function testPutConnectionSecretSendsSignedTokenAndSecretBody(): void
+    {
+        /** @var Request|null $capturedRequest */
+        $capturedRequest = null;
+        $history = static function ($request) use (&$capturedRequest): void {
+            $capturedRequest = $request;
+        };
+
+        $mock = new MockHandler([new Response(204)]);
+        $stack = HandlerStack::create($mock);
+        $stack->push(\GuzzleHttp\Middleware::tap($history));
+        $http = new Client(['handler' => $stack, 'base_uri' => 'http://ai-runtime.invalid/internal/v1/']);
+
+        $client = $this->makeRuntimeClient($http, 'company-1');
+
+        $client->putConnectionSecret('11111111-1111-1111-1111-111111111111', 'sk-super-secret');
+
+        self::assertNotNull($capturedRequest);
+        self::assertSame('PUT', $capturedRequest->getMethod());
+        self::assertSame(
+            '/internal/v1/connections/11111111-1111-1111-1111-111111111111/secret',
+            $capturedRequest->getUri()->getPath()
+        );
+        self::assertSame('company-1', $capturedRequest->getHeaderLine('X-Company-Id'));
+        self::assertStringStartsWith('Bearer ', $capturedRequest->getHeaderLine('Authorization'));
+
+        $body = json_decode((string) $capturedRequest->getBody(), true);
+        self::assertSame('sk-super-secret', $body['secret']);
+    }
+
+    public function testTestConnectionSendsSignedTokenAndReturnsDecodedResult(): void
+    {
+        /** @var Request|null $capturedRequest */
+        $capturedRequest = null;
+        $history = static function ($request) use (&$capturedRequest): void {
+            $capturedRequest = $request;
+        };
+
+        $mock = new MockHandler([new Response(200, [], json_encode(['ok' => true]))]);
+        $stack = HandlerStack::create($mock);
+        $stack->push(\GuzzleHttp\Middleware::tap($history));
+        $http = new Client(['handler' => $stack, 'base_uri' => 'http://ai-runtime.invalid/internal/v1/']);
+
+        $client = $this->makeRuntimeClient($http, 'company-1');
+
+        $result = $client->testConnection('11111111-1111-1111-1111-111111111111');
+
+        self::assertSame(['ok' => true], $result);
+        self::assertNotNull($capturedRequest);
+        self::assertSame('POST', $capturedRequest->getMethod());
+        self::assertSame(
+            '/internal/v1/connections/11111111-1111-1111-1111-111111111111/test',
+            $capturedRequest->getUri()->getPath()
+        );
+        self::assertSame('company-1', $capturedRequest->getHeaderLine('X-Company-Id'));
+    }
+
     public function testCompileAgentSpecWithoutCompanyContextThrows(): void
     {
         $mock = new MockHandler([new Response(200, [], '{}')]);

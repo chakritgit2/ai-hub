@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     GATEWAY_JWKS_KID: str = "gw-2026-09"
 
     # --- Envelope encryption (PRD §7.7) ---
+    # Base64-encoded raw AES key bytes (32 bytes -> AES-256, matching app/core/crypto.py's
+    # AESGCM usage). Generate with:
+    #   python -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"
+    # Required outside ENVIRONMENT=development (see _derive_and_check below) - optional in
+    # development so a local setup that never touches Connections doesn't need one, but if
+    # present even in development it must still be well-formed (fail fast at startup,
+    # never silently wrap/unwrap garbage at request time).
     CONSOLE_MASTER_KEY: str | None = None
 
     # --- Runtime limits (PRD §6.2) ---
@@ -87,7 +94,47 @@ class Settings(BaseSettings):
                     f"ENVIRONMENT={self.ENVIRONMENT!r} but still using local-dev defaults for: "
                     + ", ".join(insecure)
                 )
+            _decode_master_key(self.CONSOLE_MASTER_KEY, required=True)
+        elif self.CONSOLE_MASTER_KEY is not None:
+            _decode_master_key(self.CONSOLE_MASTER_KEY, required=False)
+
         return self
+
+
+def _decode_master_key(value: str | None, *, required: bool) -> bytes | None:
+    """Shared by Settings validation (fail fast at startup) and master_key_bytes()
+    (the actual decode used at encryption time) - see app/services/company_keys.py."""
+    if value is None:
+        if required:
+            raise ValueError("CONSOLE_MASTER_KEY must be set outside development (PRD §7.7)")
+        return None
+
+    import base64
+    import binascii
+
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("CONSOLE_MASTER_KEY must be valid base64") from exc
+
+    if len(decoded) not in (16, 24, 32):
+        raise ValueError(
+            f"CONSOLE_MASTER_KEY must decode to 16, 24 or 32 bytes (AES-128/192/256), got {len(decoded)}"
+        )
+
+    return decoded
+
+
+def master_key_bytes() -> bytes:
+    """Decoded CONSOLE_MASTER_KEY, for first-use-time call sites
+    (app/services/company_keys.py) rather than Settings-construction time - lets
+    development environments construct Settings() with no key at all until something
+    actually needs encryption (Settings itself already validated the format if one is
+    present, per _derive_and_check above, so this only re-raises the "not set" case)."""
+    settings = get_settings()
+    decoded = _decode_master_key(settings.CONSOLE_MASTER_KEY, required=True)
+    assert decoded is not None  # required=True always either returns bytes or raises
+    return decoded
 
 
 @lru_cache

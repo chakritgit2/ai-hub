@@ -1,10 +1,7 @@
 import uuid
 
-import psycopg
-import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import get_settings
 from app.main_runtime import app as runtime_app
 from app.services.compiler import compile_spec
 
@@ -66,51 +63,6 @@ def test_compile_route_returns_200_for_a_bad_spec(runtime_client):
     assert body["ok"] is False
     assert body["compiled_definition"] is None
     assert len(body["errors"]) > 0
-
-
-@pytest.fixture
-def make_connection():
-    """Inserts a `console.connections` row as `console_app` (console-api's own write
-    role — `ai_app` has no write grant on this table by design, PRD §8.1) and deletes it
-    afterward. Local-dev-only credentials, matching the `changeme_local_dev_only`
-    convention used everywhere else in this repo's local setup."""
-    settings = get_settings()
-    created: list[tuple[str, str]] = []  # (company_id, connection_id)
-
-    def _connect() -> psycopg.Connection:
-        return psycopg.connect(
-            host=settings.MEMORY_DB_HOST,
-            port=settings.MEMORY_DB_PORT,
-            dbname=settings.MEMORY_DB_NAME,
-            user="console_app",
-            password="changeme_local_dev_only",
-        )
-
-    def _make(
-        company_id: str,
-        connection_type: str = "dynamiq.connections.OpenAI",
-        name: str = "test-connection",
-    ) -> str:
-        connection_id = str(uuid.uuid4())
-        with _connect() as conn:
-            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
-            # own freshly generated uuid4, never external input.
-            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
-            conn.execute(
-                "INSERT INTO console.connections (id, company_id, name, type) VALUES (%s, %s, %s, %s)",
-                (connection_id, company_id, name, connection_type),
-            )
-            conn.commit()
-        created.append((company_id, connection_id))
-        return connection_id
-
-    yield _make
-
-    for company_id, connection_id in created:
-        with _connect() as conn:
-            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
-            conn.execute("DELETE FROM console.connections WHERE id = %s", (connection_id,))
-            conn.commit()
 
 
 @requires_postgres
@@ -175,3 +127,59 @@ async def test_compile_allows_admin_past_the_allowlist_but_still_fails_to_build(
     assert result["ok"] is False
     assert "not allowed for role" not in result["errors"][0]["message"]
     assert "Unsupported connection type" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_includes_guardrails_in_compiled_definition(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    spec = {
+        **_valid_spec(connection_id),
+        "guardrails": {
+            "input": [{"check_type": "max_length", "action": "block", "max_length": 4000}],
+            "output": [{"check_type": "valid_json", "action": "flag"}],
+        },
+    }
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    guardrails = result["compiled_definition"]["guardrails"]
+    assert guardrails["input"][0]["check_type"] == "max_length"
+    assert guardrails["output"][0]["check_type"] == "valid_json"
+
+
+async def test_compile_rejects_mask_action_on_max_length_check():
+    spec = {
+        **_valid_spec(str(uuid.uuid4())),
+        "guardrails": {"input": [{"check_type": "max_length", "action": "mask", "max_length": 100}]},
+    }
+
+    result = await compile_spec(spec, "developer", str(uuid.uuid4()))
+
+    assert result["ok"] is False
+    assert any(error["path"].startswith("guardrails") for error in result["errors"])
+
+
+async def test_compile_rejects_regex_blocklist_without_pattern():
+    spec = {
+        **_valid_spec(str(uuid.uuid4())),
+        "guardrails": {"input": [{"check_type": "regex_blocklist", "action": "block"}]},
+    }
+
+    result = await compile_spec(spec, "developer", str(uuid.uuid4()))
+
+    assert result["ok"] is False
+    assert any(error["path"].startswith("guardrails") for error in result["errors"])
+
+
+async def test_compile_rejects_valid_json_check_in_input_list():
+    spec = {
+        **_valid_spec(str(uuid.uuid4())),
+        "guardrails": {"input": [{"check_type": "valid_json", "action": "block"}]},
+    }
+
+    result = await compile_spec(spec, "developer", str(uuid.uuid4()))
+
+    assert result["ok"] is False
+    assert any(error["path"].startswith("guardrails") for error in result["errors"])

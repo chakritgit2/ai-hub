@@ -1,17 +1,22 @@
-"""Agent spec schema — slice 1: Identity + Model only (PRD §6.1/§6.1a).
+"""Agent spec schema — slice 1: Identity + Model (PRD §6.1/§6.1a); slice 2: Guardrails
+(PRD §6.4).
 
-Tools/Knowledge/Skills/Memory/Guardrails/Advanced tabs exist in the web editor
-already (every tab's data is sent in the spec regardless of which ones have a
-real backing table), but none of those sections have CRUD or a schema behind
-them yet — `AgentSpecDoc` only validates `identity`/`model` and silently
-ignores anything else (`model_config = ConfigDict(extra="ignore")`), rather
-than rejecting a spec just because of an empty `tools: []`.
+Tools/Knowledge/Skills/Memory/Advanced tabs exist in the web editor already (every tab's
+data is sent in the spec regardless of which ones have a real backing table), but none of
+those sections have CRUD or a schema behind them yet — `AgentSpecDoc` only validates
+`identity`/`model`/`guardrails` and silently ignores anything else
+(`model_config = ConfigDict(extra="ignore")`), rather than rejecting a spec just because
+of an empty `tools: []`.
 
 `AgentIdentitySpec`'s fields mirror `web/src/lib/api/types.ts`'s
 `AgentIdentity` exactly — this is the one spec shape the editor already
-commits to, not a new design.
+commits to, not a new design. No committed `GuardrailsSpec` shape exists yet on the web
+side (that tab isn't typed there), so this is a fresh design driven directly by PRD §6.4.
 """
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+import re
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AgentIdentitySpec(BaseModel):
@@ -48,11 +53,77 @@ class ModelSpec(BaseModel):
         return value
 
 
+GuardrailCheckType = Literal["max_length", "regex_blocklist", "pii", "valid_json", "valid_choices"]
+GuardrailAction = Literal["block", "mask", "flag"]
+
+# Checks with no identifiable "matched span" to redact - block/flag only, never mask.
+_NO_MASK_CHECK_TYPES: frozenset[GuardrailCheckType] = frozenset({"max_length", "valid_json", "valid_choices"})
+# Checks that only make sense against the model's output, never the user's input.
+_OUTPUT_ONLY_CHECK_TYPES: frozenset[GuardrailCheckType] = frozenset({"valid_json", "valid_choices"})
+
+
+class GuardrailCheckSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    # Named `check_type`, not `type` - `node_allowlist.find_disallowed_types()` walks
+    # `compiled_definition` collecting every string under a literal `"type"` key to
+    # enforce the role-based node-type allowlist; a guardrail check sharing that key name
+    # would get its check kind (e.g. "max_length") misread as a disallowed dynamiq node
+    # type and fail compilation for every spec that uses guardrails.
+    check_type: GuardrailCheckType
+    action: GuardrailAction
+    on_error: Literal["block", "flag"] = "flag"
+    fallback_message: str | None = None
+
+    # check_type == "max_length"
+    max_length: int | None = Field(default=None, gt=0)
+    # check_type == "regex_blocklist"
+    pattern: str | None = None
+    # check_type == "valid_choices"
+    choices: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _validate_type_specific_params(self) -> "GuardrailCheckSpec":
+        if self.action == "mask" and self.check_type in _NO_MASK_CHECK_TYPES:
+            raise ValueError(f"{self.check_type!r} checks don't support action='mask' (nothing to redact)")
+
+        if self.check_type == "max_length" and self.max_length is None:
+            raise ValueError("max_length check requires 'max_length'")
+
+        if self.check_type == "regex_blocklist":
+            if not self.pattern:
+                raise ValueError("regex_blocklist check requires 'pattern'")
+            try:
+                re.compile(self.pattern)
+            except re.error as exc:
+                raise ValueError(f"regex_blocklist 'pattern' does not compile: {exc}") from exc
+
+        if self.check_type == "valid_choices" and not self.choices:
+            raise ValueError("valid_choices check requires a non-empty 'choices' list")
+
+        return self
+
+
+class GuardrailsSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    input: list[GuardrailCheckSpec] = Field(default_factory=list)
+    output: list[GuardrailCheckSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_output_only_checks_not_in_input(self) -> "GuardrailsSpec":
+        offending = [check.check_type for check in self.input if check.check_type in _OUTPUT_ONLY_CHECK_TYPES]
+        if offending:
+            raise ValueError(f"check types not valid for input: {offending}")
+        return self
+
+
 class AgentSpecDoc(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     identity: AgentIdentitySpec
     model: ModelSpec
+    guardrails: GuardrailsSpec = Field(default_factory=GuardrailsSpec)
 
 
 def render_identity_prompt(identity: AgentIdentitySpec) -> str:
