@@ -75,7 +75,9 @@ class RuntimeTokenController extends ControllerBase
 
             $db->commit();
 
-            return $row !== false;
+            // fetchOne()'s declared return type is `array`, not `array|false` — see the
+            // same note in AuthService::syncUser().
+            return !empty($row);
         } catch (\Throwable $exception) {
             $db->rollback();
 

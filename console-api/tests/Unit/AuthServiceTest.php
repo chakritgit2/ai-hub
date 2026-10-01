@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ConsoleApi\Tests\Unit;
 
+use ConsoleApi\Services\AuditLogger;
 use ConsoleApi\Services\AuthService;
 use ConsoleApi\Services\InvalidSsoTokenException;
 use Firebase\JWT\JWT;
@@ -100,6 +101,43 @@ final class AuthServiceTest extends TestCase
         $service->verifySsoJwt($jwt);
     }
 
+    public function testSyncUserAuditsEachSkippedCompanyRef(): void
+    {
+        /** @var AbstractPdo&\PHPUnit\Framework\MockObject\MockObject $db */
+        $db = $this->createMock(AbstractPdo::class);
+        // 1st fetchOne: existing user lookup (found) — 2nd: company lookup (not found,
+        // ref has no matching console.companies.external_ref). fetchOne()'s declared
+        // return type is `array`, so "not found" is an empty array here, never false —
+        // see the note in AuthService::syncUser().
+        $db->method('fetchOne')->willReturnOnConsecutiveCalls(
+            ['id' => 'user-1', 'is_platform_admin' => false],
+            []
+        );
+        $db->expects(self::never())->method('begin');
+
+        /** @var AuditLogger&\PHPUnit\Framework\MockObject\MockObject $auditLogger */
+        $auditLogger = $this->createMock(AuditLogger::class);
+        $auditLogger->expects(self::once())->method('log')->with(
+            null,
+            'user-1',
+            'sso_login_company_skipped',
+            'companies',
+            'unregistered-co',
+            ['role' => 'admin']
+        );
+
+        $service = new AuthService('https://sso.example.internal/jwks.json', '', '', $db, $auditLogger);
+
+        $result = $service->syncUser([
+            'sub' => 'sso-user-1',
+            'email' => 'alice@example.com',
+            'companies' => [['ref' => 'unregistered-co', 'role' => 'admin']],
+        ]);
+
+        self::assertSame(['unregistered-co'], $result['skipped_company_refs']);
+        self::assertSame([], $result['companies']);
+    }
+
     /**
      * Generates a fresh RSA keypair, wires a Guzzle MockHandler that serves its JWKS for
      * $jwksUrl (out-param), and returns an AuthService pointed at it. $privateKey is also
@@ -136,8 +174,10 @@ final class AuthServiceTest extends TestCase
 
         /** @var AbstractPdo&\PHPUnit\Framework\MockObject\MockObject $db */
         $db = $this->createMock(AbstractPdo::class);
+        /** @var AuditLogger&\PHPUnit\Framework\MockObject\MockObject $auditLogger */
+        $auditLogger = $this->createMock(AuditLogger::class);
 
-        return new AuthService($jwksUrl, self::ISSUER, self::AUDIENCE, $db, $http);
+        return new AuthService($jwksUrl, self::ISSUER, self::AUDIENCE, $db, $auditLogger, $http);
     }
 
     /**

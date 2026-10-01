@@ -33,6 +33,7 @@ class AuthService
         private readonly string $issuer,
         private readonly string $audience,
         private readonly AbstractPdo $db,
+        private readonly AuditLogger $auditLogger,
         private readonly Client $http = new Client(['timeout' => 5])
     ) {
     }
@@ -94,8 +95,9 @@ class AuthService
      * (PRD §7.1, called by AuthMiddleware on every request). Company refs with no
      * matching `console.companies.external_ref` are skipped rather than auto-created —
      * companies are provisioned by platform_admin only (PRD §7.2) — matching PRD §12's
-     * "JWT company not yet registered: company skipped + audit" edge case (audit logging
-     * itself is AuditMiddleware's job, still a stub — see app/middleware/AuditMiddleware.php).
+     * "JWT company not yet registered: company skipped + audit" edge case; each skip
+     * writes a `company_id: null` audit_logs row via AuditLogger (visible only to
+     * console_platform — see db/migrations/post/002_rls_policies.sql).
      *
      * Each company's membership row is written in its own transaction with
      * `app.company_id` set to that company (via CompanyContext), because
@@ -120,7 +122,11 @@ class AuthService
             ['sub' => $claims['sub']]
         );
 
-        if ($user === false) {
+        // fetchOne()'s declared return type is `array` (not `array|false`) — a "no row"
+        // result is an empty array, not false, even though the underlying PDO driver it
+        // wraps returns false. Check emptiness, not identity, so this holds regardless of
+        // which one a given Phalcon build actually does.
+        if (empty($user)) {
             $user = $this->db->fetchOne(
                 'INSERT INTO console.users (external_sub, email) VALUES (:sub, :email)
                  RETURNING id, is_platform_admin',
@@ -145,8 +151,16 @@ class AuthService
                 ['ref' => $entry['ref']]
             );
 
-            if ($company === false) {
+            if (empty($company)) {
                 $skippedRefs[] = $entry['ref'];
+                $this->auditLogger->log(
+                    null,
+                    $userId,
+                    'sso_login_company_skipped',
+                    'companies',
+                    $entry['ref'],
+                    ['role' => $entry['role']]
+                );
                 continue;
             }
 

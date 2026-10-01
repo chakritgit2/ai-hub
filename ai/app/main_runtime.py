@@ -10,19 +10,22 @@ PRD §9.2 - see the comment on `internal_router` below):
 Every route's function name matches the `operationId` in
 `dynamiq-console/contracts/openapi/ai-public.yaml` /
 `ai-internal.yaml` exactly, so the contract can be traced 1:1 to this code.
-Only `runPlayground` is a real, working implementation; everything else is a
-501 stub - this is a bootable skeleton, not a feature-complete service.
+Every route sits behind real auth (`require_runtime_auth` / `require_internal_auth`,
+PRD §7.1/§7.6) - but `runPlayground` is the only one with real business logic past
+that; everything else is still a 501 stub - this is a bootable skeleton, not a
+feature-complete service.
 """
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
-from app.core.auth import InvalidTokenError, verify_runtime_token
+from app.core.auth import InvalidTokenError, verify_internal_token, verify_runtime_token
 from app.core.otel import setup_tracing
+from app.services.compiler import compile_spec
 from app.services.runtime import run_playground_agent
 
 logger = logging.getLogger(__name__)
@@ -48,6 +51,29 @@ async def require_runtime_auth(
         return verify_runtime_token(token)
     except InvalidTokenError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+async def require_internal_auth(
+    authorization: Annotated[str | None, Header()] = None,
+    x_company_id: Annotated[str | None, Header(alias="X-Company-Id")] = None,
+) -> dict:
+    """Verifies the 60-second console-api -> ai-runtime internal call token
+    (PRD §9.2/§7.6, `aud=ai-internal`). `X-Company-Id` is required by every
+    `/internal/v1/*` operation (ai-internal.yaml) but isn't itself part of the
+    token's claims — RuntimeClient sends it as a separate header (PRD §7.6).
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing_authorization_header")
+    if not x_company_id:
+        raise HTTPException(status_code=400, detail="company_id_required")
+
+    token = authorization.split(" ", 1)[1]
+    try:
+        claims = verify_internal_token(token)
+    except InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    return {**claims, "company_id": x_company_id}
 
 
 def _not_implemented(operation_id: str) -> JSONResponse:
@@ -104,10 +130,13 @@ class RunResult(BaseModel):
     trace_id: str
 
 
+RuntimeAuth = Annotated[dict, Depends(require_runtime_auth)]
+
+
 @app.post("/ai/v1/playground/run", response_model=RunResult)
 async def runPlayground(
     body: RunRequest,
-    claims: Annotated[dict, Depends(require_runtime_auth)],
+    claims: RuntimeAuth,
 ) -> RunResult:
     """Run a given agent version synchronously (PRD §4.4-B).
 
@@ -138,16 +167,13 @@ async def runPlayground(
 
 
 @app.post("/ai/v1/playground/stream")
-async def runPlaygroundStream(
-    body: RunRequest,
-    claims: Annotated[dict, Depends(require_runtime_auth)],
-) -> Response:
+async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> Response:
     """Run a given agent version over SSE (PRD §6.2). Stub — auth is real."""
     return _not_implemented("runPlaygroundStream")
 
 
 @app.post("/ai/v1/runs/{id}/cancel")
-async def cancelRun(id: str, claims: Annotated[dict, Depends(require_runtime_auth)]) -> Response:
+async def cancelRun(id: str, claims: RuntimeAuth) -> Response:
     return _not_implemented("cancelRun")
 
 
@@ -159,63 +185,96 @@ async def cancelRun(id: str, claims: Annotated[dict, Depends(require_runtime_aut
 # it on the same app/port for simplicity of the boot check.
 
 
-@app.post("/internal/v1/agents/compile")
-async def compileAgentSpec(body: dict) -> Response:
-    return _not_implemented("compileAgentSpec")
+InternalAuth = Annotated[dict, Depends(require_internal_auth)]
+
+
+class CompileRequest(BaseModel):
+    spec: dict
+    role: Literal["admin", "developer", "viewer"]
+
+
+class CompileError(BaseModel):
+    path: str
+    message: str
+
+
+class CompileResult(BaseModel):
+    ok: bool
+    compiled_definition: dict | None = None
+    compiler_version: str | None = None
+    dynamiq_version: str | None = None
+    errors: list[CompileError] = []
+
+
+@app.post("/internal/v1/agents/compile", response_model=CompileResult)
+async def compileAgentSpec(body: CompileRequest, claims: InternalAuth) -> Response:
+    """Validates + compiles an agent spec into a runnable Dynamiq definition (PRD §4.4-A,
+    §6.1). REAL for Identity + Model (`app.services.compiler.compile_spec`) — Tools/
+    Knowledge/Skills/Guardrails sections have no backing schema yet and are ignored.
+    Compile failures (bad spec, cross-company connection, disallowed node type) are a
+    normal 200 with `ok: false`, never a 4xx/5xx — only a genuine infra failure (e.g. DB
+    unreachable) becomes the 502 below.
+    """
+    try:
+        result = await compile_spec(body.spec, body.role, claims["company_id"])
+    except Exception as exc:  # surface as a clear upstream error, not a 500 crash
+        logger.exception("agent spec compilation failed")
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+    return CompileResult(**result)
 
 
 @app.post("/internal/v1/agents/recompile-all")
-async def recompileAllAgents() -> Response:
+async def recompileAllAgents(claims: InternalAuth) -> Response:
     return _not_implemented("recompileAllAgents")
 
 
 @app.put("/internal/v1/connections/{id}/secret")
-async def putConnectionSecret(id: str, body: dict) -> Response:
+async def putConnectionSecret(id: str, body: dict, claims: InternalAuth) -> Response:
     return _not_implemented("putConnectionSecret")
 
 
 @app.post("/internal/v1/connections/{id}/test")
-async def testConnection(id: str) -> Response:
+async def testConnection(id: str, claims: InternalAuth) -> Response:
     return _not_implemented("testConnection")
 
 
 @app.post("/internal/v1/kb/{id}/documents")
-async def enqueueKbDocumentIndexing(id: str, body: dict) -> Response:
+async def enqueueKbDocumentIndexing(id: str, body: dict, claims: InternalAuth) -> Response:
     """Phase 2."""
     return _not_implemented("enqueueKbDocumentIndexing")
 
 
 @app.post("/internal/v1/kb/{id}/search")
-async def searchKnowledgeBase(id: str, body: dict) -> Response:
+async def searchKnowledgeBase(id: str, body: dict, claims: InternalAuth) -> Response:
     """Phase 2."""
     return _not_implemented("searchKnowledgeBase")
 
 
 @app.get("/internal/v1/kb/{id}/export")
-async def exportKnowledgeBase(id: str) -> Response:
+async def exportKnowledgeBase(id: str, claims: InternalAuth) -> Response:
     """Phase 2."""
     return _not_implemented("exportKnowledgeBase")
 
 
 @app.post("/internal/v1/evals/estimate")
-async def estimateEvalCost(body: dict) -> Response:
+async def estimateEvalCost(body: dict, claims: InternalAuth) -> Response:
     """Phase 3."""
     return _not_implemented("estimateEvalCost")
 
 
 @app.post("/internal/v1/evals")
-async def createEvalRun(body: dict) -> Response:
+async def createEvalRun(body: dict, claims: InternalAuth) -> Response:
     """Phase 3."""
     return _not_implemented("createEvalRun")
 
 
 @app.post("/internal/v1/evals/{id}/cancel")
-async def cancelEvalRun(id: str) -> Response:
+async def cancelEvalRun(id: str, claims: InternalAuth) -> Response:
     """Phase 3."""
     return _not_implemented("cancelEvalRun")
 
 
 @app.post("/internal/v1/approvals/{id}")
-async def decideApproval(id: str, body: dict) -> Response:
+async def decideApproval(id: str, body: dict, claims: InternalAuth) -> Response:
     """Phase 2."""
     return _not_implemented("decideApproval")

@@ -5,9 +5,9 @@ import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
 from app.main_gateway import app as gateway_app
-from app.main_runtime import app as runtime_app, require_runtime_auth
+from app.main_runtime import app as runtime_app, require_internal_auth, require_runtime_auth
 
-from .markers import fake_runtime_claims
+from .markers import fake_internal_claims, fake_runtime_claims
 
 
 @pytest.fixture
@@ -15,13 +15,17 @@ def runtime_client(request) -> TestClient:
     """`request.param`, if set (via `@pytest.mark.parametrize` or
     `pytest.fixture(params=...)`), is a company_id to bake into the fake verified
     runtime-token claims (see markers.fake_runtime_claims); otherwise company_id
-    defaults to "" (no memory)."""
+    defaults to "" (no memory). Also bypasses the internal-call auth (markers.
+    fake_internal_claims) so existing stub-wiring tests don't all need their own
+    internal token — tests that care about enforcement use a bare TestClient instead."""
     company_id = getattr(request, "param", "")
     runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(company_id)
+    runtime_app.dependency_overrides[require_internal_auth] = fake_internal_claims()
     try:
         yield TestClient(runtime_app)
     finally:
         runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+        runtime_app.dependency_overrides.pop(require_internal_auth, None)
 
 
 @pytest.fixture

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use ConsoleApi\Services\AuditLogger;
 use ConsoleApi\Services\AuthService;
 use ConsoleApi\Services\CompanyContext;
 use ConsoleApi\Services\ConsoleJwks;
@@ -76,16 +77,30 @@ $di->setShared('authService', function () {
         (string) $config->jwksUrl,
         (string) $config->issuer,
         (string) $config->audience,
-        $this->getShared('db')
+        $this->getShared('db'),
+        $this->getShared('auditLogger')
     );
 });
 
-// Stub — console-api -> ai-runtime /internal/v1/* Guzzle client (PRD §7.6).
+// Writes console.audit_logs rows (PRD §8.1/§8.2) — used by AuthService (company-skip
+// events) and AuditMiddleware (one row per successful mutating request).
+$di->setShared('auditLogger', function () {
+    return new AuditLogger($this->getShared('db'));
+});
+
+// console-api -> ai-runtime /internal/v1/* Guzzle client (PRD §7.6). The endpoints
+// themselves are still 501 on the ai-runtime side (no compiler yet) — this only owns
+// the transport (internal JWT + X-Company-Id + traceparent).
 $di->setShared('runtimeClient', function () {
     /** @var \Phalcon\Config\Config $config */
     $config = $this->getShared('config')->aiRuntime;
 
-    return new RuntimeClient((string) $config->internalBaseUrl, (int) $config->timeoutSeconds);
+    return new RuntimeClient(
+        (string) $config->internalBaseUrl,
+        (int) $config->timeoutSeconds,
+        $this->getShared('tokenIssuer'),
+        $this->getShared('companyContext')
+    );
 });
 
 // Issues the 5-minute Playground runtime JWT and the 60-second internal call JWT

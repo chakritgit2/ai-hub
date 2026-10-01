@@ -34,6 +34,17 @@ ALTER TABLE console.api_keys FORCE ROW LEVEL SECURITY;
 CREATE POLICY company_isolation ON console.api_keys
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
 
+-- audit_logs.company_id is nullable (platform-level events, e.g. an SSO login claiming an
+-- unregistered company ref — PRD §12) — the WITH CHECK clause lets those rows insert with
+-- no app.company_id set at all, but the USING clause still means a NULL-company row can
+-- never match any company's app.company_id, so only platform_admin_read_all below can
+-- ever read them back.
+ALTER TABLE console.audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE console.audit_logs FORCE ROW LEVEL SECURITY;
+CREATE POLICY company_isolation ON console.audit_logs
+  USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid)
+  WITH CHECK (company_id IS NULL OR company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
+
 -- console_platform (platform_admin) gets an explicit cross-company read policy per table,
 -- not BYPASSRLS (PRD §7.3).
 CREATE POLICY platform_admin_read_all ON console.company_members
@@ -48,6 +59,8 @@ CREATE POLICY platform_admin_read_all ON console.deployments
   FOR SELECT TO console_platform USING (true);
 CREATE POLICY platform_admin_read_all ON console.api_keys
   FOR SELECT TO console_platform USING (true);
+CREATE POLICY platform_admin_read_all ON console.audit_logs
+  FOR SELECT TO console_platform USING (true);
 
 -- App roles never own tables — ownership stays with db_owner (used only for migrations).
 ALTER TABLE console.companies OWNER TO db_owner;
@@ -58,8 +71,10 @@ ALTER TABLE console.agents OWNER TO db_owner;
 ALTER TABLE console.agent_versions OWNER TO db_owner;
 ALTER TABLE console.deployments OWNER TO db_owner;
 ALTER TABLE console.api_keys OWNER TO db_owner;
+ALTER TABLE console.audit_logs OWNER TO db_owner;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   console.companies, console.users, console.company_members, console.connections,
-  console.agents, console.agent_versions, console.deployments, console.api_keys
+  console.agents, console.agent_versions, console.deployments, console.api_keys,
+  console.audit_logs
 TO console_app, console_platform;

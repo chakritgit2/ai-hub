@@ -6,10 +6,13 @@ serving every `/admin/v1/*` route defined in
 
 This is a bootable **skeleton**: routing, DI, config, migrations and middleware are real;
 almost every controller action returns `501 {"error": "not_implemented"}` until the
-corresponding service (`RuntimeClient`, `TokenIssuer`, ...) is built out.
-`GET /healthz` is fully real; `GET /me` and every other `/admin/v1/*` route now require a
-verified SSO JWT (see `AuthService`/`AuthMiddleware` below) but still 501 past that, except
-`/me` itself, which returns the real synced user.
+corresponding business logic (the agent compiler, guardrails, quotas, ...) is built out.
+`GET /healthz` is fully real; `GET /me`, `GET /admin/.well-known/jwks.json` and every other
+`/admin/v1/*` route now require a verified SSO JWT (see `AuthService`/`AuthMiddleware`
+below). `RuntimeClient`/`TokenIssuer` are real too — console-api can mint and verify its
+own runtime/internal tokens and call ai-runtime's `/internal/v1/*` — but every mutating
+admin controller (Agents, Connections, Deployments, ...) still 501s past auth; `/me` and
+`/runtime-token` are the two that do something real.
 
 ## Route -> operationId -> controller method mapping
 
@@ -69,7 +72,12 @@ for `web/`'s generated TS client from day one.
      `SSO_ISSUER` / `SSO_AUDIENCE` are just env-configurable for now.
    - `CompanyContextMiddleware` (`dispatch:beforeDispatch`) — **real**, binds the
      `X-Company-Id` header into the shared `CompanyContext` service.
-   - `AuditMiddleware` (`dispatch:afterDispatch`) — **stub**, will write `audit_logs` rows.
+   - `AuditMiddleware` (`dispatch:afterDispatch`) — **real**: writes one `console.audit_logs`
+     row per successful (2xx) mutating (`POST`/`PUT`/`PATCH`/`DELETE`) request, via
+     `AuditLogger`. `AuthService::syncUser()` also calls `AuditLogger` directly for PRD §12's
+     "company skipped" edge case (a `company_id: null` row, visible only to
+     `console_platform` — see `db/migrations/post/002_rls_policies.sql`). `diff` is left
+     null for now — no mutating controller captures before/after state yet.
 4. Every controller action returns a `Phalcon\Http\Response` directly
    (`$application->useImplicitView(false)`), so there's no Volt/view layer to configure.
 5. A top-level `try/catch` in `public/index.php` turns dispatcher/router failures into a
@@ -117,8 +125,9 @@ app/
 │   ├── ControllerBase.php   # jsonResponse()/notImplemented()/getCompanyId()/getAuthUser()
 │   └── admin/                # one controller per OpenAPI first-path-segment
 ├── models/         # Phalcon\Mvc\Model, schema `console`
-├── services/       # AuthService (real), CompanyContext, RuntimeClient (stub), TokenIssuer (stub)
-└── middleware/      # Traceparent, Auth (real), CompanyContext, Audit (stub)
+├── services/       # AuthService, CompanyContext, RuntimeClient, TokenIssuer, AuditLogger,
+│                   # ConsoleJwks — all real
+└── middleware/      # Traceparent, Auth, CompanyContext, Audit — all real
 db/migrations/       # Phinx — tables in schema `console`
 tests/               # PHPUnit
 ```

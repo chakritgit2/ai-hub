@@ -61,3 +61,13 @@ def fake_runtime_claims(company_id: str = ""):
         }
 
     return _claims
+
+
+def fake_internal_claims(company_id: str = "test-company"):
+    """Stands in for a verified internal call token (PRD §9.2/§7.6) via FastAPI's
+    `dependency_overrides`."""
+
+    def _claims() -> dict:
+        return {"company_id": company_id}
+
+    return _claims
