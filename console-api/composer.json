@@ -38,6 +38,6 @@
     },
     "scripts": {
         "test": "phpunit",
-        "serve": "php -S localhost:8091 -t public"
+        "serve": "php -S localhost:8000 -t public public/index.php"
     }
 }

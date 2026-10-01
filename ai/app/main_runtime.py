@@ -17,10 +17,11 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import FastAPI, Header, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+from app.core.auth import InvalidTokenError, verify_runtime_token
 from app.core.otel import setup_tracing
 from app.services.runtime import run_playground_agent
 
@@ -28,6 +29,25 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ai-runtime")
 setup_tracing(app)
+
+
+async def require_runtime_auth(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict:
+    """Verifies the 5-minute Playground runtime token (PRD §4.4-B/§7.6).
+
+    Returns the decoded claims (`company_id`, `user_id`, `role`,
+    `agent_version_id`) so handlers use the token's company_id rather than a
+    client-supplied header.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing_authorization_header")
+
+    token = authorization.split(" ", 1)[1]
+    try:
+        return verify_runtime_token(token)
+    except InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 def _not_implemented(operation_id: str) -> JSONResponse:
@@ -87,26 +107,22 @@ class RunResult(BaseModel):
 @app.post("/ai/v1/playground/run", response_model=RunResult)
 async def runPlayground(
     body: RunRequest,
-    x_company_id: Annotated[UUID | None, Header(alias="X-Company-Id")] = None,
+    claims: Annotated[dict, Depends(require_runtime_auth)],
 ) -> RunResult:
     """Run a given agent version synchronously (PRD §4.4-B).
 
     REAL: builds and runs an actual Dynamiq Agent via
     `app.services.runtime.run_playground_agent`, with memory wired for real
-    (PRD §6.2). In production this would resolve the agent version/connection
-    from Postgres per-company; this skeleton always runs a single hardcoded
-    OpenAI-backed agent.
-
-    `X-Company-Id` is a temporary stand-in for real auth (`app.core.auth` is
-    still a stub) - it scopes conversation memory per PRD §7.3's isolation
-    model even though the header isn't cryptographically verified yet. When
-    it's absent (or no `user.external_id` is given), the run proceeds without
-    memory, matching this route's previous behaviour.
+    (PRD §6.2), and real runtime-token verification (`require_runtime_auth`)
+    instead of trusting a client-supplied `X-Company-Id` header. In production
+    this would resolve the agent version/connection from Postgres per-company;
+    this skeleton always runs a single hardcoded OpenAI-backed agent — the
+    token's `agent_version_id` claim isn't used to pick one yet.
     """
     try:
         result = await run_playground_agent(
             body.input,
-            company_id=str(x_company_id) if x_company_id else "",
+            company_id=claims["company_id"],
             external_user_id=body.user.external_id if body.user else None,
             conversation_id=body.conversation_id,
         )
@@ -122,13 +138,16 @@ async def runPlayground(
 
 
 @app.post("/ai/v1/playground/stream")
-async def runPlaygroundStream(body: RunRequest) -> Response:
-    """Run a given agent version over SSE (PRD §6.2). Stub."""
+async def runPlaygroundStream(
+    body: RunRequest,
+    claims: Annotated[dict, Depends(require_runtime_auth)],
+) -> Response:
+    """Run a given agent version over SSE (PRD §6.2). Stub — auth is real."""
     return _not_implemented("runPlaygroundStream")
 
 
 @app.post("/ai/v1/runs/{id}/cancel")
-async def cancelRun(id: str) -> Response:
+async def cancelRun(id: str, claims: Annotated[dict, Depends(require_runtime_auth)]) -> Response:
     return _not_implemented("cancelRun")
 
 

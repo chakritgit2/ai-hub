@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use ConsoleApi\Services\AuthService;
 use ConsoleApi\Services\CompanyContext;
+use ConsoleApi\Services\ConsoleJwks;
 use ConsoleApi\Services\RuntimeClient;
 use ConsoleApi\Services\TokenIssuer;
 use Phalcon\Db\Adapter\Pdo\Postgresql as PdoPostgresql;
@@ -66,12 +67,17 @@ $di->setShared('companyContext', function () {
     return new CompanyContext();
 });
 
-// Stub — SSO JWT verification (PRD §7.1/§7.6).
+// SSO JWT verification + user/company sync (PRD §7.1/§7.6).
 $di->setShared('authService', function () {
     /** @var \Phalcon\Config\Config $config */
     $config = $this->getShared('config')->sso;
 
-    return new AuthService((string) $config->jwksUrl, (string) $config->issuer, (string) $config->audience);
+    return new AuthService(
+        (string) $config->jwksUrl,
+        (string) $config->issuer,
+        (string) $config->audience,
+        $this->getShared('db')
+    );
 });
 
 // Stub — console-api -> ai-runtime /internal/v1/* Guzzle client (PRD §7.6).
@@ -82,12 +88,29 @@ $di->setShared('runtimeClient', function () {
     return new RuntimeClient((string) $config->internalBaseUrl, (int) $config->timeoutSeconds);
 });
 
-// Stub — issues the 5-minute Playground runtime JWT (PRD §4.4-B/§7.6).
+// Issues the 5-minute Playground runtime JWT and the 60-second internal call JWT
+// (PRD §4.4-B/§7.6) — both signed with the same key, verified by ai-runtime via
+// consoleJwks below.
 $di->setShared('tokenIssuer', function () {
     /** @var \Phalcon\Config\Config $config */
     $config = $this->getShared('config')->consoleJwt;
 
-    return new TokenIssuer((string) $config->privateKeyPath, (string) $config->kid);
+    return new TokenIssuer(
+        (string) $config->privateKeyPath,
+        (string) $config->kid,
+        (string) $config->issuer,
+        (string) $config->runtimeTokenAudience,
+        (string) $config->internalJwtAudience
+    );
+});
+
+// Public JWKS derived from the same signing key (PRD §7.6) — served unauthenticated
+// at GET /admin/.well-known/jwks.json by JwksController.
+$di->setShared('consoleJwks', function () {
+    /** @var \Phalcon\Config\Config $config */
+    $config = $this->getShared('config')->consoleJwt;
+
+    return new ConsoleJwks((string) $config->privateKeyPath, (string) $config->kid);
 });
 
 return $di;

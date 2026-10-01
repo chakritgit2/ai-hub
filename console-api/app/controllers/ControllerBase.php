@@ -40,4 +40,21 @@ abstract class ControllerBase extends Controller
 
         return $context->getCompanyId();
     }
+
+    /**
+     * The authenticated user's synced record, attached by AuthMiddleware after verifying
+     * the SSO JWT (PRD §7.1). Null only on the exempt /healthz route.
+     *
+     * @return array{
+     *     id: string,
+     *     email: string,
+     *     is_platform_admin: bool,
+     *     companies: array<int, array{company_id: string, role: string}>,
+     *     skipped_company_refs: array<int, string>
+     * }|null
+     */
+    protected function getAuthUser(): ?array
+    {
+        return $this->dispatcher->getParam('authUser');
+    }
 }

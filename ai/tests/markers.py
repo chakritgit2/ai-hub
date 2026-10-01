@@ -45,3 +45,19 @@ requires_openai_key = pytest.mark.skipif(
     not os.environ.get("OPENAI_API_KEY"),
     reason="OPENAI_API_KEY not set - skipping live Dynamiq Agent call",
 )
+
+
+def fake_runtime_claims(company_id: str = ""):
+    """Stands in for a verified runtime token (PRD §4.4-B) via FastAPI's
+    `dependency_overrides` — company_id defaults to "" (no memory), matching the
+    pre-auth default of an absent X-Company-Id header."""
+
+    def _claims() -> dict:
+        return {
+            "company_id": company_id,
+            "user_id": "test-user",
+            "role": "developer",
+            "agent_version_id": "00000000-0000-0000-0000-000000000000",
+        }
+
+    return _claims

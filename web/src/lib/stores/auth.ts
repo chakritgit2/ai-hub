@@ -1,20 +1,27 @@
 import { writable } from 'svelte/store';
+import { browser } from '$app/environment';
 import type { Me } from '$lib/api/types';
+import { getMe } from '$lib/api/console';
 
-// Static placeholder user until SSO (PRD §7.1) is wired up.
-const placeholderUser: Me = {
-	id: 'u_placeholder',
-	email: 'developer@advws.com',
-	is_platform_admin: false,
-	companies: [
-		{ company_id: 'c_advws', role: 'admin' },
-		{ company_id: 'c_vending', role: 'developer' },
-		{ company_id: 'c_retail', role: 'viewer' }
-	]
-};
+export { authToken } from '$lib/stores/token';
 
-export const currentUser = writable<Me>(placeholderUser);
+/** The logged-in user, fetched from GET /me (PRD §9.1). Null until refreshCurrentUser() succeeds. */
+export const currentUser = writable<Me | null>(null);
 
-export function roleForCompany(user: Me, companyId: string): string | undefined {
-	return user.companies.find((c) => c.company_id === companyId)?.role;
+/**
+ * Fetches /me with the current auth token and updates currentUser — call after
+ * authToken.set() (see routes/dev-login) and once on app load if a token already exists
+ * (see +layout.svelte).
+ */
+export async function refreshCurrentUser(): Promise<void> {
+	if (!browser) return;
+	try {
+		currentUser.set(await getMe());
+	} catch {
+		currentUser.set(null);
+	}
+}
+
+export function roleForCompany(user: Me | null, companyId: string): string | undefined {
+	return user?.companies.find((c) => c.company_id === companyId)?.role;
 }

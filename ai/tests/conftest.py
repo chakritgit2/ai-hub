@@ -5,12 +5,23 @@ import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
 from app.main_gateway import app as gateway_app
-from app.main_runtime import app as runtime_app
+from app.main_runtime import app as runtime_app, require_runtime_auth
+
+from .markers import fake_runtime_claims
 
 
 @pytest.fixture
-def runtime_client() -> TestClient:
-    return TestClient(runtime_app)
+def runtime_client(request) -> TestClient:
+    """`request.param`, if set (via `@pytest.mark.parametrize` or
+    `pytest.fixture(params=...)`), is a company_id to bake into the fake verified
+    runtime-token claims (see markers.fake_runtime_claims); otherwise company_id
+    defaults to "" (no memory)."""
+    company_id = getattr(request, "param", "")
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(company_id)
+    try:
+        yield TestClient(runtime_app)
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
 
 
 @pytest.fixture

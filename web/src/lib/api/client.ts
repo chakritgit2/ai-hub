@@ -1,6 +1,7 @@
 import { PUBLIC_CONSOLE_API_BASE_URL } from '$env/static/public';
 import { get } from 'svelte/store';
 import { companyId } from '$lib/stores/company';
+import { authToken } from '$lib/stores/token';
 
 export class ApiError extends Error {
 	status: number;
@@ -26,6 +27,8 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
  * Fetch wrapper for console-api (Phalcon), PRD §9.1.
  *
  * - Prefixes every call with PUBLIC_CONSOLE_API_BASE_URL.
+ * - Attaches `Authorization: Bearer <token>` from the auth token store when set
+ *   (PRD §7.1 — AuthMiddleware requires this on every route except /healthz).
  * - Injects X-Company-Id from the current company store on every request
  *   unless skipCompanyHeader is set (every /admin/v1/* route except /me and
  *   /companies requires it, checked against membership server-side).
@@ -36,6 +39,9 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
 
 	const finalHeaders = new Headers(headers);
 	if (!finalHeaders.has('Accept')) finalHeaders.set('Accept', 'application/json');
+
+	const token = get(authToken);
+	if (token) finalHeaders.set('Authorization', `Bearer ${token}`);
 
 	if (!skipCompanyHeader) {
 		const currentCompanyId = get(companyId);

@@ -69,7 +69,7 @@
 	});
 
 	$effect(() => {
-		if (activeTab === 'companies' && $currentUser.is_platform_admin && companies.length === 0) {
+		if (activeTab === 'companies' && $currentUser?.is_platform_admin && companies.length === 0) {
 			loadCompanies();
 		}
 	});
@@ -90,7 +90,7 @@
 
 <div class="flex gap-1 border-b border-neutral-200">
 	{#each tabs as tab (tab.id)}
-		{@const disabled = tab.platformAdminOnly && !$currentUser.is_platform_admin}
+		{@const disabled = tab.platformAdminOnly && !$currentUser?.is_platform_admin}
 		<button
 			type="button"
 			class="px-4 py-2 text-sm {activeTab === tab.id
@@ -145,7 +145,7 @@
 			<pre class="rounded-lg border border-neutral-200 bg-white p-4 text-xs">{JSON.stringify(egress, null, 2)}</pre>
 		{/if}
 	{:else if activeTab === 'companies'}
-		{#if !$currentUser.is_platform_admin}
+		{#if !$currentUser?.is_platform_admin}
 			<div class="rounded-md border border-neutral-200 bg-white p-8 text-center text-sm text-neutral-500">
 				platform_admin only.
 			</div>
@@ -195,7 +195,7 @@
 			</p>
 		{/if}
 	{:else if activeTab === 'pricing'}
-		{#if !$currentUser.is_platform_admin}
+		{#if !$currentUser?.is_platform_admin}
 			<div class="rounded-md border border-neutral-200 bg-white p-8 text-center text-sm text-neutral-500">
 				platform_admin only.
 			</div>

@@ -6,8 +6,10 @@ serving every `/admin/v1/*` route defined in
 
 This is a bootable **skeleton**: routing, DI, config, migrations and middleware are real;
 almost every controller action returns `501 {"error": "not_implemented"}` until the
-corresponding service (`AuthService`, `RuntimeClient`, `TokenIssuer`, ...) is built out.
-`GET /me` returns a hardcoded payload and `GET /healthz` is fully real.
+corresponding service (`RuntimeClient`, `TokenIssuer`, ...) is built out.
+`GET /healthz` is fully real; `GET /me` and every other `/admin/v1/*` route now require a
+verified SSO JWT (see `AuthService`/`AuthMiddleware` below) but still 501 past that, except
+`/me` itself, which returns the real synced user.
 
 ## Route -> operationId -> controller method mapping
 
@@ -57,8 +59,14 @@ for `web/`'s generated TS client from day one.
 3. **Middleware**, attached as dispatcher events:
    - `TraceparentMiddleware` (`dispatch:beforeDispatch`) — reads/generates the W3C
      `traceparent` header for propagation to ai-runtime (PRD §6.9).
-   - `AuthMiddleware` (`dispatch:beforeDispatch`) — **stub**, passes every request through;
-     real SSO JWT verification (PRD §7.1/§7.6) lives in `AuthService::verifySsoJwt()`.
+   - `AuthMiddleware` (`dispatch:beforeDispatch`) — **real**, except `GET /healthz`: requires
+     `Authorization: Bearer <jwt>`, verifies it against `SSO_JWKS_URL` via
+     `AuthService::verifySsoJwt()` (RS256 + JWKS, PRD §7.1/§7.6), then upserts
+     `console.users`/`console.company_members` via `AuthService::syncUser()` and attaches
+     the result to the dispatcher as `authUser` (read with `ControllerBase::getAuthUser()`).
+     Invalid/missing tokens get a `401 {"error": "unauthorized"}`. The existing Phalcon
+     system's real JWKS URL/claim shape is still open (PRD §15.2), so `SSO_JWKS_URL` /
+     `SSO_ISSUER` / `SSO_AUDIENCE` are just env-configurable for now.
    - `CompanyContextMiddleware` (`dispatch:beforeDispatch`) — **real**, binds the
      `X-Company-Id` header into the shared `CompanyContext` service.
    - `AuditMiddleware` (`dispatch:afterDispatch`) — **stub**, will write `audit_logs` rows.
@@ -86,9 +94,15 @@ cp .env.example .env   # adjust DB_* if your local Postgres differs
 #    and roles) — see ../db/README.md.
 vendor/bin/phinx migrate -c db/migrations/phinx.php -e local
 
-# 2. serve
-php -S localhost:8091 -t public
-curl localhost:8091/healthz   # {"status":"ok"} — does not touch the database
+# 2. serve — port 8000, matching web/.env.example's PUBLIC_CONSOLE_API_BASE_URL
+#    and the root README's local dev instructions. The trailing public/index.php makes
+#    it the router for every request — without it, PHP's built-in server 404s any path
+#    with a dot in a segment (e.g. /admin/.well-known/jwks.json) before ever reaching it.
+php -S localhost:8000 -t public public/index.php
+curl localhost:8000/healthz   # {"status":"ok"} — does not touch the database
+
+# every other route needs a valid SSO JWT once SSO_JWKS_URL is configured:
+curl localhost:8000/admin/v1/me -H "Authorization: Bearer <jwt>"
 
 # tests
 vendor/bin/phpunit
@@ -100,11 +114,11 @@ vendor/bin/phpunit
 app/
 ├── config/        # config.php (env), services.php (DI), routes.php (router)
 ├── controllers/
-│   ├── ControllerBase.php   # jsonResponse()/notImplemented()/getCompanyId()
+│   ├── ControllerBase.php   # jsonResponse()/notImplemented()/getCompanyId()/getAuthUser()
 │   └── admin/                # one controller per OpenAPI first-path-segment
 ├── models/         # Phalcon\Mvc\Model, schema `console`
-├── services/       # AuthService, CompanyContext, RuntimeClient, TokenIssuer
-└── middleware/      # Traceparent, Auth (stub), CompanyContext, Audit (stub)
+├── services/       # AuthService (real), CompanyContext, RuntimeClient (stub), TokenIssuer (stub)
+└── middleware/      # Traceparent, Auth (real), CompanyContext, Audit (stub)
 db/migrations/       # Phinx — tables in schema `console`
 tests/               # PHPUnit
 ```

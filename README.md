@@ -35,7 +35,7 @@ psql "$DATABASE_URL" -f db/migrations/post/001_create_v1_views.sql \
                       -f db/migrations/post/002_rls_policies.sql \
                       -f db/migrations/post/003_resolve_api_key_function.sql
 
-(cd console-api && php -S localhost:8000 -t public)      # console-api
+(cd console-api && php -S localhost:8000 -t public public/index.php)  # console-api
 (cd ai && uv run uvicorn app.main_runtime:app --port 8080)  # ai-runtime
 (cd web && npm install && npm run dev)                    # web
 ```

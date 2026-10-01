@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { currentUser } from '$lib/stores/auth';
+	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
 
 	interface NavItem {
@@ -34,7 +34,7 @@
 		return $page.url.pathname === href || $page.url.pathname.startsWith(`${href}/`);
 	}
 
-	$: role = $currentUser.companies.find((c) => c.company_id === $companyId)?.role ?? 'viewer';
+	$: role = roleForCompany($currentUser, $companyId) ?? 'viewer';
 </script>
 
 <nav
@@ -90,7 +90,18 @@
 	</div>
 
 	<div class="border-t border-white/10 px-4 py-3">
-		<p class="truncate text-sm font-medium text-white">{$currentUser.email}</p>
-		<p class="text-xs capitalize text-neutral-400">{role}</p>
+		{#if $currentUser}
+			<p class="truncate text-sm font-medium text-white">{$currentUser.email}</p>
+			<p class="text-xs capitalize text-neutral-400">{role}</p>
+		{:else if import.meta.env.DEV}
+			<a
+				href="http://localhost:8999/"
+				class="text-xs text-primary underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+			>
+				Sign in (dev SSO)
+			</a>
+		{:else}
+			<p class="text-xs text-neutral-500">Not signed in</p>
+		{/if}
 	</div>
 </nav>

@@ -134,4 +134,12 @@ return function (Router $router): void {
             'action' => 'index',
         ])
         ->via('GET');
+
+    // --- Public JWKS (PRD §7.6) — no auth, no X-Company-Id; not under /admin/v1 ---
+    $router
+        ->add('/admin/.well-known/jwks.json', [
+            'controller' => 'Jwks',
+            'action' => 'getJwks',
+        ])
+        ->via('GET');
 };

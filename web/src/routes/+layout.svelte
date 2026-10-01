@@ -1,12 +1,21 @@
 <script lang="ts">
 	import '../app.css';
+	import { onMount } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import Header from '$lib/components/layout/Header.svelte';
 	import CompanySwitcher from '$lib/components/layout/CompanySwitcher.svelte';
 	import { headerContent } from '$lib/stores/header';
+	import { authToken } from '$lib/stores/token';
+	import { refreshCurrentUser } from '$lib/stores/auth';
 
 	let { children }: { children: Snippet } = $props();
+
+	// Restores the session on a hard reload — /dev-login is the only place that sets
+	// authToken directly, this just re-fetches /me for whatever it already has stored.
+	onMount(() => {
+		if ($authToken) refreshCurrentUser();
+	});
 </script>
 
 <div class="flex h-screen overflow-hidden bg-bg">

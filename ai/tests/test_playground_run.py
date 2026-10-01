@@ -2,12 +2,13 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
-from app.main_runtime import app as runtime_app
+from app.main_runtime import app as runtime_app, require_runtime_auth
 from app.services import runtime
 from app.services.runtime import run_playground_agent
 
-from .markers import requires_openai_key, requires_postgres
+from .markers import fake_runtime_claims, requires_openai_key, requires_postgres
 
 
 class _FakeAgent:
@@ -38,16 +39,18 @@ async def test_run_playground_agent_returns_real_output() -> None:
     assert isinstance(result["latency_ms"], int)
 
 
+def test_playground_run_requires_runtime_token() -> None:
+    """Real auth, no override — a request with no Authorization header is 401,
+    never reaching run_playground_agent (PRD §4.4-B/§7.6)."""
+    resp = TestClient(runtime_app).post("/ai/v1/playground/run", json={"input": "hi"})
+    assert resp.status_code == 401
+
+
 def test_playground_run_route_wired(runtime_client) -> None:
     """Even without a live key, the route must be reachable and fail with a
     clear provider/auth error (502), never an import/wiring error (500)."""
     resp = runtime_client.post("/ai/v1/playground/run", json={"input": "hi"})
     assert resp.status_code in (200, 502)
-
-
-def test_malformed_company_id_is_422(runtime_client) -> None:
-    resp = runtime_client.post("/ai/v1/playground/run", json={"input": "hi"}, headers={"X-Company-Id": "not-a-uuid"})
-    assert resp.status_code == 422
 
 
 def test_malformed_conversation_id_is_422(runtime_client) -> None:
@@ -56,8 +59,9 @@ def test_malformed_conversation_id_is_422(runtime_client) -> None:
 
 
 def test_conversation_id_not_echoed_without_memory(runtime_client, fake_agent) -> None:
-    """Without X-Company-Id no memory is used, so the client's id must not come back
-    as if the conversation had been continued."""
+    """With an empty company_id claim (the runtime_client fixture's default) no memory
+    is used, so the client's id must not come back as if the conversation had been
+    continued."""
     resp = runtime_client.post(
         "/ai/v1/playground/run",
         json={"input": "hi", "conversation_id": "3f2b8c1e-0000-4000-8000-000000000000"},
@@ -69,21 +73,28 @@ def test_conversation_id_not_echoed_without_memory(runtime_client, fake_agent) -
 @requires_postgres
 async def test_route_persists_conversation_id(fake_agent, company_ids) -> None:
     # httpx.AsyncClient rather than TestClient, so requests run on this test's event loop -
-    # the same one the company_ids fixture tears down on.
+    # the same one the company_ids fixture tears down on. Doesn't use the runtime_client
+    # fixture (which only takes a company_id via request.param), so the dependency
+    # override is installed directly here instead.
     company_id = company_ids()
     body = {"input": "hi", "user": {"external_id": "route-memory-test-user"}}
-    headers = {"X-Company-Id": company_id}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
-        resp1 = await client.post("/ai/v1/playground/run", json=body, headers=headers)
-        assert resp1.status_code == 200
-        conversation_id = resp1.json()["conversation_id"]
-        assert conversation_id
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(company_id)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=runtime_app), base_url="http://test"
+        ) as client:
+            resp1 = await client.post("/ai/v1/playground/run", json=body)
+            assert resp1.status_code == 200
+            conversation_id = resp1.json()["conversation_id"]
+            assert conversation_id
 
-        resp2 = await client.post(
-            "/ai/v1/playground/run", json={**body, "conversation_id": conversation_id}, headers=headers
-        )
-    assert resp2.status_code == 200
-    assert resp2.json()["conversation_id"] == conversation_id
+            resp2 = await client.post(
+                "/ai/v1/playground/run", json={**body, "conversation_id": conversation_id}
+            )
+        assert resp2.status_code == 200
+        assert resp2.json()["conversation_id"] == conversation_id
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
 
 
 @requires_openai_key

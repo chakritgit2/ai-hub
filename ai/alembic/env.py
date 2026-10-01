@@ -45,6 +45,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        version_table_schema="runtime",
     )
 
     with context.begin_transaction():
@@ -52,7 +53,14 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        # ai_app has no CREATE on schema `public` (Postgres 15+ revokes that by
+        # default) — the version table belongs in `runtime` like everything else
+        # ai_app owns (PRD §8.1), not `public`.
+        version_table_schema="runtime",
+    )
 
     with context.begin_transaction():
         context.run_migrations()

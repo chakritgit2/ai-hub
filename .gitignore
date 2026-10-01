@@ -2,6 +2,8 @@
 console-api/vendor/
 console-api/.env
 console-api/.phpunit.result.cache
+console-api/dev/fake-sso-key.pem
+console-api/keys/
 
 # Python / ai
 ai/.venv/

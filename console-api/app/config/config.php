@@ -49,10 +49,15 @@ return new Config([
     ],
 
     // console-api's own signing key for runtime tokens + internal call tokens (PRD §7.6).
+    // Both token types are verified against the same JWKS (served by JwksController) and
+    // distinguished only by `aud`; see ai/.env.example's RUNTIME_TOKEN_AUD/CONSOLE_INTERNAL_JWT_AUD.
     'consoleJwt' => [
         'privateKeyPath' => $env('CONSOLE_JWT_PRIVATE_KEY_PATH', ''),
         'kid' => $env('CONSOLE_JWT_KID', ''),
         'jwksPath' => $env('CONSOLE_JWKS_PATH', '/admin/.well-known/jwks.json'),
+        'issuer' => $env('CONSOLE_JWT_ISSUER', 'console-api'),
+        'runtimeTokenAudience' => $env('RUNTIME_TOKEN_AUDIENCE', 'ai-runtime'),
+        'internalJwtAudience' => $env('INTERNAL_JWT_AUDIENCE', 'ai-internal'),
     ],
 
     // ai-runtime internal base URL, reachable only from console-api pods (PRD §11 NetworkPolicy).

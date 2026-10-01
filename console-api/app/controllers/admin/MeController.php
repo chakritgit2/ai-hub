@@ -9,23 +9,26 @@ use Phalcon\Http\Response;
 
 /**
  * GET /me — current user, their companies and roles (contracts/openapi/console-api.yaml,
- * PRD §9.1). AuthService::verifySsoJwt() is not implemented yet (see app/services/AuthService.php),
- * so this returns a hardcoded shape matching the OpenAPI `Me` schema for skeleton/local dev.
+ * PRD §9.1). AuthMiddleware verifies the SSO JWT and syncs console.users/company_members
+ * before this action runs (PRD §7.1); see app/services/AuthService.php.
  */
 class MeController extends ControllerBase
 {
     public function getMe(): Response
     {
+        $authUser = $this->getAuthUser();
+
         return $this->jsonResponse([
-            'id' => '00000000-0000-0000-0000-000000000000',
-            'email' => 'dev@example.com',
-            'is_platform_admin' => false,
-            'companies' => [
-                [
-                    'company_id' => '00000000-0000-0000-0000-000000000001',
-                    'role' => 'admin',
+            'id' => $authUser['id'],
+            'email' => $authUser['email'],
+            'is_platform_admin' => $authUser['is_platform_admin'],
+            'companies' => array_map(
+                static fn (array $membership): array => [
+                    'company_id' => $membership['company_id'],
+                    'role' => $membership['role'],
                 ],
-            ],
+                $authUser['companies']
+            ),
         ]);
     }
 }
