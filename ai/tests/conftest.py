@@ -53,6 +53,19 @@ async def _fresh_engine():
     get_sessionmaker.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+async def _fresh_redis():
+    """Same event-loop-binding problem as `_fresh_engine`, for `app.core.redis.get_redis`
+    (also `lru_cache`'d)."""
+    from app.core.redis import get_redis
+
+    get_redis.cache_clear()
+    yield
+    if get_redis.cache_info().currsize:
+        await get_redis().aclose()
+    get_redis.cache_clear()
+
+
 @pytest.fixture
 async def company_ids():
     """Hands out fresh company ids and, after the test, deletes every
@@ -242,6 +255,125 @@ async def store_connection_secret():
         )
 
     return _store
+
+
+@pytest.fixture
+def make_deployment():
+    """Inserts a `console.deployments` row as `console_app` (same write-role convention
+    as make_connection/make_agent_version — ai_app has no write grant on this table
+    either) and deletes it afterward. `slug` is globally unique (deployments_slug_unique),
+    so a random one per call avoids cross-test collisions."""
+    settings = get_settings()
+    created: list[tuple[str, str]] = []  # (company_id, deployment_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(
+        company_id: str,
+        agent_version_id: str,
+        *,
+        rate_limit_per_min: int = 60,
+        daily_token_limit: int | None = None,
+        daily_cost_limit_usd: float | None = None,
+        allowed_origins: list[str] | None = None,
+        guardrail_overrides: dict | None = None,
+        enabled: bool = True,
+    ) -> tuple[str, str]:
+        deployment_id = str(uuid.uuid4())
+        slug = f"test-{deployment_id}"
+        with _connect() as conn:
+            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
+            # own freshly generated uuid4, never external input.
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                """INSERT INTO console.deployments
+                   (id, company_id, slug, agent_version_id, rate_limit_per_min, daily_token_limit,
+                    daily_cost_limit_usd, allowed_origins, guardrail_overrides, enabled)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    deployment_id,
+                    company_id,
+                    slug,
+                    agent_version_id,
+                    rate_limit_per_min,
+                    daily_token_limit,
+                    daily_cost_limit_usd,
+                    json.dumps(allowed_origins or []),
+                    json.dumps(guardrail_overrides or {}),
+                    enabled,
+                ),
+            )
+            conn.commit()
+        created.append((company_id, deployment_id))
+        return deployment_id, slug
+
+    yield _make
+
+    for company_id, deployment_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.deployments WHERE id = %s", (deployment_id,))
+            conn.commit()
+
+
+@pytest.fixture
+def make_api_key():
+    """Inserts a `console.api_keys` row plus one `console.api_key_scopes` row per
+    `deployment_ids` entry, as `console_app`, and deletes both afterward. Returns
+    `(api_key_id, full_key)` — `full_key` hashes (SHA-256, app.services.api_keys.
+    hash_gateway_api_key) to the stored `key_hash`, same scheme console-api's own
+    ApiKeysController uses."""
+    settings = get_settings()
+    created: list[tuple[str, str]] = []  # (company_id, api_key_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(company_id: str, deployment_ids: list[str], allowed_ips: list[str] | None = None) -> tuple[str, str]:
+        from app.services.api_keys import hash_gateway_api_key
+
+        api_key_id = str(uuid.uuid4())
+        full_key = f"ak_test_{uuid.uuid4().hex}"
+        key_hash = hash_gateway_api_key(full_key)
+
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                """INSERT INTO console.api_keys (id, company_id, name, key_hash, prefix, allowed_ips)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (api_key_id, company_id, "test-key", key_hash, full_key[:9], json.dumps(allowed_ips or [])),
+            )
+            for deployment_id in deployment_ids:
+                conn.execute(
+                    """INSERT INTO console.api_key_scopes (id, company_id, api_key_id, deployment_id)
+                       VALUES (%s, %s, %s, %s)""",
+                    (str(uuid.uuid4()), company_id, api_key_id, deployment_id),
+                )
+            conn.commit()
+        created.append((company_id, api_key_id))
+        return api_key_id, full_key
+
+    yield _make
+
+    for company_id, api_key_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.api_key_scopes WHERE api_key_id = %s", (api_key_id,))
+            conn.execute("DELETE FROM console.api_keys WHERE id = %s", (api_key_id,))
+            conn.commit()
 
 
 @pytest.fixture

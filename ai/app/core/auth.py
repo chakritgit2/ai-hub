@@ -8,8 +8,9 @@
   `X-Company-Id` and `traceparent` headers (checked by callers, not this function).
 - `verify_gateway_api_key`: a company-owned gateway API key
   (`ak_{company_code}_...`, stored hashed), resolved via
-  `console.resolve_api_key(key_hash, slug)` — not implemented yet (needs the
-  gateway's DB access, phase 1 gateway work).
+  `console.resolve_api_key(key_hash, slug)` (`app.services.api_keys`) — unlike the two
+  JWT verifiers above, this isn't JWKS-based at all: the key is a bearer secret hashed
+  and looked up directly in Postgres, not a signed token.
 
 Both JWT verifiers share one JWKS (console-api signs both token types with the
 same key, distinguished only by `aud`) and cache it in-process for
@@ -90,5 +91,24 @@ def verify_internal_token(token: str) -> dict:
     return _verify(token, audience=settings.CONSOLE_INTERNAL_JWT_AUD, issuer=settings.CONSOLE_INTERNAL_JWT_ISSUER)
 
 
-def verify_gateway_api_key(key: str) -> dict:
-    raise NotImplementedError("verify_gateway_api_key: resolve_api_key lookup not yet implemented")
+async def verify_gateway_api_key(key: str, slug: str) -> dict | None:
+    """Returns `{"company_id": ..., "deployment_id": ..., "allowed_ips": [...]}`, or
+    `None` when the key doesn't exist, belongs to another company, or isn't scoped to
+    this deployment - all indistinguishable. Deliberately does NOT raise
+    `InvalidTokenError` like the two JWT verifiers above (which callers map to 401): PRD
+    §7.7/§12 require this specific case to come back as 404 "as if the deployment did
+    not exist", not 401, so callers must map `None` to 404 themselves, not reuse the 401
+    convention. `allowed_ips` (PRD §7.7) is returned, not enforced here, since this
+    function has no access to the caller's request - callers check it against
+    `request.client.host` themselves."""
+    from app.services.api_keys import resolve_gateway_api_key
+
+    resolved = await resolve_gateway_api_key(key, slug)
+    if resolved is None:
+        return None
+
+    return {
+        "company_id": resolved.company_id,
+        "deployment_id": resolved.deployment_id,
+        "allowed_ips": resolved.allowed_ips,
+    }

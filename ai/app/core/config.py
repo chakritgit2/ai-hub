@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     GATEWAY_JWKS_PRIVATE_KEY_PATH: str | None = None
     GATEWAY_JWKS_KID: str = "gw-2026-09"
 
+    # Comma-separated IPs of reverse proxies/load balancers the gateway sits behind.
+    # `allowed_ips` enforcement (PRD §7.7) only trusts the `X-Forwarded-For` header's
+    # original-client entry when the direct TCP peer is one of these - otherwise any
+    # caller could set that header itself to spoof its way past the allowlist, and with
+    # this left empty (the default) `request.client.host` is used as-is.
+    TRUSTED_PROXY_IPS: str = ""
+
     # --- Envelope encryption (PRD §7.7) ---
     # Base64-encoded raw AES key bytes (32 bytes -> AES-256, matching app/core/crypto.py's
     # AESGCM usage). Generate with:
@@ -99,6 +106,9 @@ class Settings(BaseSettings):
             _decode_master_key(self.CONSOLE_MASTER_KEY, required=False)
 
         return self
+
+    def trusted_proxy_ips(self) -> set[str]:
+        return {ip.strip() for ip in self.TRUSTED_PROXY_IPS.split(",") if ip.strip()}
 
 
 def _decode_master_key(value: str | None, *, required: bool) -> bytes | None:

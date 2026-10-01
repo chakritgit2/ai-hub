@@ -28,7 +28,10 @@ def test_gateway_readyz(gateway_client: TestClient) -> None:
 def test_gateway_jwks(gateway_client: TestClient) -> None:
     resp = gateway_client.get("/.well-known/jwks.json")
     assert resp.status_code == 200
-    assert resp.json() == {"keys": []}
+    keys = resp.json()["keys"]
+    assert len(keys) == 1
+    assert keys[0]["kty"] == "RSA"
+    assert keys[0]["kid"]
 
 
 def test_internal_stub_returns_501(runtime_client: TestClient) -> None:

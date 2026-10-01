@@ -13,6 +13,7 @@ ai/.env
 ai/.pytest_cache/
 ai/.ruff_cache/
 ai/*.egg-info/
+ai/dev/gateway-key.pem
 
 # Node / web
 web/node_modules/

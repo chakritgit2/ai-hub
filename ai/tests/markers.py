@@ -47,6 +47,25 @@ requires_openai_key = pytest.mark.skipif(
 )
 
 
+def _redis_available() -> bool:
+    import redis
+
+    settings = get_settings()
+    try:
+        client = redis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        client.ping()
+        client.close()
+    except redis.exceptions.RedisError:
+        return False
+    return True
+
+
+requires_redis = pytest.mark.skipif(
+    not _redis_available(),
+    reason="Redis not reachable at REDIS_URL - skipping Redis-backed test",
+)
+
+
 def fake_runtime_claims(
     company_id: str = "",
     agent_version_id: str = "00000000-0000-0000-0000-000000000000",
