@@ -197,6 +197,23 @@ components:
         action: { type: string, enum: [block, mask, flag] }
         detail: { type: object, additionalProperties: true }
         created_at: { type: string, format: date-time }
+    EgressAllowlistEntry:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        host_pattern: { type: string }
+        port: { type: integer, nullable: true }
+        allow_private_ip: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CompanyUser:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        is_platform_admin: { type: boolean }
+        role: { type: string, enum: [admin, developer, viewer] }
 paths:
   /me:
     get:
@@ -686,17 +703,17 @@ paths:
     get:
       operationId: listCompanyUsers
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CompanyUser' } } } } } }
   /settings/egress-allowlist:
     get:
       operationId: listEgressAllowlist
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/EgressAllowlistEntry' } } } } } }
     post:
       operationId: createEgressAllowlistEntry
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/EgressAllowlistEntry' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/EgressAllowlistEntry' } } } } }
   /settings/egress-allowlist/{id}:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
@@ -734,4 +751,4 @@ paths:
     parameters: [{ $ref: '#/components/parameters/IdParam' }]
     get:
       operationId: listCompanyMembers
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CompanyUser' } } } } } }

@@ -158,6 +158,22 @@ abstract class ControllerBase extends Controller
     }
 
     /**
+     * platform_admin-only — /companies/* (PRD §7.2/§9.3: "platform_admin only; no
+     * X-Company-Id"). Unlike requireMembership()/requireWriteRole()/requireAdminRole(),
+     * this has no company to pretend doesn't exist for a 404 — it's a flat authorization
+     * boundary, so a non-platform-admin gets 403, not 404.
+     */
+    protected function requirePlatformAdmin(): ?Response
+    {
+        $authUser = $this->getAuthUser();
+        if ($authUser === null || !($authUser['is_platform_admin'] ?? false)) {
+            return $this->jsonResponse(['error' => 'forbidden'], 403);
+        }
+
+        return null;
+    }
+
+    /**
      * Strict UUID format (8-4-4-4-12 hex groups) — not just "36 characters of hex digits
      * and dashes in any position", which Postgres's `uuid` column type itself rejects
      * with an uncaught SQLSTATE 22P02 (never caught by isUniqueViolation()'s 23505 check),
@@ -185,6 +201,23 @@ abstract class ControllerBase extends Controller
             throw new RuntimeException('runInCompanyTransaction: no X-Company-Id bound for this request.');
         }
 
+        return $this->runInTransactionAsCompany($companyId, $fn);
+    }
+
+    /**
+     * Same as runInCompanyTransaction(), but for platform_admin operations that act on an
+     * explicit company id (e.g. a `/companies/{id}/...` path param) rather than the
+     * current request's X-Company-Id header — there is none on platform-only routes
+     * (requirePlatformAdmin()), so this is how CompaniesController reaches into one
+     * specific company's RLS-protected rows (console.company_members, runtime.company_keys)
+     * without needing the unwired console_platform DB connection.
+     *
+     * @template T
+     * @param callable(AbstractPdo): T $fn
+     * @return T
+     */
+    protected function runInTransactionAsCompany(string $companyId, callable $fn): mixed
+    {
         $db = $this->getDI()->getShared('db');
         $db->begin();
 
