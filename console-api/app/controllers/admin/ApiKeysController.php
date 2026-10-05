@@ -9,6 +9,22 @@ use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
 
 /**
+ * Validation failures from inside createApiKey's transaction (a deployment_id that
+ * doesn't resolve, or a duplicate scope insert) - a typed subclass instead of matching
+ * a plain \RuntimeException by message prefix, so catching it can never accidentally
+ * swallow or misroute an unrelated \RuntimeException raised deeper in the same
+ * transaction (e.g. ControllerBase::runInCompanyTransaction's own "no X-Company-Id
+ * bound" guard, which is a genuine internal error, not a 400-worthy validation failure).
+ */
+final class ApiKeyScopeError extends \RuntimeException
+{
+    public function __construct(public readonly string $errorCode, string $deploymentId)
+    {
+        parent::__construct("{$errorCode}: {$deploymentId}");
+    }
+}
+
+/**
  * /api-keys — long-lived API keys used by external apps against the gateway
  * (PRD §6.3, §8.1 `api_keys` table; resolved via `console.resolve_api_key()` at the
  * gateway). Admin-only (PRD §9.3's role table scopes the whole resource to `admin`, not
@@ -152,7 +168,7 @@ class ApiKeysController extends ControllerBase
                         ['id' => $deploymentId]
                     );
                     if (empty($deployment)) {
-                        throw new \RuntimeException("deployment_not_found:{$deploymentId}");
+                        throw new ApiKeyScopeError('deployment_not_found', $deploymentId);
                     }
                     try {
                         $db->execute(
@@ -169,7 +185,7 @@ class ApiKeysController extends ControllerBase
                             // deployment_ids is deduped with array_unique() above, which is
                             // case-sensitive - two UUIDs differing only by letter case pass
                             // that dedup as "different" but collide on the same row here.
-                            throw new \RuntimeException("duplicate_deployment_id:{$deploymentId}");
+                            throw new ApiKeyScopeError('duplicate_deployment_id', $deploymentId);
                         }
                         throw $exception;
                     }
@@ -177,14 +193,8 @@ class ApiKeysController extends ControllerBase
 
                 return ['row' => $row, 'full_key' => $fullKey, 'deployment_ids' => $deploymentIds];
             });
-        } catch (\RuntimeException $exception) {
-            if (str_starts_with($exception->getMessage(), 'deployment_not_found:')) {
-                return $this->jsonResponse(['error' => 'deployment_not_found'], 400);
-            }
-            if (str_starts_with($exception->getMessage(), 'duplicate_deployment_id:')) {
-                return $this->jsonResponse(['error' => 'duplicate_deployment_id'], 400);
-            }
-            throw $exception;
+        } catch (ApiKeyScopeError $exception) {
+            return $this->jsonResponse(['error' => $exception->errorCode], 400);
         }
 
         return $this->jsonResponse(

@@ -20,6 +20,7 @@ from uuid import uuid4
 from dynamiq.callbacks.base import BaseCallbackHandler
 from dynamiq.runnables.base import RunnableConfig, RunnableStatus
 
+from app.core.config import get_settings
 from app.services.agent_spec import GuardrailsSpec
 from app.services.agent_versions import resolve_agent_version
 from app.services.compiler import build_agent, compile_spec
@@ -182,14 +183,17 @@ async def _execute_agent_run(
     # itself - verified against the installed dynamiq==0.65.0 source, no
     # separate `metadata={...}` duplication is needed here.
     try:
-        result = await asyncio.to_thread(
-            agent.run,
-            input_data={
-                "input": input_outcome.text,
-                "user_id": user_id,
-                "session_id": resolved_conversation_id,
-            },
-            config=RunnableConfig(callbacks=[usage_collector]),
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                agent.run,
+                input_data={
+                    "input": input_outcome.text,
+                    "user_id": user_id,
+                    "session_id": resolved_conversation_id,
+                },
+                config=RunnableConfig(callbacks=[usage_collector]),
+            ),
+            timeout=get_settings().RUN_TIMEOUT_SECONDS,
         )
         # Agent.run() does NOT raise on an LLM/tool failure (e.g. a rejected API key) -
         # it returns a RunnableResult with status=FAILURE and the error captured in
@@ -222,8 +226,19 @@ async def _execute_agent_run(
         # one or more real LLM calls before failing (e.g. a late tool-call error) must still
         # count that spend against the deployment's daily quota, not be refunded in full as
         # if nothing ran at all.
-        exc.partial_usage = usage
-        raise
+        #
+        # Normalized to RuntimeError (unless it already is one, e.g. the explicit
+        # non-SUCCESS-status raise above, or a fake-agent test raising RuntimeError
+        # directly - both must keep their original message so existing callers/tests that
+        # match on it still see it) so that callers can distinguish "the live run itself
+        # failed" from a bug in the surrounding gateway code (which raises some other
+        # exception type from outside this try block and is never caught/normalized here).
+        if isinstance(exc, RuntimeError):
+            exc.partial_usage = usage
+            raise
+        wrapped = RuntimeError(str(exc))
+        wrapped.partial_usage = usage
+        raise wrapped from exc
 
     output = result.output.get("content") if result.output else None
 

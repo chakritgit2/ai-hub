@@ -14,6 +14,7 @@ a deployment's own `allowed_origins` for session-token/browser callers. `streamD
 explicit scope boundaries, not gaps.
 """
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Annotated, Literal
 from uuid import UUID
@@ -25,7 +26,9 @@ from pydantic import BaseModel, field_validator
 
 from app.core.auth import verify_gateway_api_key
 from app.core.config import get_settings
+from app.core.db import get_engine
 from app.core.otel import setup_tracing
+from app.core.redis import get_redis
 from app.services.agent_spec import AgentSpecDoc
 from app.services.agent_versions import resolve_agent_version
 from app.services.deployments import DeploymentRow, resolve_deployment, resolve_deployment_id_by_slug
@@ -35,7 +38,20 @@ from app.services.runtime import run_deployment_agent
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="ai-gateway")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    # Same lru_cache-aware teardown ai/tests/conftest.py's own _fresh_engine/_fresh_redis
+    # fixtures already use - only dispose what was actually created, so a process that
+    # shut down without ever handling a request doesn't open a pool just to close it.
+    if get_redis.cache_info().currsize:
+        await get_redis().aclose()
+    if get_engine.cache_info().currsize:
+        await get_engine().dispose()
+
+
+app = FastAPI(title="ai-gateway", lifespan=_lifespan)
 setup_tracing(app)
 
 # External callers have no admin/developer/viewer identity of their own (unlike
@@ -260,7 +276,12 @@ async def runDeployment(
                 "reset_at": exc.reset_at.isoformat() if exc.reset_at else None,
             },
         )
-    except Exception as exc:  # surface as a clear upstream error, not a 500 crash
+    except (ValueError, RuntimeError) as exc:
+        # The two exception types app.services.runtime documents itself as raising for a
+        # genuine run failure (resolution/compile/secret errors, or the live agent run
+        # itself failing) - surfaced as a clear upstream error, not a 500 crash. Anything
+        # else is a bug in this gateway's own code (outside runtime's own try/except) and
+        # must not be silently flattened into the same upstream_error bucket.
         logger.exception("deployment run failed")
         return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
 
