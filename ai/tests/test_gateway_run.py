@@ -32,6 +32,38 @@ def fake_agent(monkeypatch):
     monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
 
 
+class _FailingAgentWithUsage:
+    """Like test_playground_guardrails.py's `_RecordingAgent`: fires a fake usage_data
+    callback (as a real LLM node would, mid-run) and then fails - used to regression-test
+    that a deployment run burning real usage before failing still counts that spend
+    against the deployment's daily quota (app.services.runtime.run_deployment_agent's
+    finally block used to refund the whole reservation instead, as if nothing ran)."""
+
+    _USAGE = {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "total_tokens": 150,
+        "total_tokens_cost_usd": 0.01,
+    }
+
+    def __init__(self, **kwargs) -> None:
+        self.memory = kwargs.get("memory")
+
+    def run(self, input_data: dict, config=None, **_kwargs) -> SimpleNamespace:
+        if config is not None:
+            for callback in config.callbacks:
+                callback.on_node_execute_run({}, usage_data=self._USAGE)
+        raise RuntimeError("boom after partial usage")
+
+
+@pytest.fixture
+def failing_agent_with_usage(monkeypatch):
+    import dynamiq.nodes.agents
+
+    monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _FailingAgentWithUsage)
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
+
+
 @pytest.fixture
 def gateway_client() -> TestClient:
     return TestClient(gateway_app)
@@ -139,6 +171,70 @@ async def test_run_returns_429_when_rate_limited(
     assert second.status_code == 429
     assert second.json()["error"] == "quota_exceeded"
     assert second.json()["reason"] == "rate_limit"
+
+
+@requires_postgres
+@requires_redis
+async def test_run_returns_429_when_daily_token_limit_exceeded(
+    fake_agent, gateway_async_client, company_ids, resolvable_agent_version, make_deployment, make_api_key
+) -> None:
+    """End-to-end through the real HTTP route, not just unit-tested against
+    app.services.quotas directly - the daily_token_limit/daily_cost_limit_usd branches of
+    QuotaExceededError had no test exercising their wiring through runDeployment's actual
+    429 response before this. A deployment with no max_tokens configured reserves the
+    1000-token default estimate (app.services.quotas._DEFAULT_MAX_TOKENS_ESTIMATE), so a
+    limit below that blocks on the very first call."""
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+    deployment_id, slug = make_deployment(company_id, version_id, daily_token_limit=500)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/run", json={"input": "hi"}, headers={"Authorization": f"Bearer {full_key}"}
+    )
+
+    assert resp.status_code == 429
+    assert resp.json()["error"] == "quota_exceeded"
+    assert resp.json()["reason"] == "daily_token_limit"
+
+
+@requires_postgres
+@requires_redis
+async def test_quota_counts_real_usage_even_when_run_fails_after_partial_usage(
+    failing_agent_with_usage,
+    gateway_async_client,
+    company_ids,
+    resolvable_agent_version,
+    make_deployment,
+    make_api_key,
+) -> None:
+    """Regression test for the quota-refund-on-partial-failure bug: a run that burns real
+    LLM usage (fired via the usage_data callback, see _FailingAgentWithUsage) before
+    failing must still count that spend against the deployment's daily quota, not be
+    refunded in full as if nothing ran at all."""
+    from app.core.redis import get_redis
+    from app.services.quotas import _bangkok_today
+
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+    # Limit set well above the 1000-token default reservation estimate so the reservation
+    # itself succeeds and the run actually gets to execute (and fail).
+    deployment_id, slug = make_deployment(company_id, version_id, daily_token_limit=100_000)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/run", json={"input": "hi"}, headers={"Authorization": f"Bearer {full_key}"}
+    )
+
+    assert resp.status_code == 502  # the agent run itself failed, not a quota rejection
+
+    redis_client = get_redis()
+    tokens_key = f"gw:quota:tokens:{deployment_id}:{_bangkok_today()}"
+    # Reserved the 1000-token default estimate, actually used 150 (100 + 50 from
+    # _FailingAgentWithUsage._USAGE) - the bug being regression-tested refunded the whole
+    # reservation (would leave this counter at 0); the fix must leave it reflecting the
+    # 150 tokens that were actually spent before the failure.
+    assert int(await redis_client.get(tokens_key)) == 150
 
 
 @requires_postgres

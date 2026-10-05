@@ -95,6 +95,49 @@ async def test_reconcile_quota_adjusts_by_delta_not_overwrite(deployment_id) -> 
 
 
 @requires_redis
+async def test_reserve_quota_redis_error_mid_pipeline_leaves_no_partial_increment(deployment_id, monkeypatch) -> None:
+    """Regression test for the non-atomic reserve_quota bug: a RedisError raised by the
+    pipeline's own execute() must leave the real counters completely untouched (the
+    pipeline's commands were only ever queued client-side, never sent), not the old
+    four-independent-calls behavior where a failure partway could leave tokens_key already
+    incremented while reserve_quota still reported reserved_tokens=0 - permanently
+    inflating the counter with no way for reconcile_quota to correct it."""
+
+    class _BrokenPipeline:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc_info):
+            return False
+
+        def incrby(self, *_args, **_kwargs):
+            return self
+
+        def expire(self, *_args, **_kwargs):
+            return self
+
+        async def execute(self):
+            raise redis.exceptions.ConnectionError("simulated outage mid-pipeline")
+
+    class _BrokenRedis:
+        def pipeline(self, *_args, **_kwargs):
+            return _BrokenPipeline()
+
+    monkeypatch.setattr("app.services.quotas.get_redis", lambda: _BrokenRedis())
+
+    reservation = await reserve_quota(
+        deployment_id, _MODEL, max_tokens=500, daily_token_limit=1000, daily_cost_limit_usd=None
+    )
+
+    assert reservation.allowed  # fails open - no daily_cost_limit_usd configured
+    assert reservation.reserved_tokens == 0
+
+    redis_client = get_redis()
+    tokens_key = f"gw:quota:tokens:{deployment_id}:{_bangkok_today()}"
+    assert await redis_client.get(tokens_key) is None  # nothing leaked into the real counter
+
+
+@requires_redis
 async def test_reconcile_quota_noop_when_nothing_was_reserved(deployment_id) -> None:
     # no-limits deployments never touch Redis in reserve_quota - reconcile must not
     # either, or it would create a counter for a deployment with no configured limits.

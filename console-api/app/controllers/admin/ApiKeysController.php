@@ -50,7 +50,7 @@ class ApiKeysController extends ControllerBase
             static fn ($db) => $db->fetchAll(
                 "SELECT k.id, k.company_id, k.name, k.prefix, k.allowed_ips, k.rate_limit_per_min,
                         k.daily_cost_limit_usd, k.last_used_at, k.created_by, k.revoked_at, k.created_at,
-                        coalesce(array_agg(s.deployment_id) FILTER (WHERE s.deployment_id IS NOT NULL), '{}') AS deployment_ids
+                        coalesce(array_agg(s.deployment_id ORDER BY s.deployment_id) FILTER (WHERE s.deployment_id IS NOT NULL), '{}') AS deployment_ids
                  FROM console.api_keys k
                  LEFT JOIN console.api_key_scopes s ON s.api_key_id = k.id
                  GROUP BY k.id
@@ -157,17 +157,29 @@ class ApiKeysController extends ControllerBase
                     ]
                 );
 
-                foreach ($deploymentIds as $deploymentId) {
-                    // RLS on console.deployments (scoped to the same app.company_id this
-                    // transaction already set) makes a deployment belonging to another
-                    // company invisible here - the INSERT's FK would fail loudly instead
-                    // of silently scoping a key to someone else's deployment.
-                    $deployment = $db->fetchOne(
-                        'SELECT id FROM console.deployments WHERE id = :id',
+                // One batched existence check for every deployment_id, not one SELECT per
+                // iteration - RLS on console.deployments (scoped to the same
+                // app.company_id this transaction already set) makes a deployment
+                // belonging to another company invisible here regardless, same as before;
+                // the INSERT's FK would fail loudly instead of silently scoping a key to
+                // someone else's deployment.
+                $existingIds = [];
+                if ($deploymentIds !== []) {
+                    $rows = $db->fetchAll(
+                        'SELECT id FROM console.deployments WHERE id = ANY(:ids::uuid[])',
                         Enum::FETCH_ASSOC,
-                        ['id' => $deploymentId]
+                        ['ids' => '{' . implode(',', $deploymentIds) . '}']
                     );
-                    if (empty($deployment)) {
+                    // Postgres's uuid type compares case-insensitively but returns its own
+                    // canonical (lowercase) form - normalize both sides before the PHP
+                    // string comparison below, or a deployment_id submitted in a different
+                    // letter case than Postgres's canonical form would wrongly report
+                    // deployment_not_found despite matching in the query above.
+                    $existingIds = array_map('strtolower', array_column($rows, 'id'));
+                }
+
+                foreach ($deploymentIds as $deploymentId) {
+                    if (!in_array(strtolower($deploymentId), $existingIds, true)) {
                         throw new ApiKeyScopeError('deployment_not_found', $deploymentId);
                     }
                     try {
