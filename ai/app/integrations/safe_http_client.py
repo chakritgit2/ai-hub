@@ -31,6 +31,11 @@ BLOCKED_CIDRS: list[str] = [
     "fe80::/10",  # IPv6 link-local — some cloud providers serve metadata over this too
 ]
 _BLOCKED_NETWORKS = [ipaddress.ip_network(cidr) for cidr in BLOCKED_CIDRS]
+# The deprecated IPv4-compatible IPv6 form (`::a.b.c.d`, distinct from the IPv4-mapped
+# `::ffff:a.b.c.d` form handled via `.ipv4_mapped` below) — still parses as a valid
+# IPv6Address and must also be unwrapped in `_is_blocked_ip`, or e.g. `::10.0.0.5` sails
+# past every IPv4 CIDR above.
+_IPV4_COMPATIBLE_NETWORK = ipaddress.ip_network("::/96")
 
 DEFAULT_TIMEOUT_SECONDS = 10
 MAX_RESPONSE_BYTES = 1 * 1024 * 1024  # 1 MB
@@ -92,10 +97,18 @@ def _is_blocked_ip(ip: str) -> bool:
     # ::ffff:10.0.0.1 etc. parse as a distinct IPv6Address that's never `in` any of the
     # (IPv4) _BLOCKED_NETWORKS entries by address-family comparison alone — unwrap it to
     # the IPv4 address it actually represents before checking, or it sails straight past
-    # every IPv4 block (10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, ...).
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
-    return any(address in network for network in _BLOCKED_NETWORKS)
+    # every IPv4 block (10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, ...). The original
+    # address is always kept as a candidate too (never replaced) so IPv6-native blocked
+    # ranges (::1/128, fc00::/7, fe80::/10) stay covered — ::/96 contains both `::1` and
+    # the IPv4-compatible addresses we're unwrapping here, and dropping the original
+    # candidate would silently unblock IPv6 loopback.
+    candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [address]
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            candidates.append(address.ipv4_mapped)
+        elif address in _IPV4_COMPATIBLE_NETWORK:
+            candidates.append(ipaddress.IPv4Address(address.packed[-4:]))
+    return any(candidate in network for candidate in candidates for network in _BLOCKED_NETWORKS)
 
 
 async def _resolve_ips(host: str) -> list[str]:
@@ -170,10 +183,12 @@ class SafeHttpClient:
 
         try:
             resolved_ips = await self._resolve_ips(host)
-        except OSError:
+        except socket.gaierror:
             # Unresolvable host (NXDOMAIN, resolver timeout, ...) — a plain socket.gaierror
             # here would violate SafeHttpClientError's "never a raw network exception"
-            # contract and 500 the endpoint instead of the documented ok:false.
+            # contract and 500 the endpoint instead of the documented ok:false. Catching
+            # only gaierror (not every OSError) keeps unrelated local failures (fd
+            # exhaustion, ENETUNREACH, ...) from being mislabeled as a DNS problem.
             resolved_ips = []
         return _validated_ip(matches, resolved_ips, host)
 
@@ -185,8 +200,14 @@ class SafeHttpClient:
             # AsyncClient alone resets on every hop, so e.g. 5 redirects at ~9s each
             # could otherwise take ~45s against a module docstring that promises 10s.
             async with asyncio.timeout(DEFAULT_TIMEOUT_SECONDS):
+                # timeout=None: the outer asyncio.timeout above is the sole timeout
+                # authority. Giving httpx its own equal-length timeout here would let it
+                # race the outer one on a single slow hop and raise httpx.ConnectTimeout/
+                # ReadTimeout instead — not a TimeoutError subclass, so `except
+                # TimeoutError` below wouldn't catch it and it'd leak as a raw network
+                # exception, contrary to SafeHttpClientError's contract.
                 async with httpx.AsyncClient(
-                    timeout=DEFAULT_TIMEOUT_SECONDS, transport=self._transport
+                    timeout=None, transport=self._transport
                 ) as client:
                     for _ in range(MAX_REDIRECTS):
                         host, port = parse_host_port(current_url)
@@ -227,7 +248,11 @@ class SafeHttpClient:
 
                     host, _ = parse_host_port(current_url)
                     raise EgressBlockedError("too_many_redirects", host)
-        except TimeoutError as exc:
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            # httpx.TimeoutException is defense-in-depth: with the outer asyncio.timeout
+            # as sole authority (see above) this shouldn't fire in practice, but it keeps
+            # the "never a raw network exception" contract even if a transport raises its
+            # own timeout directly.
             host, _ = parse_host_port(current_url)
             raise RequestTimeoutError(host) from exc
 
@@ -274,7 +299,7 @@ class PinnedTransport(httpx.HTTPTransport):
 
         try:
             resolved_ips = _resolve_ips_sync(host)
-        except OSError:
+        except socket.gaierror:
             resolved_ips = []
         pinned_ip = _validated_ip(matches, resolved_ips, host)
 

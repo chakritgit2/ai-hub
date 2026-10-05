@@ -1,4 +1,5 @@
 import asyncio
+import socket
 
 import httpx
 import pytest
@@ -65,18 +66,71 @@ async def test_check_host_blocks_link_local_ipv6():
     assert exc_info.value.reason == "private_ip_blocked"
 
 
+async def test_check_host_blocks_ipv4_compatible_ipv6_loopback():
+    """::127.0.0.1 is the older, deprecated IPv4-compatible form (distinct from the
+    IPv4-mapped ::ffff:127.0.0.1 covered above) — still parses as a valid IPv6Address and
+    must also be unwrapped before the IPv4 CIDR check, or it bypasses the block."""
+
+    async def resolver(host: str) -> list[str]:
+        return ["::127.0.0.1"]
+
+    with pytest.raises(EgressBlockedError) as exc_info:
+        await SafeHttpClient([_entry("internal.example.com")], resolve_ips=resolver).check_host(
+            "internal.example.com", 443
+        )
+    assert exc_info.value.reason == "private_ip_blocked"
+
+
+async def test_check_host_blocks_ipv4_compatible_ipv6_private():
+    """Same IPv4-compatible unwrap, against a non-loopback private CIDR (10.0.0.0/8) —
+    proves the fix isn't narrowly special-cased to loopback."""
+
+    async def resolver(host: str) -> list[str]:
+        return ["::10.0.0.5"]
+
+    with pytest.raises(EgressBlockedError) as exc_info:
+        await SafeHttpClient([_entry("internal.example.com")], resolve_ips=resolver).check_host(
+            "internal.example.com", 443
+        )
+    assert exc_info.value.reason == "private_ip_blocked"
+
+
+async def test_check_host_blocks_ipv6_loopback_literal():
+    """Regression guard: ::1 and the IPv4-compatible range ::/96 both contain `::1`
+    (its low 32 bits are zero) — a fix that unwraps by *replacing* the address instead of
+    adding a candidate would turn ::1 into 0.0.0.1, which matches no CIDR, silently
+    unblocking IPv6 loopback. ::1 must still be blocked via its own ::1/128 entry."""
+    with pytest.raises(EgressBlockedError) as exc_info:
+        await SafeHttpClient([_entry("::1")]).check_host("::1", 443)
+    assert exc_info.value.reason == "private_ip_blocked"
+
+
 async def test_check_host_blocks_when_dns_resolution_fails():
     """An unresolvable host must become EgressBlockedError, not a raw socket.gaierror —
     SafeHttpClientError is the only kind of exception this client is allowed to raise."""
 
     async def failing_resolver(host: str) -> list[str]:
-        raise OSError("nodename nor servname provided, or not known")
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
 
     with pytest.raises(EgressBlockedError) as exc_info:
         await SafeHttpClient([_entry("nonexistent.invalid")], resolve_ips=failing_resolver).check_host(
             "nonexistent.invalid", 443
         )
     assert exc_info.value.reason == "dns_resolution_failed"
+
+
+async def test_check_host_propagates_non_dns_os_error():
+    """Only socket.gaierror (genuine resolution failure) should be swallowed into
+    dns_resolution_failed — an unrelated OSError (e.g. local fd exhaustion) must propagate
+    rather than being mislabeled as a DNS problem."""
+
+    async def failing_resolver(host: str) -> list[str]:
+        raise OSError(24, "Too many open files")
+
+    with pytest.raises(OSError):
+        await SafeHttpClient([_entry("api.openai.com")], resolve_ips=failing_resolver).check_host(
+            "api.openai.com", 443
+        )
 
 
 async def test_check_host_allows_exact_match():
@@ -237,6 +291,61 @@ def test_pinned_transport_blocks_host_not_in_allowlist_without_connecting():
         transport.handle_request(request)
 
     assert exc_info.value.reason == "not_in_allowlist"
+
+
+def test_pinned_transport_blocks_when_dns_resolution_fails(monkeypatch):
+    """Sync twin of test_check_host_blocks_when_dns_resolution_fails — PinnedTransport.
+    handle_request resolves via the module-level _resolve_ips_sync, not an injectable
+    callback, so the failure is simulated by monkeypatching that function directly."""
+
+    def failing_resolver(host: str) -> list[str]:
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr(safe_http_client_module, "_resolve_ips_sync", failing_resolver)
+
+    transport = PinnedTransport([_entry("nonexistent.invalid")])
+    request = httpx.Request("GET", "https://nonexistent.invalid/")
+
+    with pytest.raises(EgressBlockedError) as exc_info:
+        transport.handle_request(request)
+
+    assert exc_info.value.reason == "dns_resolution_failed"
+
+
+def test_pinned_transport_propagates_non_dns_os_error(monkeypatch):
+    """Sync twin of test_check_host_propagates_non_dns_os_error."""
+
+    def failing_resolver(host: str) -> list[str]:
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(safe_http_client_module, "_resolve_ips_sync", failing_resolver)
+
+    transport = PinnedTransport([_entry("api.openai.com")])
+    request = httpx.Request("GET", "https://api.openai.com/")
+
+    with pytest.raises(OSError):
+        transport.handle_request(request)
+
+
+async def test_request_timeout_on_a_single_hop_raises_request_timeout_error(monkeypatch):
+    """A single hop that hangs past the budget must surface as RequestTimeoutError, not a
+    raw httpx.ConnectTimeout/ReadTimeout — distinct from
+    test_request_total_timeout_bounds_the_whole_redirect_chain below, which only proves
+    the budget is cumulative across redirects, not that a single-hop race is handled.
+    Regression guard for giving httpx.AsyncClient its own equal-length timeout, which can
+    fire before (and isn't caught by) the outer asyncio.timeout."""
+    monkeypatch.setattr(safe_http_client_module, "DEFAULT_TIMEOUT_SECONDS", 0.1)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)
+        return httpx.Response(200)  # pragma: no cover - never reached
+
+    client = SafeHttpClient(
+        [_entry("api.example.com")], transport=httpx.MockTransport(handler), resolve_ips=_fake_public_resolver
+    )
+
+    with pytest.raises(RequestTimeoutError):
+        await client.request("GET", "https://api.example.com/")
 
 
 async def test_request_total_timeout_bounds_the_whole_redirect_chain(monkeypatch):

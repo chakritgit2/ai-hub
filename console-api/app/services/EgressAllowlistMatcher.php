@@ -27,7 +27,12 @@ final class EgressAllowlistMatcher
         $host = strtolower($host);
 
         foreach ($rows as $row) {
+            // PDO_PGSQL returns every column as a string, so a DB-sourced `port` (e.g.
+            // `"8443"`) must be cast before the strict comparison below, or a numerically
+            // equal port (caller passes an `int`) never matches and a correctly
+            // allowlisted host:port is wrongly rejected.
             $rowPort = $row['port'] ?? null;
+            $rowPort = $rowPort !== null ? (int) $rowPort : null;
             // SafeHttpClient's _matching_entries (ai/app/integrations/safe_http_client.py)
             // applies the same "row port null means any port" rule at request time — this
             // save-time check must agree, or a config that passes here can still 422 when

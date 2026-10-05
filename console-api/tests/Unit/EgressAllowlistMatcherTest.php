@@ -86,6 +86,21 @@ final class EgressAllowlistMatcherTest extends TestCase
         self::assertTrue(EgressAllowlistMatcher::hostAllowed($rows, 'internal.corp'));
     }
 
+    public function testPortScopedRowAllowsMatchingPortWhenRowPortIsString(): void
+    {
+        // PDO_PGSQL returns every column as a string — simulate a real fetchAll() row.
+        $rows = [['host_pattern' => 'internal.corp', 'port' => '8443', 'allow_private_ip' => false]];
+
+        self::assertTrue(EgressAllowlistMatcher::hostAllowed($rows, 'internal.corp', 8443));
+    }
+
+    public function testPortScopedRowRejectsADifferentPortWhenRowPortIsString(): void
+    {
+        $rows = [['host_pattern' => 'internal.corp', 'port' => '8443', 'allow_private_ip' => false]];
+
+        self::assertFalse(EgressAllowlistMatcher::hostAllowed($rows, 'internal.corp', 443));
+    }
+
     public function testDefaultPortForSchemeMatchesSafeHttpClients(): void
     {
         self::assertSame(443, EgressAllowlistMatcher::defaultPortForScheme('https'));
