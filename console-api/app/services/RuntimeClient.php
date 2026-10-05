@@ -72,6 +72,17 @@ class RuntimeClient
     }
 
     /**
+     * POST /internal/v1/tools/{id}/test — proves a `kind: http` tool's configured URL is
+     * reachable past the egress allowlist, used by ToolsController::testTool() (PRD §6.5).
+     *
+     * @return array<string, mixed>
+     */
+    public function testTool(string $toolId): array
+    {
+        return $this->request('POST', "tools/{$toolId}/test", []);
+    }
+
+    /**
      * @param array<string, mixed> $body
      * @return array<string, mixed>
      */

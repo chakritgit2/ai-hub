@@ -127,6 +127,25 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TestResult' }
 
+  /tools/{id}/test:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: testTool
+      summary: >-
+        Checks a `kind: http` tool's configured url against the egress allowlist and makes
+        one real request via SafeHttpClient to prove it's reachable (PRD §6.5/§7.4). No
+        Authorization header is attached — this slice has no tool-secret storage, so this
+        proves egress+reachability, not authenticated success. `kind: builtin`/`kind: python`
+        return ok:false (no reachability story for either yet).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestResult' }
+
   /kb/{id}/documents:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }

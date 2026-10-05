@@ -36,6 +36,42 @@ export interface ConnectionSecretInput {
 	secret: string;
 }
 
+// CRUD + a standalone connectivity test only (PRD §6.5) — not yet wired into the agent
+// spec/compiler, so no agent can call one during a run.
+export interface Tool {
+	id: string;
+	company_id: string;
+	name: string;
+	kind: 'http' | 'builtin' | 'python';
+	access_level: 'read' | 'write';
+	auth_mode: 'service' | 'delegated';
+	audience?: string | null;
+	// kind-specific: for http, url/method/headers/description/input_schema.
+	config: Record<string, unknown>;
+	enabled: boolean;
+}
+
+export interface SkillVersion {
+	id: string;
+	version_no: number;
+	content: string;
+	content_hash: string;
+	has_scripts: boolean;
+	is_published: boolean;
+	published_at?: string | null;
+}
+
+// CRUD + versioning only (PRD §6.6a) — not yet wired into the agent spec/compiler, so no
+// agent can load one via SkillsTool during a run.
+export interface Skill {
+	id: string;
+	company_id: string;
+	name: string;
+	description?: string | null;
+	status: string;
+	latest_version: SkillVersion;
+}
+
 export interface Agent {
 	id: string;
 	company_id: string;

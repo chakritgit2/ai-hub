@@ -17,7 +17,9 @@ import type {
 	Me,
 	Placeholder,
 	Run,
-	RuntimeTokenResponse
+	RuntimeTokenResponse,
+	Skill,
+	Tool
 } from './types';
 
 // ---- /me --------------------------------------------------------------
@@ -205,26 +207,26 @@ export function getDashboardSummary(): Promise<DashboardSummary> {
 	return apiFetch<DashboardSummary>('/dashboard');
 }
 
-// ---- /tools (phase 2) -----------------------------------------------------
+// ---- /tools -------------------------------------------------------------
 
-export function listTools(): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>('/tools');
+export function listTools(): Promise<Tool[]> {
+	return apiFetch<Tool[]>('/tools');
 }
 
-export function createTool(input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>('/tools', { method: 'POST', body: input });
+export function createTool(input: Partial<Tool>): Promise<Tool> {
+	return apiFetch<Tool>('/tools', { method: 'POST', body: input });
 }
 
-export function updateTool(id: string, input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/tools/${id}`, { method: 'PATCH', body: input });
+export function updateTool(id: string, input: Partial<Tool>): Promise<Tool> {
+	return apiFetch<Tool>(`/tools/${id}`, { method: 'PATCH', body: input });
 }
 
 export function deleteTool(id: string): Promise<void> {
 	return apiFetch<void>(`/tools/${id}`, { method: 'DELETE' });
 }
 
-export function testTool(id: string): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/tools/${id}/test`, { method: 'POST' });
+export function testTool(id: string): Promise<{ ok: boolean; detail: string }> {
+	return apiFetch(`/tools/${id}/test`, { method: 'POST' });
 }
 
 // ---- /datasets (phase 3) --------------------------------------------------
@@ -287,22 +289,29 @@ export function searchKnowledgeBase(id: string, input: Placeholder): Promise<Pla
 	return apiFetch<Placeholder>(`/kb/${id}/search`, { method: 'POST', body: input });
 }
 
-// ---- /skills (phase 2) -----------------------------------------------------
+// ---- /skills --------------------------------------------------------------
 
-export function listSkills(): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>('/skills');
+export function listSkills(): Promise<Skill[]> {
+	return apiFetch<Skill[]>('/skills');
 }
 
-export function createSkill(input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>('/skills', { method: 'POST', body: input });
+export interface SkillInput {
+	name?: string;
+	description?: string | null;
+	status?: string;
+	content?: string;
 }
 
-export function updateSkill(id: string, input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/skills/${id}`, { method: 'PATCH', body: input });
+export function createSkill(input: SkillInput): Promise<Skill> {
+	return apiFetch<Skill>('/skills', { method: 'POST', body: input });
 }
 
-export function publishSkill(id: string): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/skills/${id}/publish`, { method: 'POST' });
+export function updateSkill(id: string, input: SkillInput): Promise<Skill> {
+	return apiFetch<Skill>(`/skills/${id}`, { method: 'PATCH', body: input });
+}
+
+export function publishSkill(id: string): Promise<Skill> {
+	return apiFetch<Skill>(`/skills/${id}/publish`, { method: 'POST' });
 }
 
 // ---- /settings ------------------------------------------------------------
@@ -366,5 +375,7 @@ export type {
 	Deployment,
 	Me,
 	Run,
-	RuntimeTokenResponse
+	RuntimeTokenResponse,
+	Skill,
+	Tool
 } from './types';

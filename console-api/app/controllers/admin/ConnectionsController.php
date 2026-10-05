@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ConsoleApi\Controllers\Admin;
 
 use ConsoleApi\Controllers\ControllerBase;
+use ConsoleApi\Services\EgressAllowlistMatcher;
 use ConsoleApi\Services\RuntimeClient;
 use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
@@ -62,6 +63,10 @@ class ConnectionsController extends ControllerBase
         $apiBase = is_string($body['api_base'] ?? null) ? $body['api_base'] : null;
         $maxConcurrency = is_int($body['max_concurrency'] ?? null) ? $body['max_concurrency'] : 4;
         $meta = is_array($body['meta'] ?? null) ? $body['meta'] : [];
+
+        if (($error = $this->assertApiBaseAllowed($apiBase)) !== null) {
+            return $error;
+        }
 
         try {
             $row = $this->runInCompanyTransaction(
@@ -135,7 +140,11 @@ class ConnectionsController extends ControllerBase
             $fields['type'] = $body['type'];
         }
         if (array_key_exists('api_base', $body)) {
-            $fields['api_base'] = is_string($body['api_base']) ? $body['api_base'] : null;
+            $apiBase = is_string($body['api_base']) ? $body['api_base'] : null;
+            if (($error = $this->assertApiBaseAllowed($apiBase)) !== null) {
+                return $error;
+            }
+            $fields['api_base'] = $apiBase;
         }
         if (array_key_exists('max_concurrency', $body)) {
             if (!is_int($body['max_concurrency'])) {
@@ -310,6 +319,37 @@ class ConnectionsController extends ControllerBase
     private function isUniqueViolation(Throwable $exception): bool
     {
         return $exception instanceof \PDOException && ($exception->errorInfo[0] ?? null) === '23505';
+    }
+
+    /**
+     * Save-time half of PRD §7.4's "every connection's api_base must pass the egress
+     * allowlist on save and at run time" — host-pattern match only (see
+     * EgressAllowlistMatcher); ai-runtime's SafeHttpClient re-checks the resolved IP at
+     * request time. `null` (no api_base given) is always allowed — nothing to validate.
+     */
+    private function assertApiBaseAllowed(?string $apiBase): ?Response
+    {
+        if ($apiBase === null) {
+            return null;
+        }
+
+        $host = parse_url($apiBase, PHP_URL_HOST);
+        if (!is_string($host) || $host === '') {
+            return $this->jsonResponse(['error' => 'api_base_invalid'], 400);
+        }
+
+        $rows = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchAll(
+                'SELECT host_pattern, port, allow_private_ip FROM console.egress_allowlist',
+                Enum::FETCH_ASSOC
+            )
+        );
+
+        if (!EgressAllowlistMatcher::hostAllowed($rows, $host)) {
+            return $this->jsonResponse(['error' => 'egress_host_not_allowed', 'host' => $host], 422);
+        }
+
+        return null;
     }
 
     /**

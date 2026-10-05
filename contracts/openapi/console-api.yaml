@@ -88,6 +88,53 @@ components:
       required: [secret]
       properties:
         secret: { type: string }
+    Tool:
+      type: object
+      description: >-
+        CRUD + standalone connectivity test only (PRD §6.5) — not yet wired into the agent
+        spec/compiler, so no agent can call one during a run.
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [http, builtin, python] }
+        access_level: { type: string, enum: [read, write] }
+        auth_mode: { type: string, enum: [service, delegated] }
+        audience: { type: string, nullable: true }
+        config:
+          type: object
+          additionalProperties: true
+          description: 'kind-specific: for http, url/method/headers/description/input_schema.'
+        enabled: { type: boolean }
+    SkillVersion:
+      type: object
+      properties:
+        id: { type: string }
+        version_no: { type: integer }
+        content: { type: string, description: 'SKILL.md content, max 100 KB (PRD §6.6a).' }
+        content_hash: { type: string }
+        has_scripts: { type: boolean }
+        is_published: { type: boolean }
+        published_at: { type: string, nullable: true }
+    Skill:
+      type: object
+      description: >-
+        CRUD + versioning only (PRD §6.6a) — not yet wired into the agent spec/compiler, so
+        no agent can load one via SkillsTool during a run.
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        status: { type: string }
+        latest_version: { $ref: '#/components/schemas/SkillVersion' }
+    SkillInput:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string, nullable: true }
+        status: { type: string }
+        content: { type: string, description: 'Creating a new draft, or editing an already-published one, bumps the version.' }
     Agent:
       type: object
       properties:
@@ -540,27 +587,23 @@ paths:
   /tools:
     get:
       operationId: listTools
-      x-phase: 2
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Tool' } } } } } }
     post:
       operationId: createTool
-      x-phase: 2
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Tool' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Tool' } } } } }
   /tools/{id}:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
       - { $ref: '#/components/parameters/IdParam' }
     patch:
       operationId: updateTool
-      x-phase: 2
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Tool' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Tool' } } } } }
     delete:
       operationId: deleteTool
-      x-phase: 2
       responses: { "204": { description: Deleted } }
   /tools/{id}/test:
     parameters:
@@ -568,8 +611,19 @@ paths:
       - { $ref: '#/components/parameters/IdParam' }
     post:
       operationId: testTool
-      x-phase: 2
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      summary: >-
+        Proves a `kind: http` tool's configured URL is reachable past the egress allowlist
+        (PRD §6.5/§7.4) — not yet an authenticated call, see ai-internal.yaml's testTool.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  detail: { type: string }
 
   /datasets:
     get:
@@ -672,32 +726,31 @@ paths:
   /skills:
     get:
       operationId: listSkills
-      x-phase: 2
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Skill' } } } } } }
     post:
       operationId: createSkill
-      x-phase: 2
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/SkillInput' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Skill' } } } } }
   /skills/{id}:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
       - { $ref: '#/components/parameters/IdParam' }
     patch:
       operationId: updateSkill
-      x-phase: 2
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/SkillInput' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Skill' } } } } }
   /skills/{id}/publish:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
       - { $ref: '#/components/parameters/IdParam' }
     post:
       operationId: publishSkill
-      x-phase: 2
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      summary: >-
+        Publishes the skill's current latest version (immutable afterward, same rule as
+        agent versions) — PRD §6.6a.
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Skill' } } } } }
 
   /settings/users:
     get:

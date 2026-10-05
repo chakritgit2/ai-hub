@@ -15,6 +15,8 @@
 		{ label: 'Agents', href: '/agents' },
 		{ label: 'Playground', href: '/playground' },
 		{ label: 'Connections', href: '/connections' },
+		{ label: 'Tools', href: '/tools' },
+		{ label: 'Skills', href: '/skills' },
 		{ label: 'Runs & Logs', href: '/runs' },
 		{ label: 'Deployments', href: '/deployments' },
 		{ label: 'API Keys', href: '/api-keys' },
@@ -23,9 +25,7 @@
 
 	// PRD §6.9 phase 2+ — nav entries only, disabled, no routes exist yet.
 	const laterPhaseItems: NavItem[] = [
-		{ label: 'Tools', href: '/tools', phase: 2 },
 		{ label: 'Knowledge Bases', href: '/knowledge-bases', phase: 2 },
-		{ label: 'Skills', href: '/skills', phase: 2 },
 		{ label: 'Evaluation', href: '/evaluation', phase: 3 },
 		{ label: 'Workflows', href: '/workflows', phase: 4 }
 	];

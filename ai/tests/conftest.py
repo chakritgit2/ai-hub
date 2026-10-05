@@ -143,6 +143,7 @@ def make_connection():
         company_id: str,
         connection_type: str = "dynamiq.connections.OpenAI",
         name: str = "test-connection",
+        api_base: str | None = None,
     ) -> str:
         connection_id = str(uuid.uuid4())
         with _connect() as conn:
@@ -150,8 +151,9 @@ def make_connection():
             # own freshly generated uuid4, never external input.
             conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
             conn.execute(
-                "INSERT INTO console.connections (id, company_id, name, type) VALUES (%s, %s, %s, %s)",
-                (connection_id, company_id, name, connection_type),
+                "INSERT INTO console.connections (id, company_id, name, type, api_base) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (connection_id, company_id, name, connection_type, api_base),
             )
             conn.commit()
         created.append((company_id, connection_id))
@@ -163,6 +165,153 @@ def make_connection():
         with _connect() as conn:
             conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
             conn.execute("DELETE FROM console.connections WHERE id = %s", (connection_id,))
+            conn.commit()
+
+
+@pytest.fixture
+def make_tool():
+    """Inserts a `console.tools` row as `console_app` (same write-role convention as
+    make_connection) and deletes it afterward."""
+    settings = get_settings()
+    created: list[tuple[str, str]] = []  # (company_id, tool_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(
+        company_id: str,
+        name: str = "test-tool",
+        kind: str = "http",
+        access_level: str = "read",
+        auth_mode: str = "service",
+        config: dict | None = None,
+    ) -> str:
+        tool_id = str(uuid.uuid4())
+        with _connect() as conn:
+            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
+            # own freshly generated uuid4, never external input.
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.tools (id, company_id, name, kind, access_level, auth_mode, config) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (tool_id, company_id, name, kind, access_level, auth_mode, json.dumps(config or {})),
+            )
+            conn.commit()
+        created.append((company_id, tool_id))
+        return tool_id
+
+    yield _make
+
+    for company_id, tool_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.tools WHERE id = %s", (tool_id,))
+            conn.commit()
+
+
+@pytest.fixture
+def make_skill():
+    """Inserts a `console.skills` + one `console.skill_versions` row as `console_app` (same
+    write-role convention as make_connection/make_tool) and deletes them afterward.
+    `content_hash` is a placeholder - nothing on the Python side reads it."""
+    settings = get_settings()
+    created: list[tuple[str, str, str]] = []  # (company_id, skill_id, version_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(
+        company_id: str,
+        name: str = "test-skill",
+        description: str | None = None,
+        content: str = "# Test Skill\n\nSome instructions.",
+        version_no: int = 1,
+        is_published: bool = True,
+    ) -> str:
+        skill_id = str(uuid.uuid4())
+        version_id = str(uuid.uuid4())
+        with _connect() as conn:
+            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
+            # own freshly generated uuid4, never external input.
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.skills (id, company_id, name, description) VALUES (%s, %s, %s, %s)",
+                (skill_id, company_id, name, description),
+            )
+            conn.execute(
+                "INSERT INTO console.skill_versions "
+                "(id, company_id, skill_id, version_no, content, content_hash, is_published) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (version_id, company_id, skill_id, version_no, content, "placeholder-hash", is_published),
+            )
+            conn.commit()
+        created.append((company_id, skill_id, version_id))
+        return skill_id
+
+    yield _make
+
+    for company_id, skill_id, version_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.skill_versions WHERE id = %s", (version_id,))
+            conn.execute("DELETE FROM console.skills WHERE id = %s", (skill_id,))
+            conn.commit()
+
+
+@pytest.fixture
+def make_egress_allowlist_entry():
+    """Inserts a `console.egress_allowlist` row as `console_app` (same write-role
+    convention as make_connection) and deletes it afterward."""
+    settings = get_settings()
+    created: list[tuple[str, str]] = []  # (company_id, entry_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(
+        company_id: str,
+        host_pattern: str,
+        port: int | None = None,
+        allow_private_ip: bool = False,
+    ) -> str:
+        entry_id = str(uuid.uuid4())
+        with _connect() as conn:
+            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
+            # own freshly generated uuid4, never external input.
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.egress_allowlist (id, company_id, host_pattern, port, allow_private_ip) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (entry_id, company_id, host_pattern, port, allow_private_ip),
+            )
+            conn.commit()
+        created.append((company_id, entry_id))
+        return entry_id
+
+    yield _make
+
+    for company_id, entry_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.egress_allowlist WHERE id = %s", (entry_id,))
             conn.commit()
 
 

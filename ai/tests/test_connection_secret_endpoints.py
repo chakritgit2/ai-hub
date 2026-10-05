@@ -101,6 +101,23 @@ async def test_test_connection_returns_ok_false_when_no_secret_stored(internal_c
 
 
 @requires_postgres
+async def test_test_connection_returns_egress_blocked_when_host_not_allowlisted(internal_client, make_connection):
+    """No egress_allowlist row exists for this company/host, so SafeHttpClient must reject
+    it before any network call is attempted — proven by pointing api_base at a reserved,
+    non-routable test address (RFC 5737 TEST-NET-1) that would hang/fail if actually
+    dialed, and asserting the response still comes back fast with no secret stored."""
+    client, company_id = internal_client
+    connection_id = make_connection(company_id, api_base="https://192.0.2.1")
+
+    resp = await client.post(f"/internal/v1/connections/{connection_id}/test")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["detail"].startswith("egress_blocked")
+
+
+@requires_postgres
 async def test_put_then_test_with_garbage_key_is_ok_false(internal_client, make_connection, _cleanup_company_keys):
     """A true negative: OpenAI deterministically rejects a malformed key, so this needs
     no live OPENAI_API_KEY to be a meaningful assertion."""

@@ -20,6 +20,7 @@ import logging
 from typing import Annotated, Literal
 from uuid import UUID
 
+import httpx
 import openai
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -29,11 +30,19 @@ from app.core.auth import InvalidTokenError, verify_internal_token, verify_runti
 from app.core.crypto import encrypt_with_dek
 from app.core.otel import setup_tracing
 from app.integrations.dynamiq_adapter import build_llm
+from app.integrations.safe_http_client import (
+    EgressBlockedError,
+    SafeHttpClient,
+    SafeHttpClientError,
+    parse_host_port,
+)
 from app.services.company_keys import get_or_create_company_dek
 from app.services.compiler import compile_spec
 from app.services.connection_secrets import decrypt_connection_secret, upsert_connection_secret
 from app.services.connections import resolve_connection
+from app.services.egress_allowlist import list_egress_allowlist
 from app.services.runtime import run_playground_agent
+from app.services.tools import resolve_tool
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +318,18 @@ async def testConnection(id: str, claims: InternalAuth) -> Response:
     if connection is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
 
+    if connection.api_base:
+        try:
+            host, port = parse_host_port(connection.api_base)
+        except ValueError as exc:
+            return TestResult(ok=False, detail=str(exc))
+
+        allowlist = await list_egress_allowlist(company_id)
+        try:
+            await SafeHttpClient(allowlist).check_host(host, port)
+        except EgressBlockedError as exc:
+            return TestResult(ok=False, detail=f"egress_blocked: {exc.reason}")
+
     try:
         secret = await decrypt_connection_secret(company_id, id)
         if secret is None:
@@ -329,6 +350,60 @@ async def testConnection(id: str, claims: InternalAuth) -> Response:
         return TestResult(ok=False, detail=f"provider error: {exc}")
 
     return TestResult(ok=True)
+
+
+@app.post("/internal/v1/tools/{id}/test", response_model=TestResult)
+async def testTool(id: str, claims: InternalAuth) -> Response:
+    """Proves a `kind: http` tool's configured URL is reachable past the egress allowlist
+    (PRD §6.5/§7.4) — not an authenticated call: this slice has no tool-secret storage (unlike
+    connections' `connection_secrets`), so no Authorization header is attached. `kind: builtin`/
+    `kind: python` tools have no reachability story yet (builtin needs its own connection
+    wiring; python has no execution path at all) and get an honest `ok: false` instead of a
+    fake pass. Same "bad input is still 200 ok:false" pattern as `testConnection`.
+    """
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="tool_not_found")
+
+    tool = await resolve_tool(company_id, id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="tool_not_found")
+
+    if tool.kind != "http":
+        return TestResult(ok=False, detail=f"test not supported for kind={tool.kind!r}")
+
+    url = tool.config.get("url")
+    if not url:
+        return TestResult(ok=False, detail="tool config has no url")
+
+    try:
+        host, port = parse_host_port(url)
+    except ValueError as exc:
+        return TestResult(ok=False, detail=str(exc))
+
+    allowlist = await list_egress_allowlist(company_id)
+    client = SafeHttpClient(allowlist)
+    try:
+        await client.check_host(host, port)
+    except EgressBlockedError as exc:
+        return TestResult(ok=False, detail=f"egress_blocked: {exc.reason}")
+
+    try:
+        response = await client.request(
+            tool.config.get("method", "GET"), url, headers=tool.config.get("headers") or {}
+        )
+    except EgressBlockedError as exc:
+        return TestResult(ok=False, detail=f"egress_blocked: {exc.reason}")
+    except SafeHttpClientError as exc:
+        return TestResult(ok=False, detail=str(exc))
+    except httpx.HTTPError as exc:
+        return TestResult(ok=False, detail=f"request failed: {exc}")
+    except (TypeError, ValueError) as exc:
+        # tool.config came from a stored row, not this request - a malformed `headers`/
+        # `method` (e.g. headers not a mapping) must not 500 any more than a bad url does.
+        return TestResult(ok=False, detail=f"invalid tool config: {exc}")
+
+    return TestResult(ok=response.status_code < 500, detail=f"status {response.status_code}")
 
 
 @app.post("/internal/v1/kb/{id}/documents")
