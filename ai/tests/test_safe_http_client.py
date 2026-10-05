@@ -9,6 +9,7 @@ from app.integrations.safe_http_client import (
     MAX_RESPONSE_BYTES,
     EgressBlockedError,
     PinnedTransport,
+    RequestFailedError,
     RequestTimeoutError,
     ResponseTooLargeError,
     SafeHttpClient,
@@ -365,6 +366,36 @@ async def test_request_total_timeout_bounds_the_whole_redirect_chain(monkeypatch
 
     with pytest.raises(RequestTimeoutError):
         await client.request("GET", "https://old.example.com/")
+
+
+async def test_request_wraps_connect_error_instead_of_leaking_raw_httpx_exception():
+    """SafeHttpClientError's contract is "never a raw network exception" — a transport
+    failure that isn't a timeout (connection refused, reset, ...) must still come out as
+    a SafeHttpClientError subtype, not a raw httpx.ConnectError."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    client = SafeHttpClient(
+        [_entry("api.example.com")], transport=httpx.MockTransport(handler), resolve_ips=_fake_public_resolver
+    )
+
+    with pytest.raises(RequestFailedError) as exc_info:
+        await client.request("GET", "https://api.example.com/")
+    assert exc_info.value.reason == "ConnectError"
+
+
+async def test_request_wraps_remote_protocol_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError("peer closed connection")
+
+    client = SafeHttpClient(
+        [_entry("api.example.com")], transport=httpx.MockTransport(handler), resolve_ips=_fake_public_resolver
+    )
+
+    with pytest.raises(RequestFailedError) as exc_info:
+        await client.request("GET", "https://api.example.com/")
+    assert exc_info.value.reason == "RemoteProtocolError"
 
 
 async def test_request_rejects_oversized_response():

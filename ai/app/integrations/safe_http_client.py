@@ -68,6 +68,17 @@ class RequestTimeoutError(SafeHttpClientError):
         super().__init__(f"request_timeout:{host}")
 
 
+class RequestFailedError(SafeHttpClientError):
+    """Wraps any non-timeout httpx.HTTPError (ConnectError, ReadError,
+    RemoteProtocolError, ProxyError, ...) so SafeHttpClientError's "never a raw network
+    exception" contract holds for request() failures beyond timeouts too."""
+
+    def __init__(self, host: str, reason: str):
+        self.host = host
+        self.reason = reason
+        super().__init__(f"request_failed:{reason}:{host}")
+
+
 def parse_host_port(url: str) -> tuple[str, int]:
     """Extracts (host, port) from a URL, defaulting the port from the scheme."""
     parts = urlsplit(url)
@@ -255,6 +266,12 @@ class SafeHttpClient:
             # own timeout directly.
             host, _ = parse_host_port(current_url)
             raise RequestTimeoutError(host) from exc
+        except httpx.HTTPError as exc:
+            # Catches whatever isn't a timeout (ConnectError, ReadError,
+            # RemoteProtocolError, ProxyError, ...) — the clause above already peeled off
+            # httpx.TimeoutException before this runs, so this is everything else.
+            host, _ = parse_host_port(current_url)
+            raise RequestFailedError(host, type(exc).__name__) from exc
 
     @staticmethod
     async def _read_capped(response: httpx.Response, host: str) -> bytes:
