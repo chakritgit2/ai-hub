@@ -8,6 +8,7 @@ matching allowlist entry explicitly opts in, no redirects outside the allowlist,
 """
 import asyncio
 import ipaddress
+import socket
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -92,6 +93,33 @@ async def _resolve_ips(host: str) -> list[str]:
     return list({info[4][0] for info in addrinfo})
 
 
+def _resolve_ips_sync(host: str) -> list[str]:
+    """Blocking twin of `_resolve_ips`, for transports (e.g. `PinnedTransport`) whose
+    `httpx.BaseTransport.handle_request` is called synchronously with no running loop."""
+    try:
+        return [ipaddress.ip_address(host).compressed]
+    except ValueError:
+        pass
+
+    addrinfo = socket.getaddrinfo(host, None)
+    return list({info[4][0] for info in addrinfo})
+
+
+def _validated_ip(
+    matches: list[EgressAllowlistEntry], resolved_ips: list[str], host: str
+) -> str:
+    """Picks the IP a now-approved request must connect to. Raises if DNS resolution
+    came back empty or (absent an `allow_private_ip` entry) landed on a blocked range."""
+    if not resolved_ips:
+        raise EgressBlockedError("dns_resolution_failed", host)
+    allow_private_ip = any(entry.allow_private_ip for entry in matches)
+    if not allow_private_ip:
+        for ip in resolved_ips:
+            if _is_blocked_ip(ip):
+                raise EgressBlockedError("private_ip_blocked", host)
+    return resolved_ips[0]
+
+
 class SafeHttpClient:
     """SSRF-safe HTTP client, gated by a company's `egress_allowlist` rows."""
 
@@ -113,17 +141,19 @@ class SafeHttpClient:
             if _host_matches(entry.host_pattern, host) and (entry.port is None or entry.port == port)
         ]
 
-    async def check_host(self, host: str, port: int) -> None:
+    async def check_host(self, host: str, port: int) -> str:
+        """Validates `host`/`port` against the allowlist and blocked ranges, returning the
+        specific IP the caller must connect to. Callers must connect to that exact IP
+        rather than resolving `host` again later — a second, independent resolution would
+        let a low-TTL DNS answer flip to a blocked address between this check and the
+        real request (DNS-rebinding TOCTOU), silently defeating the check entirely.
+        """
         matches = self._matching_entries(host, port)
         if not matches:
             raise EgressBlockedError("not_in_allowlist", host)
 
         resolved_ips = await self._resolve_ips(host)
-        allow_private_ip = any(entry.allow_private_ip for entry in matches)
-        if not allow_private_ip:
-            for ip in resolved_ips:
-                if _is_blocked_ip(ip):
-                    raise EgressBlockedError("private_ip_blocked", host)
+        return _validated_ip(matches, resolved_ips, host)
 
     async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         current_url = url
@@ -132,9 +162,15 @@ class SafeHttpClient:
         ) as client:
             for _ in range(MAX_REDIRECTS):
                 host, port = parse_host_port(current_url)
-                await self.check_host(host, port)
+                pinned_ip = await self.check_host(host, port)
 
                 request = client.build_request(method, current_url, **kwargs)
+                # Connect to the exact IP just validated (not `host` again) and keep
+                # the original hostname for the Host header (already set by
+                # build_request, above) and TLS SNI/cert verification (`sni_hostname`)
+                # — see check_host's docstring for why re-resolving here would matter.
+                request.url = request.url.copy_with(host=pinned_ip)
+                request.extensions["sni_hostname"] = host
                 response = await client.send(request, follow_redirects=False, stream=True)
                 try:
                     body = await self._read_capped(response, host)
@@ -170,3 +206,37 @@ class SafeHttpClient:
                 raise ResponseTooLargeError(host)
             chunks.append(chunk)
         return b"".join(chunks)
+
+
+class PinnedTransport(httpx.HTTPTransport):
+    """SSRF-safe `httpx.HTTPTransport` for callers that hand their own `httpx.Client` to a
+    third-party SDK (e.g. `openai.OpenAI(http_client=...)`) instead of going through
+    `SafeHttpClient.request()` directly — same allowlist + DNS-pinning check as
+    `SafeHttpClient`, applied to every request the SDK makes rather than to a one-off
+    pre-flight call the SDK's own request could still diverge from.
+    """
+
+    def __init__(self, egress_allowlist: Sequence[EgressAllowlistEntry] | None = None, **kwargs: Any):
+        super().__init__(**kwargs)
+        self._egress_allowlist = list(egress_allowlist or [])
+
+    def _matching_entries(self, host: str, port: int) -> list[EgressAllowlistEntry]:
+        return [
+            entry
+            for entry in self._egress_allowlist
+            if _host_matches(entry.host_pattern, host) and (entry.port is None or entry.port == port)
+        ]
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        port = request.url.port or _DEFAULT_PORTS.get(request.url.scheme, 443)
+
+        matches = self._matching_entries(host, port)
+        if not matches:
+            raise EgressBlockedError("not_in_allowlist", host)
+
+        pinned_ip = _validated_ip(matches, _resolve_ips_sync(host), host)
+
+        request.url = request.url.copy_with(host=pinned_ip)
+        request.extensions["sni_hostname"] = host
+        return super().handle_request(request)

@@ -4,6 +4,7 @@ import pytest
 from app.integrations.safe_http_client import (
     MAX_RESPONSE_BYTES,
     EgressBlockedError,
+    PinnedTransport,
     ResponseTooLargeError,
     SafeHttpClient,
     parse_host_port,
@@ -121,7 +122,10 @@ async def test_request_blocks_host_not_in_allowlist_without_calling_transport():
 
 async def test_request_follows_redirect_to_allowed_host():
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "old.example.com":
+        # SafeHttpClient pins request.url to the resolved IP (DNS-rebinding guard) and
+        # keeps the real hostname only in the Host header/SNI extension — so the mock
+        # transport must key off that, not request.url.host, to tell the two hops apart.
+        if request.headers["host"] == "old.example.com":
             return httpx.Response(302, headers={"location": "https://new.example.com/"})
         return httpx.Response(200, json={"from": "new"})
 
@@ -138,7 +142,9 @@ async def test_request_follows_redirect_to_allowed_host():
 
 async def test_request_blocks_redirect_to_disallowed_host():
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "old.example.com":
+        # See test_request_follows_redirect_to_allowed_host — match on the Host header,
+        # since request.url.host is the pinned IP by the time the transport sees it.
+        if request.headers["host"] == "old.example.com":
             return httpx.Response(302, headers={"location": "https://evil.example.com/"})
         return httpx.Response(200)  # pragma: no cover - must never be reached
 
@@ -148,6 +154,43 @@ async def test_request_blocks_redirect_to_disallowed_host():
 
     with pytest.raises(EgressBlockedError) as exc_info:
         await client.request("GET", "https://old.example.com/")
+
+    assert exc_info.value.reason == "not_in_allowlist"
+
+
+async def test_request_connects_to_the_resolved_ip_not_the_hostname():
+    """Regression guard for the DNS-rebinding TOCTOU: check_host's resolved IP must be
+    what the transport actually connects to (request.url.host), with the real hostname
+    surviving only in the Host header/SNI — re-resolving `host` by name at connect time
+    (instead of reusing the already-validated IP) is exactly what would let a low-TTL DNS
+    answer swap to a blocked address between the check and the real request."""
+    seen_url_host = None
+    seen_request_host_header = None
+    seen_sni_hostname = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_url_host, seen_request_host_header, seen_sni_hostname
+        seen_url_host = request.url.host
+        seen_request_host_header = request.headers["host"]
+        seen_sni_hostname = request.extensions.get("sni_hostname")
+        return httpx.Response(200)
+
+    client = SafeHttpClient(
+        [_entry("api.example.com")], transport=httpx.MockTransport(handler), resolve_ips=_fake_public_resolver
+    )
+    await client.request("GET", "https://api.example.com/v1/models")
+
+    assert seen_url_host == "93.184.216.34"
+    assert seen_request_host_header == "api.example.com"
+    assert seen_sni_hostname == "api.example.com"
+
+
+def test_pinned_transport_blocks_host_not_in_allowlist_without_connecting():
+    transport = PinnedTransport([])
+    request = httpx.Request("GET", "https://evil.example.com/")
+
+    with pytest.raises(EgressBlockedError) as exc_info:
+        transport.handle_request(request)
 
     assert exc_info.value.reason == "not_in_allowlist"
 

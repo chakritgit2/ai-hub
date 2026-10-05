@@ -55,6 +55,14 @@ class ToolsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
+        // Membership (not yet write-role — that depends on `kind`, only known once the
+        // body is validated below) gates even validating input, matching updateTool's/
+        // deleteTool's "a non-member gets 404 before anything else runs" convention —
+        // without this, a non-member could probe field-validation rules via a 400
+        // instead of getting the 404 every other /tools action gives them.
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
 
         $body = $this->request->getJsonRawBody(true) ?? [];
 
@@ -230,8 +238,17 @@ class ToolsController extends ControllerBase
         if (($error = $this->requireMembership()) !== null) {
             return $error;
         }
-        if ($this->findTool($id) === null) {
+        $existing = $this->findTool($id);
+        if ($existing === null) {
             return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        // Unlike listTools, this makes a real outbound HTTP request to the tool's
+        // configured URL (via ai-runtime/SafeHttpClient) — the same write-capability bar
+        // as actually running the tool, not just reading its definition. Matches
+        // ConnectionsController::testConnection's requireWriteRole(), kind-aware per this
+        // controller's own create/update/delete convention.
+        if (($error = $this->requireWriteRoleForKind($existing['kind'])) !== null) {
+            return $error;
         }
 
         /** @var RuntimeClient $runtimeClient */
