@@ -20,6 +20,16 @@
 				}))
 			: sampleCompanies
 	);
+
+	// $companyId can be left over from the pre-login sampleCompanies placeholder (or an old
+	// company from a previous user) — neither is a real console.companies.id, so every
+	// X-Company-Id-scoped request 404s until it's corrected. Keep it pointed at a company
+	// the logged-in user actually belongs to as soon as we know what those are.
+	$effect(() => {
+		if (options.length > 0 && !options.some((c) => c.id === $companyId)) {
+			companyId.set(options[0].id);
+		}
+	});
 </script>
 
 <label class="flex items-center gap-2 text-sm">
