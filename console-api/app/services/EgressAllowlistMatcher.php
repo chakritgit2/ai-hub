@@ -15,13 +15,27 @@ namespace ConsoleApi\Services;
 final class EgressAllowlistMatcher
 {
     /**
+     * $port is nullable for callers that genuinely don't know the target port (none
+     * today — every caller should pass it); a row's own `port` only narrows the match
+     * when both are known, so an unknown $port degrades to host-only matching rather
+     * than rejecting every port-scoped row outright.
+     *
      * @param array<int, array{host_pattern: string, port?: int|null, allow_private_ip?: bool}> $rows
      */
-    public static function hostAllowed(array $rows, string $host): bool
+    public static function hostAllowed(array $rows, string $host, ?int $port = null): bool
     {
         $host = strtolower($host);
 
         foreach ($rows as $row) {
+            $rowPort = $row['port'] ?? null;
+            // SafeHttpClient's _matching_entries (ai/app/integrations/safe_http_client.py)
+            // applies the same "row port null means any port" rule at request time — this
+            // save-time check must agree, or a config that passes here can still 422 when
+            // actually tested/run.
+            if ($rowPort !== null && $port !== null && $rowPort !== $port) {
+                continue;
+            }
+
             $pattern = strtolower((string) $row['host_pattern']);
 
             if ($pattern === $host) {
@@ -37,5 +51,15 @@ final class EgressAllowlistMatcher
         }
 
         return false;
+    }
+
+    /**
+     * Mirrors ai/app/integrations/safe_http_client.py's `_DEFAULT_PORTS` — a URL with no
+     * explicit port still has a real target port once a scheme is involved, and that's
+     * what a port-scoped allowlist row must be compared against.
+     */
+    public static function defaultPortForScheme(?string $scheme): int
+    {
+        return strtolower((string) $scheme) === 'http' ? 80 : 443;
     }
 }

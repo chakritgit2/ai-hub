@@ -1,10 +1,14 @@
+import asyncio
+
 import httpx
 import pytest
 
+import app.integrations.safe_http_client as safe_http_client_module
 from app.integrations.safe_http_client import (
     MAX_RESPONSE_BYTES,
     EgressBlockedError,
     PinnedTransport,
+    RequestTimeoutError,
     ResponseTooLargeError,
     SafeHttpClient,
     parse_host_port,
@@ -33,6 +37,46 @@ def test_parse_host_port_defaults_http_port():
 
 def test_parse_host_port_uses_explicit_port():
     assert parse_host_port("https://api.openai.com:8443/v1") == ("api.openai.com", 8443)
+
+
+def test_parse_host_port_preserves_explicit_port_zero():
+    """`parts.port or default` would treat port 0 as falsy and silently substitute the
+    scheme default — 0 is unusual but a syntactically valid explicit port."""
+    assert parse_host_port("http://internal.example.com:0/") == ("internal.example.com", 0)
+
+
+async def test_check_host_blocks_ipv4_mapped_ipv6_loopback():
+    """::ffff:127.0.0.1 is `127.0.0.1` wearing an IPv6 wrapper — _is_blocked_ip must unwrap
+    it before comparing against the (IPv4) BLOCKED_CIDRS or it sails straight through."""
+
+    async def resolver(host: str) -> list[str]:
+        return ["::ffff:127.0.0.1"]
+
+    with pytest.raises(EgressBlockedError) as exc_info:
+        await SafeHttpClient([_entry("internal.example.com")], resolve_ips=resolver).check_host(
+            "internal.example.com", 443
+        )
+    assert exc_info.value.reason == "private_ip_blocked"
+
+
+async def test_check_host_blocks_link_local_ipv6():
+    with pytest.raises(EgressBlockedError) as exc_info:
+        await SafeHttpClient([_entry("fe80::1")]).check_host("fe80::1", 443)
+    assert exc_info.value.reason == "private_ip_blocked"
+
+
+async def test_check_host_blocks_when_dns_resolution_fails():
+    """An unresolvable host must become EgressBlockedError, not a raw socket.gaierror —
+    SafeHttpClientError is the only kind of exception this client is allowed to raise."""
+
+    async def failing_resolver(host: str) -> list[str]:
+        raise OSError("nodename nor servname provided, or not known")
+
+    with pytest.raises(EgressBlockedError) as exc_info:
+        await SafeHttpClient([_entry("nonexistent.invalid")], resolve_ips=failing_resolver).check_host(
+            "nonexistent.invalid", 443
+        )
+    assert exc_info.value.reason == "dns_resolution_failed"
 
 
 async def test_check_host_allows_exact_match():
@@ -193,6 +237,25 @@ def test_pinned_transport_blocks_host_not_in_allowlist_without_connecting():
         transport.handle_request(request)
 
     assert exc_info.value.reason == "not_in_allowlist"
+
+
+async def test_request_total_timeout_bounds_the_whole_redirect_chain(monkeypatch):
+    """A timeout passed to httpx.AsyncClient resets on every hop — this client's own
+    docstring promises a single 10s budget for the whole call, redirects included."""
+    monkeypatch.setattr(safe_http_client_module, "DEFAULT_TIMEOUT_SECONDS", 0.1)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.08)
+        # Keeps redirecting to itself — each hop alone fits under the 0.1s budget, but
+        # the second hop pushes the cumulative time past it.
+        return httpx.Response(302, headers={"location": "https://old.example.com/"})
+
+    client = SafeHttpClient(
+        [_entry("old.example.com")], transport=httpx.MockTransport(handler), resolve_ips=_fake_public_resolver
+    )
+
+    with pytest.raises(RequestTimeoutError):
+        await client.request("GET", "https://old.example.com/")
 
 
 async def test_request_rejects_oversized_response():

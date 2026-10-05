@@ -55,4 +55,41 @@ final class EgressAllowlistMatcherTest extends TestCase
     {
         self::assertFalse(EgressAllowlistMatcher::hostAllowed([], 'api.openai.com'));
     }
+
+    public function testPortScopedRowRejectsADifferentPort(): void
+    {
+        $rows = [['host_pattern' => 'internal.corp', 'port' => 8443, 'allow_private_ip' => false]];
+
+        self::assertFalse(EgressAllowlistMatcher::hostAllowed($rows, 'internal.corp', 443));
+    }
+
+    public function testPortScopedRowAllowsTheMatchingPort(): void
+    {
+        $rows = [['host_pattern' => 'internal.corp', 'port' => 8443, 'allow_private_ip' => false]];
+
+        self::assertTrue(EgressAllowlistMatcher::hostAllowed($rows, 'internal.corp', 8443));
+    }
+
+    public function testRowWithNullPortAllowsAnyPort(): void
+    {
+        $rows = [['host_pattern' => 'api.openai.com', 'port' => null, 'allow_private_ip' => false]];
+
+        self::assertTrue(EgressAllowlistMatcher::hostAllowed($rows, 'api.openai.com', 9999));
+    }
+
+    public function testUnknownRequestPortDegradesToHostOnlyMatch(): void
+    {
+        // Mirrors ai's SafeHttpClient._matching_entries: a caller with no port to compare
+        // (the null default) must not reject every port-scoped row outright.
+        $rows = [['host_pattern' => 'internal.corp', 'port' => 8443, 'allow_private_ip' => false]];
+
+        self::assertTrue(EgressAllowlistMatcher::hostAllowed($rows, 'internal.corp'));
+    }
+
+    public function testDefaultPortForSchemeMatchesSafeHttpClients(): void
+    {
+        self::assertSame(443, EgressAllowlistMatcher::defaultPortForScheme('https'));
+        self::assertSame(80, EgressAllowlistMatcher::defaultPortForScheme('http'));
+        self::assertSame(443, EgressAllowlistMatcher::defaultPortForScheme(null));
+    }
 }

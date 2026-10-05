@@ -337,6 +337,9 @@ class ConnectionsController extends ControllerBase
         if (!is_string($host) || $host === '') {
             return $this->jsonResponse(['error' => 'api_base_invalid'], 400);
         }
+        $port = parse_url($apiBase, PHP_URL_PORT) ?? EgressAllowlistMatcher::defaultPortForScheme(
+            parse_url($apiBase, PHP_URL_SCHEME)
+        );
 
         $rows = $this->runInCompanyTransaction(
             static fn ($db) => $db->fetchAll(
@@ -345,7 +348,7 @@ class ConnectionsController extends ControllerBase
             )
         );
 
-        if (!EgressAllowlistMatcher::hostAllowed($rows, $host)) {
+        if (!EgressAllowlistMatcher::hostAllowed($rows, $host, $port)) {
             return $this->jsonResponse(['error' => 'egress_host_not_allowed', 'host' => $host], 422);
         }
 
