@@ -21,6 +21,9 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
 	rawBody?: BodyInit;
 	/** Skip attaching X-Company-Id (e.g. for /me, /companies per PRD §9.1). */
 	skipCompanyHeader?: boolean;
+	/** For binary responses (e.g. KB `.zip` export, PRD §6.6) - returns response.blob()
+	 * instead of trying to parse the body as JSON/text. */
+	responseType?: 'blob';
 }
 
 /**
@@ -35,7 +38,7 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
  * - Throws ApiError on non-2xx responses so callers can branch on `.status`.
  */
 export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions = {}): Promise<T> {
-	const { body, rawBody, skipCompanyHeader, headers, ...rest } = opts;
+	const { body, rawBody, skipCompanyHeader, responseType, headers, ...rest } = opts;
 
 	const finalHeaders = new Headers(headers);
 	if (!finalHeaders.has('Accept')) finalHeaders.set('Accept', 'application/json');
@@ -70,6 +73,19 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
 
 	if (response.status === 204) {
 		return undefined as T;
+	}
+
+	if (responseType === 'blob') {
+		if (!response.ok) {
+			// Error responses are still JSON (e.g. 404 not_found), never a blob -
+			// only a successful binary response should be returned as one.
+			const payload = await response.json().catch(() => undefined);
+			const message =
+				(payload && typeof payload === 'object' && 'error' in payload && String(payload.error)) ||
+				`Request to ${path} failed with ${response.status}`;
+			throw new ApiError(response.status, message, payload);
+		}
+		return (await response.blob()) as T;
 	}
 
 	const contentType = response.headers.get('content-type') ?? '';

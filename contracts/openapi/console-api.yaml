@@ -135,6 +135,70 @@ components:
         description: { type: string, nullable: true }
         status: { type: string }
         content: { type: string, description: 'Creating a new draft, or editing an already-published one, bumps the version.' }
+    KnowledgeBase:
+      type: object
+      description: >-
+        OKF knowledge base (PRD §6.6). Vector-only retrieval this round -
+        retrieval_mode: hybrid is accepted but rejected (422) at index/search time
+        until hybrid retrieval ships.
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        name: { type: string }
+        embedder_connection_id: { type: string, description: 'Must belong to the same company.' }
+        chunk_size: { type: integer, example: 800 }
+        chunk_overlap: { type: integer, example: 100 }
+        retrieval_mode: { type: string, enum: [vector, hybrid] }
+        alpha: { type: number, format: float, example: 0.6 }
+        okf_field_map:
+          type: object
+          additionalProperties: true
+          description: 'Remaps OKF frontmatter field names, e.g. {"id": "doc_id"} (PRD §6.6).'
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    KnowledgeBaseInput:
+      type: object
+      properties:
+        name: { type: string }
+        embedder_connection_id: { type: string }
+        chunk_size: { type: integer }
+        chunk_overlap: { type: integer }
+        retrieval_mode: { type: string, enum: [vector, hybrid] }
+        alpha: { type: number, format: float }
+        okf_field_map: { type: object, additionalProperties: true }
+    KbImportResultItem:
+      type: object
+      properties:
+        document_id: { type: string }
+        path: { type: string }
+        status: { type: string, enum: [queued, processing, ready, failed] }
+    KbDocument:
+      type: object
+      properties:
+        id: { type: string }
+        path: { type: string }
+        category: { type: string, nullable: true }
+        status: { type: string, enum: [queued, processing, ready, failed] }
+        chunk_count: { type: integer }
+        error: { type: string, nullable: true }
+    KbSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        top_k: { type: integer, default: 5 }
+    KbSearchResultItem:
+      type: object
+      properties:
+        content: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        score: { type: number, format: float, nullable: true }
+    KbSearchResult:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/KbSearchResultItem' }
     Agent:
       type: object
       properties:
@@ -689,13 +753,39 @@ paths:
       operationId: listKnowledgeBases
       x-phase: 2
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/KnowledgeBase' } } } } } }
     post:
       operationId: createKnowledgeBase
       x-phase: 2
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeBaseInput' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeBase' } } } } }
+  /kb/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getKnowledgeBase
+      x-phase: 2
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeBase' } } } } }
+    patch:
+      operationId: updateKnowledgeBase
+      x-phase: 2
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeBaseInput' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeBase' } } } } }
+    delete:
+      operationId: deleteKnowledgeBase
+      x-phase: 2
+      summary: Deletes the KB plus its MinIO objects, pgvector table, and kb_documents rows.
+      responses: { "204": { description: No Content } }
+  /kb/{id}/documents:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: listKnowledgeBaseDocuments
+      x-phase: 2
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/KbDocument' } } } } } }
   /kb/{id}/import:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
@@ -703,8 +793,15 @@ paths:
     post:
       operationId: importKnowledgeBaseFiles
       x-phase: 2
-      requestBody: { content: { multipart/form-data: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "202": { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      summary: Accepts a single `.md` file or a `.zip` of `.md` files (PRD §6.6).
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses: { "202": { description: Accepted, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/KbImportResultItem' } } } } } }
   /kb/{id}/export:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
@@ -720,8 +817,8 @@ paths:
     post:
       operationId: searchKnowledgeBase
       x-phase: 2
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/KbSearchRequest' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/KbSearchResult' } } } } }
 
   /skills:
     get:

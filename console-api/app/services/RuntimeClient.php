@@ -83,7 +83,105 @@ class RuntimeClient
     }
 
     /**
-     * @param array<string, mixed> $body
+     * GET /internal/v1/kb/{id}/documents — the KB's document list/status, used by
+     * KbController::listKnowledgeBaseDocuments() to back the detail page's document panel.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listKnowledgeBaseDocuments(string $kbId): array
+    {
+        $result = $this->request('GET', "kb/{$kbId}/documents", []);
+
+        // request() always returns an array; a JSON array response decodes to a plain
+        // PHP list (int keys 0..n), same shape testTool()/searchKnowledgeBase() rely on.
+        return $result;
+    }
+
+    /**
+     * POST /internal/v1/kb/{id}/documents — stores each uploaded OKF file in MinIO and
+     * enqueues indexing, used by KbController::importKnowledgeBaseFiles() (PRD §6.6).
+     *
+     * @param array<int, array{category: ?string, filename: string, content: string}> $documents
+     * @return array<string, mixed>
+     */
+    public function enqueueKbDocumentIndexing(string $kbId, array $documents): array
+    {
+        return $this->request('POST', "kb/{$kbId}/documents", $documents);
+    }
+
+    /**
+     * POST /internal/v1/kb/{id}/search — vector search against the KB's pgvector table,
+     * used by KbController::searchKnowledgeBase().
+     *
+     * @param array<string, mixed> $query
+     * @return array<string, mixed>
+     */
+    public function searchKnowledgeBase(string $kbId, array $query): array
+    {
+        return $this->request('POST', "kb/{$kbId}/search", $query);
+    }
+
+    /**
+     * GET /internal/v1/kb/{id}/export — a `.zip` of the KB's OKF files, used by
+     * KbController::exportKnowledgeBase(). Returns the raw zip bytes rather than going
+     * through request()'s json_decode (the response body here is binary, not JSON).
+     */
+    public function exportKnowledgeBase(string $kbId): string
+    {
+        return $this->rawRequest('GET', "kb/{$kbId}/export");
+    }
+
+    /**
+     * DELETE /internal/v1/kb/{id} — deletes everything ai-runtime owns for a KB (MinIO
+     * objects, the per-KB vector table, kb_documents rows), used by
+     * KbController::deleteKnowledgeBase() before it deletes the console-side row.
+     */
+    public function deleteKnowledgeBaseData(string $kbId): void
+    {
+        $this->request('DELETE', "kb/{$kbId}", []);
+    }
+
+    /**
+     * Same auth/header setup as request() but for a binary (non-JSON) response body -
+     * exportKnowledgeBase() is the only caller today.
+     */
+    private function rawRequest(string $method, string $path): string
+    {
+        if (!$this->companyContext->hasCompanyId()) {
+            throw new RuntimeException('RuntimeClient: no company_id bound for this request.');
+        }
+
+        $headers = [
+            'Authorization' => 'Bearer ' . $this->tokenIssuer->issueInternalToken(),
+            'X-Company-Id' => $this->companyContext->getCompanyId(),
+        ];
+
+        $traceparent = TraceparentMiddleware::current();
+        if ($traceparent !== null) {
+            $headers['traceparent'] = $traceparent;
+        }
+
+        try {
+            $response = $this->http->request($method, $path, ['headers' => $headers]);
+        } catch (RequestException $exception) {
+            $detail = $exception->hasResponse()
+                ? (string) $exception->getResponse()->getBody()
+                : $exception->getMessage();
+
+            throw new RuntimeException("RuntimeClient: {$method} {$path} failed: {$detail}", 0, $exception);
+        } catch (GuzzleException $exception) {
+            throw new RuntimeException(
+                "RuntimeClient: {$method} {$path} failed: " . $exception->getMessage(),
+                0,
+                $exception
+            );
+        }
+
+        return (string) $response->getBody();
+    }
+
+    /**
+     * @param array<string, mixed>|array<int, mixed> $body
      * @return array<string, mixed>
      */
     private function request(string $method, string $path, array $body): array

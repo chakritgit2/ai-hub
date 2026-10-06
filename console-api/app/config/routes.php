@@ -103,6 +103,10 @@ return function (Router $router): void {
     // --- /kb (x-phase: 2) -----------------------------------------------------
     $admin('GET', '/kb', 'Kb', 'listKnowledgeBases');
     $admin('POST', '/kb', 'Kb', 'createKnowledgeBase');
+    $admin('GET', '/kb/{id:[^/]+}', 'Kb', 'getKnowledgeBase');
+    $admin('PATCH', '/kb/{id:[^/]+}', 'Kb', 'updateKnowledgeBase');
+    $admin('DELETE', '/kb/{id:[^/]+}', 'Kb', 'deleteKnowledgeBase');
+    $admin('GET', '/kb/{id:[^/]+}/documents', 'Kb', 'listKnowledgeBaseDocuments');
     $admin('POST', '/kb/{id:[^/]+}/import', 'Kb', 'importKnowledgeBaseFiles');
     $admin('GET', '/kb/{id:[^/]+}/export', 'Kb', 'exportKnowledgeBase');
     $admin('POST', '/kb/{id:[^/]+}/search', 'Kb', 'searchKnowledgeBase');

@@ -16,20 +16,26 @@ that; everything else is still a 501 stub - this is a bootable skeleton, not a
 feature-complete service.
 """
 import asyncio
+import hashlib
 import logging
 from typing import Annotated, Literal
 from uuid import UUID
 
 import httpx
 import openai
+import sqlalchemy as sa
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.auth import InvalidTokenError, verify_internal_token, verify_runtime_token
 from app.core.crypto import encrypt_with_dek
+from app.core.db import get_company_session
 from app.core.otel import setup_tracing
+from app.core.redis import get_arq_pool
+from app.core.storage import delete_prefix, kb_object_key, kb_prefix, put_object
 from app.integrations.dynamiq_adapter import build_llm
+from app.integrations.okf import parse_okf, resolve_okf_metadata
 from app.integrations.safe_http_client import (
     EgressBlockedError,
     PinnedTransport,
@@ -42,6 +48,16 @@ from app.services.compiler import compile_spec
 from app.services.connection_secrets import decrypt_connection_secret, upsert_connection_secret
 from app.services.connections import resolve_connection
 from app.services.egress_allowlist import list_egress_allowlist
+from app.services.kb_export import export_knowledge_base_zip
+from app.services.kb_search import HybridRetrievalNotImplementedError, search_knowledge_base
+from app.services.knowledge_bases import (
+    delete_kb_documents,
+    find_kb_document_by_okf_id,
+    kb_vector_table_name,
+    list_kb_documents,
+    resolve_knowledge_base,
+    upsert_kb_document,
+)
 from app.services.runtime import run_playground_agent
 from app.services.tools import resolve_tool
 
@@ -428,22 +444,168 @@ async def testTool(id: str, claims: InternalAuth) -> Response:
     return TestResult(ok=response.status_code < 500, detail=f"status {response.status_code}")
 
 
-@app.post("/internal/v1/kb/{id}/documents")
-async def enqueueKbDocumentIndexing(id: str, body: dict, claims: InternalAuth) -> Response:
-    """Phase 2."""
-    return _not_implemented("enqueueKbDocumentIndexing")
+class KbImportFile(BaseModel):
+    category: str | None = None
+    filename: str
+    content: str
+
+
+class KbImportResultItem(BaseModel):
+    document_id: str
+    path: str
+    status: str
+
+
+class KbDocumentItem(BaseModel):
+    id: str
+    path: str
+    category: str | None
+    status: str
+    chunk_count: int
+    error: str | None
+
+
+@app.get("/internal/v1/kb/{id}/documents", response_model=list[KbDocumentItem])
+async def listKbDocuments(id: str, claims: InternalAuth) -> Response:
+    """Backs the Knowledge Bases detail page's document list/status panel (PRD §6.9)."""
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    kb = await resolve_knowledge_base(company_id, id)
+    if kb is None:
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    documents = await list_kb_documents(company_id, id)
+    return JSONResponse(
+        content=[
+            KbDocumentItem(
+                id=document.id,
+                path=document.path,
+                category=document.category,
+                status=document.status,
+                chunk_count=document.chunk_count,
+                error=document.error,
+            ).model_dump()
+            for document in documents
+        ]
+    )
+
+
+@app.post("/internal/v1/kb/{id}/documents", response_model=list[KbImportResultItem])
+async def enqueueKbDocumentIndexing(id: str, body: list[KbImportFile], claims: InternalAuth) -> Response:
+    """Stores each uploaded OKF file in MinIO and enqueues `index_document` (PRD §6.6) -
+    skips re-indexing a file whose content is byte-for-byte unchanged from what's already
+    stored for that `(kb, okf_id)` (PRD: "saving re-indexes only files whose content_hash
+    changed"). `console-api` has already unzipped `.zip` uploads into this flat list
+    (category/filename/content) before calling here - this endpoint never sees a zip.
+    """
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    kb = await resolve_knowledge_base(company_id, id)
+    if kb is None:
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    results: list[KbImportResultItem] = []
+    arq_pool = await get_arq_pool()
+
+    for file in body:
+        parsed = parse_okf(file.content)
+        path = f"{file.category}/{file.filename}" if file.category else file.filename
+        # The fallback path must include `category`, not just the bare filename - two
+        # files named identically in different zip folders (e.g. en/faq.md, th/faq.md)
+        # would otherwise both fall back to the same okf_id and collide on
+        # upsert_kb_document's (kb_id, okf_id) unique constraint, silently overwriting
+        # one another. kb_indexer.py already uses the full `document.path` for the same
+        # reason - this must match.
+        metadata = resolve_okf_metadata(parsed["frontmatter"], kb.okf_field_map, path, parsed["body"])
+        okf_id = str(metadata["id"])
+        content_hash = hashlib.sha256(file.content.encode("utf-8")).hexdigest()
+
+        existing = await find_kb_document_by_okf_id(company_id, id, okf_id)
+        if existing is not None and existing.content_hash == content_hash:
+            results.append(KbImportResultItem(document_id=existing.id, path=path, status=existing.status))
+            continue
+
+        object_key = kb_object_key(company_id, id, file.category, okf_id)
+        await asyncio.to_thread(put_object, object_key, file.content.encode("utf-8"))
+
+        document_id = await upsert_kb_document(
+            company_id=company_id,
+            kb_id=id,
+            okf_id=okf_id,
+            path=path,
+            category=file.category,
+            frontmatter=metadata,
+            object_key=object_key,
+            content_hash=content_hash,
+        )
+        await arq_pool.enqueue_job("index_document", company_id, id, document_id)
+        results.append(KbImportResultItem(document_id=document_id, path=path, status="queued"))
+
+    return JSONResponse(content=[item.model_dump() for item in results])
+
+
+class KbSearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
 
 
 @app.post("/internal/v1/kb/{id}/search")
-async def searchKnowledgeBase(id: str, body: dict, claims: InternalAuth) -> Response:
-    """Phase 2."""
-    return _not_implemented("searchKnowledgeBase")
+async def searchKnowledgeBase(id: str, body: KbSearchRequest, claims: InternalAuth) -> Response:
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    kb = await resolve_knowledge_base(company_id, id)
+    if kb is None:
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    try:
+        results = await search_knowledge_base(company_id, id, body.query, body.top_k)
+    except HybridRetrievalNotImplementedError:
+        raise HTTPException(status_code=422, detail="hybrid_retrieval_not_yet_implemented") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return JSONResponse(content={"results": results})
 
 
 @app.get("/internal/v1/kb/{id}/export")
 async def exportKnowledgeBase(id: str, claims: InternalAuth) -> Response:
-    """Phase 2."""
-    return _not_implemented("exportKnowledgeBase")
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    kb = await resolve_knowledge_base(company_id, id)
+    if kb is None:
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    zip_bytes = await export_knowledge_base_zip(company_id, id)
+    return Response(content=zip_bytes, media_type="application/zip")
+
+
+@app.delete("/internal/v1/kb/{id}")
+async def deleteKnowledgeBaseData(id: str, claims: InternalAuth) -> Response:
+    """Cleans up everything ai-runtime owns for a KB being deleted: MinIO objects, the
+    per-KB vector table, and its `kb_documents` rows - called by console-api before it
+    deletes the `console.knowledge_bases` row itself."""
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="knowledge_base_not_found")
+
+    await asyncio.to_thread(delete_prefix, kb_prefix(company_id, id))
+
+    table_name = kb_vector_table_name(company_id, id)  # raises ValueError on an unexpected shape
+
+    async with get_company_session(company_id) as session:
+        await session.execute(sa.text(f'DROP TABLE IF EXISTS runtime."{table_name}"'))
+
+    await delete_kb_documents(company_id, id)
+
+    return Response(status_code=204)
 
 
 @app.post("/internal/v1/evals/estimate")

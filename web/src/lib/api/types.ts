@@ -72,6 +72,57 @@ export interface Skill {
 	latest_version: SkillVersion;
 }
 
+// Vector-only retrieval this round (PRD §6.6) - retrieval_mode: 'hybrid' is accepted but
+// rejected (422) at index/search time until hybrid retrieval ships.
+export interface KnowledgeBase {
+	id: string;
+	company_id: string;
+	name: string;
+	embedder_connection_id: string;
+	chunk_size: number;
+	chunk_overlap: number;
+	retrieval_mode: 'vector' | 'hybrid';
+	alpha: number;
+	okf_field_map: Record<string, unknown>;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface KnowledgeBaseInput {
+	name?: string;
+	embedder_connection_id?: string;
+	chunk_size?: number;
+	chunk_overlap?: number;
+	retrieval_mode?: 'vector' | 'hybrid';
+	alpha?: number;
+	okf_field_map?: Record<string, unknown>;
+}
+
+export interface KbImportResultItem {
+	document_id: string;
+	path: string;
+	status: 'queued' | 'processing' | 'ready' | 'failed';
+}
+
+export interface KbDocument {
+	id: string;
+	path: string;
+	category: string | null;
+	status: 'queued' | 'processing' | 'ready' | 'failed';
+	chunk_count: number;
+	error: string | null;
+}
+
+export interface KbSearchResultItem {
+	content: string;
+	metadata: Record<string, unknown>;
+	score: number | null;
+}
+
+export interface KbSearchResult {
+	results: KbSearchResultItem[];
+}
+
 export interface Agent {
 	id: string;
 	company_id: string;

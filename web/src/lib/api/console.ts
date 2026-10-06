@@ -14,6 +14,11 @@ import type {
 	ConnectionSecretInput,
 	DashboardSummary,
 	Deployment,
+	KbDocument,
+	KbImportResultItem,
+	KbSearchResult,
+	KnowledgeBase,
+	KnowledgeBaseInput,
 	Me,
 	Placeholder,
 	Run,
@@ -267,26 +272,45 @@ export function decideApproval(id: string, input: Placeholder): Promise<Placehol
 	return apiFetch<Placeholder>(`/approvals/${id}`, { method: 'POST', body: input });
 }
 
-// ---- /kb (phase 2) ----------------------------------------------------------
+// ---- /kb (phase 2 - vector-only retrieval this round, PRD §6.6) -------------
 
-export function listKnowledgeBases(): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>('/kb');
+export function listKnowledgeBases(): Promise<KnowledgeBase[]> {
+	return apiFetch<KnowledgeBase[]>('/kb');
 }
 
-export function createKnowledgeBase(input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>('/kb', { method: 'POST', body: input });
+export function getKnowledgeBase(id: string): Promise<KnowledgeBase> {
+	return apiFetch<KnowledgeBase>(`/kb/${id}`);
 }
 
-export function importKnowledgeBaseFiles(id: string, form: FormData): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/kb/${id}/import`, { method: 'POST', rawBody: form });
+export function createKnowledgeBase(input: KnowledgeBaseInput): Promise<KnowledgeBase> {
+	return apiFetch<KnowledgeBase>('/kb', { method: 'POST', body: input });
+}
+
+export function updateKnowledgeBase(id: string, input: KnowledgeBaseInput): Promise<KnowledgeBase> {
+	return apiFetch<KnowledgeBase>(`/kb/${id}`, { method: 'PATCH', body: input });
+}
+
+export function deleteKnowledgeBase(id: string): Promise<void> {
+	return apiFetch<void>(`/kb/${id}`, { method: 'DELETE' });
+}
+
+export function listKnowledgeBaseDocuments(id: string): Promise<KbDocument[]> {
+	return apiFetch<KbDocument[]>(`/kb/${id}/documents`);
+}
+
+export function importKnowledgeBaseFiles(id: string, form: FormData): Promise<KbImportResultItem[]> {
+	return apiFetch<KbImportResultItem[]>(`/kb/${id}/import`, { method: 'POST', rawBody: form });
 }
 
 export function exportKnowledgeBase(id: string): Promise<Blob> {
-	return apiFetch<Blob>(`/kb/${id}/export`);
+	return apiFetch<Blob>(`/kb/${id}/export`, { responseType: 'blob' });
 }
 
-export function searchKnowledgeBase(id: string, input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/kb/${id}/search`, { method: 'POST', body: input });
+export function searchKnowledgeBase(
+	id: string,
+	input: { query: string; top_k?: number }
+): Promise<KbSearchResult> {
+	return apiFetch<KbSearchResult>(`/kb/${id}/search`, { method: 'POST', body: input });
 }
 
 // ---- /skills --------------------------------------------------------------
@@ -373,6 +397,12 @@ export type {
 	Connection,
 	DashboardSummary,
 	Deployment,
+	KbDocument,
+	KbImportResultItem,
+	KbSearchResult,
+	KbSearchResultItem,
+	KnowledgeBase,
+	KnowledgeBaseInput,
 	Me,
 	Run,
 	RuntimeTokenResponse,

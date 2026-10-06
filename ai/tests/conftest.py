@@ -56,23 +56,28 @@ async def _fresh_engine():
 @pytest.fixture(autouse=True)
 async def _fresh_redis():
     """Same event-loop-binding problem as `_fresh_engine`, for `app.core.redis.get_redis`
-    (also `lru_cache`'d)."""
-    from app.core.redis import get_redis
+    (also `lru_cache`'d) and `app.core.redis.get_arq_pool` (its own module-global
+    singleton, `create_pool` being async means it can't use `lru_cache` the same way)."""
+    import app.core.redis as redis_module
 
-    get_redis.cache_clear()
+    redis_module.get_redis.cache_clear()
     yield
-    if get_redis.cache_info().currsize:
-        await get_redis().aclose()
-    get_redis.cache_clear()
+    if redis_module.get_redis.cache_info().currsize:
+        await redis_module.get_redis().aclose()
+    redis_module.get_redis.cache_clear()
+    if redis_module._arq_pool is not None:
+        await redis_module._arq_pool.aclose()
+    redis_module._arq_pool = None
 
 
 @pytest.fixture
 async def company_ids():
     """Hands out fresh company ids and, after the test, deletes every
     runtime.conversations / runtime.agent_memory / logs.guardrail_events / logs.runs /
-    runtime.connection_secrets / runtime.company_keys row created under them - the full
-    set of runtime.*/logs.* tables any Playground-resolution test
-    (resolvable_agent_version, run_playground_agent) can write to for a given company.
+    runtime.connection_secrets / runtime.company_keys / runtime.kb_documents row created
+    under them - the full set of runtime.*/logs.* tables any Playground-resolution test
+    (resolvable_agent_version, run_playground_agent) or KB test can write to for a given
+    company.
 
     Only touches the DB during teardown, and only if an id was handed out,
     so tests that never use it don't need Postgres. guardrail_events is deleted before
@@ -84,6 +89,7 @@ async def company_ids():
         connection_secrets_table,
         conversations_table,
         guardrail_events_table,
+        kb_documents_table,
         runs_table,
     )
 
@@ -118,6 +124,9 @@ async def company_ids():
                 connection_secrets_table.delete().where(connection_secrets_table.c.company_id == company_uuid)
             )
             await session.execute(company_keys_table.delete().where(company_keys_table.c.company_id == company_uuid))
+            await session.execute(
+                kb_documents_table.delete().where(kb_documents_table.c.company_id == company_uuid)
+            )
 
 
 @pytest.fixture
@@ -268,6 +277,82 @@ def make_skill():
             conn.execute("DELETE FROM console.skill_versions WHERE id = %s", (version_id,))
             conn.execute("DELETE FROM console.skills WHERE id = %s", (skill_id,))
             conn.commit()
+
+
+@pytest.fixture
+def make_knowledge_base():
+    """Inserts a `console.knowledge_bases` row as `console_app` (same write-role
+    convention as make_connection/make_tool) and deletes it afterward."""
+    settings = get_settings()
+    created: list[tuple[str, str]] = []  # (company_id, kb_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(
+        company_id: str,
+        embedder_connection_id: str,
+        name: str = "test-kb",
+        chunk_size: int = 800,
+        chunk_overlap: int = 100,
+        retrieval_mode: str = "vector",
+        alpha: float = 0.60,
+        okf_field_map: dict | None = None,
+    ) -> str:
+        kb_id = str(uuid.uuid4())
+        with _connect() as conn:
+            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
+            # own freshly generated uuid4, never external input.
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.knowledge_bases "
+                "(id, company_id, name, embedder_connection_id, chunk_size, chunk_overlap, "
+                " retrieval_mode, alpha, okf_field_map) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    kb_id,
+                    company_id,
+                    name,
+                    embedder_connection_id,
+                    chunk_size,
+                    chunk_overlap,
+                    retrieval_mode,
+                    alpha,
+                    json.dumps(okf_field_map or {}),
+                ),
+            )
+            conn.commit()
+        created.append((company_id, kb_id))
+        return kb_id
+
+    yield _make
+
+    for company_id, kb_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.knowledge_bases WHERE id = %s", (kb_id,))
+            conn.commit()
+
+
+@pytest.fixture
+def minio_cleanup():
+    """Deletes every MinIO object under the given prefixes after the test - tests that
+    exercise kb_indexer/kb_search/kb_export write real objects to the real local MinIO
+    (docker-compose), there is nothing to mock against."""
+    from app.core.storage import delete_prefix
+
+    prefixes: list[str] = []
+
+    yield prefixes.append
+
+    for prefix in prefixes:
+        delete_prefix(prefix)
 
 
 @pytest.fixture

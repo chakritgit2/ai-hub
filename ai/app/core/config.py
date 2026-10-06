@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     RUN_TIMEOUT_SECONDS: int = 120
     CONVERSATION_TTL_DAYS: int = 30
 
+    # --- Object storage (PRD §6.6/§7.7: OKF files in MinIO under kb/{company_id}/{kb_id}/...) ---
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_BUCKET: str = "ai-console"
+    MINIO_SECURE: bool = False
+
     # --- Observability ---
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
 

@@ -89,3 +89,23 @@ guardrail_events_table = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     schema="logs",
 )
+
+kb_documents_table = sa.Table(
+    "kb_documents",
+    _metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("kb_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("okf_id", sa.String(length=255), nullable=False),
+    sa.Column("path", sa.String(length=1024), nullable=False),
+    sa.Column("category", sa.String(length=255), nullable=True),
+    sa.Column("frontmatter", postgresql.JSONB(), nullable=False),
+    sa.Column("object_key", sa.String(length=1024), nullable=False),
+    sa.Column("content_hash", sa.String(length=64), nullable=False),
+    sa.Column("status", sa.String(length=16), nullable=False),
+    sa.Column("error", sa.Text(), nullable=True),
+    sa.Column("chunk_count", sa.Integer(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    schema="runtime",
+)

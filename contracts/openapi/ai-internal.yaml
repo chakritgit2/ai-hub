@@ -32,6 +32,46 @@ components:
     Placeholder:
       type: object
       additionalProperties: true
+    KbImportFile:
+      type: object
+      required: [filename, content]
+      properties:
+        category: { type: string, nullable: true, description: 'Zip folder path, if any.' }
+        filename: { type: string }
+        content: { type: string, description: 'Raw OKF markdown content.' }
+    KbImportResultItem:
+      type: object
+      properties:
+        document_id: { type: string }
+        path: { type: string }
+        status: { type: string, enum: [queued, processing, ready, failed] }
+    KbDocumentItem:
+      type: object
+      properties:
+        id: { type: string }
+        path: { type: string }
+        category: { type: string, nullable: true }
+        status: { type: string, enum: [queued, processing, ready, failed] }
+        chunk_count: { type: integer }
+        error: { type: string, nullable: true }
+    KbSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        top_k: { type: integer, default: 5 }
+    KbSearchResultItem:
+      type: object
+      properties:
+        content: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        score: { type: number, format: float, nullable: true }
+    KbSearchResult:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/KbSearchResultItem' }
     CompileRequest:
       type: object
       required: [spec, role]
@@ -150,16 +190,26 @@ paths:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
       - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: listKbDocuments
+      x-phase: 2
+      summary: Backs the Knowledge Bases detail page's document list/status panel.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/KbDocumentItem' } } } } }
     post:
       operationId: enqueueKbDocumentIndexing
       x-phase: 2
-      summary: Enqueue OKF indexing (converting other formats to OKF first) on ai-worker (PRD §6.6).
+      summary: >-
+        Stores each uploaded OKF file in MinIO and enqueues indexing (PRD §6.6).
+        Skips re-indexing a file whose content is unchanged from what's already stored
+        for that (kb, okf_id). Vector-only retrieval this round — PDF/DOCX/TXT→OKF
+        conversion and Thai tokenization/hybrid retrieval are not implemented yet.
       requestBody:
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Placeholder' }
+            schema: { type: array, items: { $ref: '#/components/schemas/KbImportFile' } }
       responses:
-        "202": { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/KbImportResultItem' } } } } }
 
   /kb/{id}/search:
     parameters:
@@ -168,13 +218,13 @@ paths:
     post:
       operationId: searchKnowledgeBase
       x-phase: 2
-      summary: Test search — vector or hybrid retrieval with alpha (PRD §6.6).
+      summary: Vector-only retrieval this round — 422 if the KB's retrieval_mode is hybrid.
       requestBody:
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Placeholder' }
+            schema: { $ref: '#/components/schemas/KbSearchRequest' }
       responses:
-        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/KbSearchResult' } } } }
 
   /kb/{id}/export:
     parameters:
@@ -185,6 +235,17 @@ paths:
       x-phase: 2
       responses:
         "200": { description: OK, content: { application/zip: { schema: { type: string, format: binary } } } }
+
+  /kb/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    delete:
+      operationId: deleteKnowledgeBaseData
+      x-phase: 2
+      summary: Deletes the KB's MinIO objects, its pgvector table, and its kb_documents rows.
+      responses:
+        "204": { description: No Content }
 
   /evals/estimate:
     post:

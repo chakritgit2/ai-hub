@@ -9,7 +9,7 @@
 		phase?: 2 | 3 | 4;
 	}
 
-	// PRD §6.9 phase 1 — real routes.
+	// PRD §6.9 phase 1/2 — real routes.
 	const workspaceItems: NavItem[] = [
 		{ label: 'Dashboard', href: '/dashboard' },
 		{ label: 'Agents', href: '/agents' },
@@ -17,15 +17,15 @@
 		{ label: 'Connections', href: '/connections' },
 		{ label: 'Tools', href: '/tools' },
 		{ label: 'Skills', href: '/skills' },
+		{ label: 'Knowledge Bases', href: '/knowledge-bases' },
 		{ label: 'Runs & Logs', href: '/runs' },
 		{ label: 'Deployments', href: '/deployments' },
 		{ label: 'API Keys', href: '/api-keys' },
 		{ label: 'Settings', href: '/settings' }
 	];
 
-	// PRD §6.9 phase 2+ — nav entries only, disabled, no routes exist yet.
+	// PRD §6.9 phase 3+ — nav entries only, disabled, no routes exist yet.
 	const laterPhaseItems: NavItem[] = [
-		{ label: 'Knowledge Bases', href: '/knowledge-bases', phase: 2 },
 		{ label: 'Evaluation', href: '/evaluation', phase: 3 },
 		{ label: 'Workflows', href: '/workflows', phase: 4 }
 	];

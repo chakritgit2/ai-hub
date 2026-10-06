@@ -10,6 +10,8 @@ Connection/LLM classes are confirmed against the installed `dynamiq==0.65.0`.
 from collections.abc import Callable
 from typing import Any
 
+from dynamiq.components.embedders.base import BaseEmbedder
+from dynamiq.components.embedders.openai import OpenAIEmbedder
 from dynamiq.connections.connections import OpenAI as OpenAIConnection
 from dynamiq.nodes.llms import BaseLLM
 from dynamiq.nodes.llms import OpenAI as OpenAILLM
@@ -72,3 +74,41 @@ def llm_type_for_connection_type(connection_type: str) -> str:
     if llm_type is None:
         raise ValueError(f"Unsupported connection type: {connection_type!r}")
     return llm_type
+
+
+# --- Embedders (PRD §6.6 Knowledge Bases) ---
+# Same single-provider-for-now shape as _CONNECTION_BUILDERS/build_llm above: only
+# OpenAI is wired, following the identical dict-dispatch idiom so adding a provider
+# later means adding one function + one dict entry, not touching callers.
+def _build_openai_embedder(config: dict[str, Any]) -> tuple[OpenAIConnection, BaseEmbedder]:
+    api_key = config.get("api_key")
+    kwargs: dict[str, Any] = {}
+    if api_key is not None:
+        kwargs["api_key"] = api_key
+    if config.get("url"):
+        kwargs["url"] = config["url"]
+    connection = OpenAIConnection(**kwargs)
+
+    embedder = OpenAIEmbedder(connection=connection, model=config.get("model", "text-embedding-3-small"))
+    return connection, embedder
+
+
+_EMBEDDER_BUILDERS: dict[str, Callable[[dict[str, Any]], tuple[Any, BaseEmbedder]]] = {
+    "dynamiq.connections.OpenAI": _build_openai_embedder,
+    "openai": _build_openai_embedder,
+}
+
+
+def build_embedder(connection_type: str, config: dict[str, Any]) -> tuple[Any, BaseEmbedder]:
+    """Build a (connection, embedder) pair for `connection_type` - the same component
+    is used for both document and query embedding (`embed_documents`/`embed_text` and
+    their `_async` twins on the returned `BaseEmbedder`), since OpenAI's embedding API
+    doesn't distinguish the two the way some providers do.
+
+    Raises `ValueError` for an unsupported/unknown connection type, same contract as
+    `build_llm`.
+    """
+    builder = _EMBEDDER_BUILDERS.get(connection_type)
+    if builder is None:
+        raise ValueError(f"Unsupported connection type: {connection_type!r}")
+    return builder(config)
