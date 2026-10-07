@@ -1,4 +1,6 @@
 # Placeholder staging overlay. PRD-001 §11, §6.3 (staging/production environments).
+# Not used by the first non-HA rollout into ai-hub-advws — see deploy/k8s/base/ instead.
+# namespace below is stale (base now hardcodes ai-hub-advws); revisit when staging is planned.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

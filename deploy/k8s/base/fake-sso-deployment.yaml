@@ -1,0 +1,40 @@
+# TEMPORARY — a dev-only stand-in for real SSO (console-api/dev/fake-sso.php), deployed so
+# an admin can log into the web console at all. No real SSO integration exists yet
+# (PRD-001 §15 open question #2). Remove this file and switch console-api's SSO_* env vars
+# to the real Phalcon SSO the moment that integration exists. Not exposed outside the
+# cluster — ClusterIP only.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-sso
+  namespace: ai-hub-advws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-sso
+  template:
+    metadata:
+      labels:
+        app: fake-sso
+    spec:
+      imagePullSecrets:
+        - name: dockersecret
+      containers:
+        - name: fake-sso
+          image: cr.advws.com/dynamiq-console/console-api:TODO-tag
+          command: ["php", "-S", "0.0.0.0:8999", "dev/fake-sso.php"]
+          ports:
+            - containerPort: 8999
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-sso
+  namespace: ai-hub-advws
+spec:
+  selector:
+    app: fake-sso
+  ports:
+    - port: 8999
+      targetPort: 8999

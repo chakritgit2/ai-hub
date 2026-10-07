@@ -1,0 +1,39 @@
+# Static SvelteKit SPA + nginx proxy (deploy/docker/web/Dockerfile). NodePort, same pattern
+# as operations-advws's own service.yaml, so the admin console is reachable from the office
+# LAN without needing public ingress/TLS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: ai-hub-advws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dynamiq-web
+  template:
+    metadata:
+      labels:
+        app: dynamiq-web
+    spec:
+      imagePullSecrets:
+        - name: dockersecret
+      containers:
+        - name: web
+          image: cr.advws.com/dynamiq-console/web:TODO-tag
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamiq-web-nodeport
+  namespace: ai-hub-advws
+spec:
+  type: NodePort
+  selector:
+    app: dynamiq-web
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 31732 # fixed port on the node (30000-32767); change if it collides

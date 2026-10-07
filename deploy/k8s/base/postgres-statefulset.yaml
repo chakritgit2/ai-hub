@@ -1,0 +1,62 @@
+# Single-replica pgvector Postgres — a deliberate scope-down from PRD §11's eventual
+# CloudNativePG HA cluster, for this first production rollout.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: ai-hub-advws
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dynamiq-postgres
+  template:
+    metadata:
+      labels:
+        app: dynamiq-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: ai_console
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-db-credentials
+                  key: postgres_superuser_password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ai-hub-advws
+spec:
+  selector:
+    app: dynamiq-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None

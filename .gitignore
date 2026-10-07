@@ -24,3 +24,4 @@ web/.env
 # General
 .DS_Store
 *.log
+docker-compose.override.yaml

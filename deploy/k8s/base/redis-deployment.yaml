@@ -1,0 +1,40 @@
+# Single-replica Redis — a deliberate scope-down from PRD §11's eventual 3-node Sentinel.
+# Soft dependency for the chat path (ai/app/services/quotas.py fails open on rate limits
+# and on quota reservation unless a deployment sets daily_cost_limit_usd).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: ai-hub-advws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dynamiq-redis
+  template:
+    metadata:
+      labels:
+        app: dynamiq-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: ai-hub-advws
+spec:
+  selector:
+    app: dynamiq-redis
+  ports:
+    - port: 6379
+      targetPort: 6379

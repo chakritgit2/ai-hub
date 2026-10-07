@@ -1,0 +1,69 @@
+# ai-gateway: /v1/deployments/{slug}/run — the public-facing chat path operations-advws
+# calls. Same image as ai-runtime, different command/port.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-gateway
+  namespace: ai-hub-advws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-gateway
+  template:
+    metadata:
+      labels:
+        app: ai-gateway
+    spec:
+      imagePullSecrets:
+        - name: dockersecret
+      containers:
+        - name: ai
+          image: cr.advws.com/dynamiq-console/ai:TODO-tag
+          command: ["uv", "run", "uvicorn", "app.main_gateway:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: dynamiq-ai-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-db-credentials
+                  key: gateway_app_database_url
+            - name: CONSOLE_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-console-secrets
+                  key: CONSOLE_MASTER_KEY
+            - name: HASH_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-console-secrets
+                  key: HASH_PEPPER
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /etc/dynamiq/keys
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+      volumes:
+        - name: jwt-keys
+          secret:
+            secretName: dynamiq-jwt-keys
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-gateway
+  namespace: ai-hub-advws
+spec:
+  selector:
+    app: ai-gateway
+  ports:
+    - port: 8080
+      targetPort: 8080

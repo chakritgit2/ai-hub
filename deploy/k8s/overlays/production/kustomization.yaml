@@ -1,8 +1,11 @@
-# Placeholder production overlay. PRD-001 §11, §6.3 (staging/production environments).
+# Not used by the first non-HA rollout — base/ is applied directly into the dedicated
+# ai-hub-advws namespace. This overlay is still a placeholder for the PRD §11 HA target
+# (CloudNativePG, replica counts, HPA) and would need its `namespace:` reconciled with
+# base's ai-hub-advws before it's usable; left as TODO rather than guessed at here.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: ai-console
+namespace: ai-hub-advws
 
 resources:
   - ../../base

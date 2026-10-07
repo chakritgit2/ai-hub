@@ -1,0 +1,13 @@
+# Shared non-secret config for ai-runtime and ai-gateway (both read app.core.config.Settings).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dynamiq-ai-config
+  namespace: ai-hub-advws
+data:
+  ENVIRONMENT: production
+  LOG_LEVEL: INFO
+  REDIS_URL: redis://redis:6379/0
+  CONSOLE_JWKS_URL: http://console-api/admin/.well-known/jwks.json
+  GATEWAY_JWKS_PRIVATE_KEY_PATH: /etc/dynamiq/keys/gateway-key.pem
+  GATEWAY_JWKS_KID: gw-2026-09

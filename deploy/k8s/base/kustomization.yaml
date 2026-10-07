@@ -1,13 +1,29 @@
-# Placeholder — namespace ai-console, deployments console-web/console-api/ai-runtime/ai-gateway/
-# ai-worker per PRD-001 §11. Resource manifests (Deployment/Service/NetworkPolicy/Ingress) are not
-# yet written; this file exists so the overlay structure and build order are settled.
+# First production rollout (non-HA scope-down from PRD-001 §11, approved by the user):
+# dedicated namespace ai-hub-advws (created fresh by infra, NOT shared with
+# operations-advws's cdi-advws namespace — see deploy/k8s/HANDOFF.md for the
+# cross-namespace implications this has for operations-advws reaching ai-gateway),
+# single-replica Postgres/Redis, ai-worker/MinIO deferred (Knowledge Bases only),
+# fake-sso.php as a temporary SSO stand-in. See deploy/k8s/base/*.yaml comments and the
+# session plan for the full rationale.
+#
+# operations-advws itself deploys plain manifests directly (no kustomize in that repo) —
+# these resources can equally be applied with `kubectl apply -f deploy/k8s/base/` if that
+# turns out to match the team's existing Jenkins convention better than `kubectl apply -k`.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: ai-console
+namespace: ai-hub-advws
 
-resources: []
-# TODO: console-web-deployment.yaml, console-api-deployment.yaml, ai-runtime-deployment.yaml
-#   (two Services: port 8080 internal ingress, port 8081 no ingress + NetworkPolicy allowing only
-#   console-api pods), ai-gateway-deployment.yaml (HPA 2-6), ai-worker-deployment.yaml (HPA on
-#   queue length), networkpolicies.yaml, ingress-internal.yaml, ingress-public.yaml
+resources:
+  - secrets.example.yaml
+  - postgres-statefulset.yaml
+  - redis-deployment.yaml
+  - ai-config.yaml
+  - ai-runtime-deployment.yaml
+  - ai-gateway-deployment.yaml
+  - console-api-deployment.yaml
+  - web-deployment.yaml
+  - fake-sso-deployment.yaml
+
+# Deferred: ai-worker (arq, Knowledge Bases only), MinIO, NetworkPolicy, Ingress/TLS/WAF,
+# HPA — none are needed for the first "get chat working" rollout. See the plan for why.
