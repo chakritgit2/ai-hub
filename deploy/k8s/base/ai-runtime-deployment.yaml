@@ -20,9 +20,14 @@ spec:
       containers:
         - name: ai
           image: cr.advws.com/dynamiq-console/ai:TODO-tag
-          command: ["uv", "run", "uvicorn", "app.main_runtime:app", "--host", "0.0.0.0", "--port", "8080"]
+          # args, not command: the image's ENTRYPOINT (bin/start.sh) must still run so it
+          # can bring up sshd before handing off to this uvicorn invocation (exec "$@").
+          args: ["uv", "run", "uvicorn", "app.main_runtime:app", "--host", "0.0.0.0", "--port", "8080"]
           ports:
             - containerPort: 8080
+            # sshd (bin/start.sh) — SFTP access into the running pod, not exposed via Service.
+            - name: sftp
+              containerPort: 2222
           envFrom:
             - configMapRef:
                 name: dynamiq-ai-config
@@ -42,6 +47,11 @@ spec:
                 secretKeyRef:
                   name: dynamiq-console-secrets
                   key: HASH_PEPPER
+            - name: SSH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-console-secrets
+                  key: SSH_PASSWORD
           volumeMounts:
             - name: jwt-keys
               mountPath: /etc/dynamiq/keys

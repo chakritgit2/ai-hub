@@ -23,6 +23,15 @@ spec:
           image: cr.advws.com/dynamiq-console/web:TODO-tag
           ports:
             - containerPort: 80
+            # sshd (bin/start.sh) — SFTP access into the running pod, not exposed via Service.
+            - name: sftp
+              containerPort: 2222
+          env:
+            - name: SSH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-console-secrets
+                  key: SSH_PASSWORD
 ---
 apiVersion: v1
 kind: Service

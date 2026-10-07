@@ -45,11 +45,22 @@ spec:
       containers:
         - name: console-api
           image: cr.advws.com/dynamiq-console/console-api:TODO-tag
+          ports:
+            # sshd (bin/start.sh) — SFTP access into the running pod for fast
+            # edit-and-see-it-live iteration (kubectl port-forward), bypassing a
+            # full commit/build/redeploy cycle. Not exposed via the Service/ingress.
+            - name: sftp
+              containerPort: 2222
           env:
             - name: APP_ENV
               value: production
             - name: APP_DEBUG
               value: "false"
+            - name: SSH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-console-secrets
+                  key: SSH_PASSWORD
             - name: DB_HOST
               value: postgres
             - name: DB_PORT
