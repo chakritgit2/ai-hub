@@ -1,7 +1,6 @@
 /vendor/
 /.env
 /keys/
-composer.lock
 .phpunit.result.cache
 /build/
 *.log
