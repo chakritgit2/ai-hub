@@ -3,7 +3,7 @@ import uuid
 from fastapi.testclient import TestClient
 
 from app.main_runtime import app as runtime_app
-from app.services.compiler import compile_spec
+from app.services.compiler import build_agent, compile_spec
 
 from .markers import requires_postgres
 
@@ -78,6 +78,25 @@ async def test_compile_happy_path_constructs_a_real_agent(make_connection):
     assert result["compiled_definition"]["agent"]["llm"]["connection"]["connection_id"] == connection_id
     assert result["compiler_version"]
     assert result["dynamiq_version"]
+
+
+@requires_postgres
+async def test_compile_threads_connection_api_base_through_to_the_built_llm(make_connection):
+    """Regression guard: a connection's api_base (e.g. an OpenAI-compatible endpoint like
+    OpenRouter) must actually reach the real LLM construction, not just the PHP-side egress
+    allowlist check at save time - otherwise every agent silently calls the provider's
+    default endpoint (api.openai.com) regardless of what api_base is configured."""
+    company_id = str(uuid.uuid4())
+    custom_api_base = "https://openrouter.ai/api/v1"
+    connection_id = make_connection(company_id, api_base=custom_api_base)
+
+    result = await compile_spec(_valid_spec(connection_id), "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    assert result["compiled_definition"]["agent"]["llm"]["connection"]["api_base"] == custom_api_base
+
+    agent = build_agent(result["compiled_definition"], "sk-test-key")
+    assert agent.llm.connection.url == custom_api_base
 
 
 @requires_postgres

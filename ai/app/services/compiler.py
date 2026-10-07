@@ -99,6 +99,7 @@ def _build_compiled_definition(doc: AgentSpecDoc, connection: ConnectionRow) -> 
                     "type": connection.type,
                     "connection_id": connection.id,
                     "name": connection.name,
+                    "api_base": connection.api_base,
                 },
             },
         },
@@ -126,6 +127,14 @@ def build_agent(compiled_definition: dict, api_key: str, memory=None):
             "model": llm_def["model"],
             "temperature": llm_def.get("temperature"),
             "max_tokens": llm_def.get("max_tokens"),
+            # A connection's api_base (PRD §7.4) was only ever enforced at save time
+            # (console-api's egress allowlist check) - it never reached the real LLM
+            # construction here, so every agent silently called the provider's default
+            # endpoint (api.openai.com) regardless of what api_base was configured,
+            # making any OpenAI-compatible-but-not-OpenAI endpoint (OpenRouter, a local
+            # proxy, Azure OpenAI, ...) unreachable in practice. _build_openai already
+            # reads this as "url" (see app/integrations/dynamiq_adapter.py).
+            "url": connection_def.get("api_base"),
         },
     )
 
