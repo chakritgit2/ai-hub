@@ -217,7 +217,7 @@ export interface Run {
 	model: string;
 	tokens_in: number;
 	tokens_out: number;
-	cost_usd: number;
+	cost_usd: number | null;
 	latency_ms: number;
 	trace_id: string;
 	created_at: string;

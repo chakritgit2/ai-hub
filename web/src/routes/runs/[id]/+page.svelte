@@ -63,7 +63,7 @@
 		<div><dt class="text-xs text-neutral-400">Trace ID</dt><dd class="font-mono text-sm text-neutral-800">{run.trace_id}</dd></div>
 		<div><dt class="text-xs text-neutral-400">Latency</dt><dd class="text-sm text-neutral-800">{run.latency_ms} ms</dd></div>
 		<div><dt class="text-xs text-neutral-400">Tokens in/out</dt><dd class="text-sm text-neutral-800">{run.tokens_in}/{run.tokens_out}</dd></div>
-		<div><dt class="text-xs text-neutral-400">Cost</dt><dd class="text-sm text-neutral-800">${run.cost_usd.toFixed(4)}</dd></div>
+		<div><dt class="text-xs text-neutral-400">Cost</dt><dd class="text-sm text-neutral-800">{run.cost_usd !== null ? `$${run.cost_usd.toFixed(4)}` : '—'}</dd></div>
 		<div><dt class="text-xs text-neutral-400">Conversation</dt><dd class="font-mono text-sm text-neutral-800">{run.conversation_id ?? '—'}</dd></div>
 	</dl>
 

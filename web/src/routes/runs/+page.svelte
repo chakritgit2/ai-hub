@@ -148,7 +148,7 @@
 						</td>
 						<td class="px-4 py-2 text-neutral-600">{run.latency_ms} ms</td>
 						<td class="px-4 py-2 text-neutral-600">{run.tokens_in}/{run.tokens_out}</td>
-						<td class="px-4 py-2 text-neutral-600">${run.cost_usd.toFixed(4)}</td>
+						<td class="px-4 py-2 text-neutral-600">{run.cost_usd !== null ? `$${run.cost_usd.toFixed(4)}` : '—'}</td>
 					</tr>
 				{/each}
 			</tbody>
