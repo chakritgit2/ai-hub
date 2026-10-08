@@ -107,7 +107,14 @@ temporary login stand-in, MinIO/ai-worker deferred).
 Knowledge Bases' OKF file storage (`ai/app/core/storage.py`) needs MinIO, which this first
 rollout deliberately deferred. The feature itself (OKF import/export, indexing, vector +
 Thai-aware hybrid search) is now built and tested locally — this is the one piece needed to
-make it testable/usable against this cluster. Prepared from the same read-only dev token
+make it testable/usable against this cluster.
+
+**Commits for this follow-up:**
+- `14a4bc5` — the k8s manifest changes themselves (this section's files).
+- `d05ed6b` — the Thai hybrid-search KB feature these manifests unblock (context only, no
+  cluster-facing changes).
+
+Prepared from the same read-only dev token
 used for the rest of this document — confirmed via `kubectl -n ai-hub-advws auth can-i
 create secrets/deployments/persistentvolumeclaims/configmaps` all returning `no`, so
 applying this needs the same write access as the original rollout (see point 1 above).
