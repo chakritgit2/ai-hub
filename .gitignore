@@ -25,3 +25,6 @@ web/.env
 .DS_Store
 *.log
 docker-compose.override.yaml
+
+# VS Code SFTP (has real host/port/password) — copy .vscode/sftp.json.example instead
+.vscode/sftp.json
