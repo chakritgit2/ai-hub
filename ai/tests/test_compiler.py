@@ -202,3 +202,120 @@ async def test_compile_rejects_valid_json_check_in_input_list():
 
     assert result["ok"] is False
     assert any(error["path"].startswith("guardrails") for error in result["errors"])
+
+
+@requires_postgres
+async def test_compile_attaches_a_real_http_tool(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="http", config={"url": "https://api.example.com/orders", "method": "GET"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    compiled_tools = result["compiled_definition"]["agent"]["tools"]
+    assert len(compiled_tools) == 1
+    assert compiled_tools[0]["type"] == "dynamiq.nodes.tools.HttpApiCall"
+    assert compiled_tools[0]["id"] == tool_id
+
+    agent = build_agent(result["compiled_definition"], "sk-test-key")
+    assert len(agent.tools) == 1
+    assert agent.tools[0].connection.url == "https://api.example.com/orders"
+
+
+@requires_postgres
+async def test_compile_rejects_cross_company_tool(make_connection, make_tool):
+    company_a = str(uuid.uuid4())
+    company_b = str(uuid.uuid4())
+    connection_id = make_connection(company_a)
+    tool_id = make_tool(company_b, kind="http")
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_a)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "tools[0].tool_id"
+
+
+@requires_postgres
+async def test_compile_rejects_unknown_tool_id(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": str(uuid.uuid4())}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "tools[0].tool_id"
+
+
+@requires_postgres
+async def test_compile_rejects_builtin_tool_kind_even_for_admin(make_connection, make_tool):
+    """kind: builtin (Tavily/Exa) has no connection/API-key model yet - fails compilation
+    for every role, including admin, rather than being silently accepted and doing nothing
+    at run time."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="builtin")
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "admin", company_id)
+
+    assert result["ok"] is False
+    assert "not yet supported" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_attaches_published_skill(make_connection, make_skill):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    make_skill(company_id, name="refund-policy", content="# Refund Policy", is_published=True)
+    spec = {**_valid_spec(connection_id), "skills": ["refund-policy"]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    assert result["compiled_definition"]["skills"] == ["refund-policy"]
+
+
+@requires_postgres
+async def test_compile_rejects_unpublished_skill_name(make_connection, make_skill):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    make_skill(company_id, name="draft-skill", is_published=False)
+    spec = {**_valid_spec(connection_id), "skills": ["draft-skill"]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "skills"
+
+
+@requires_postgres
+async def test_build_agent_scopes_skill_registry_to_only_the_declared_skills(
+    company_ids, make_connection, make_skill
+):
+    """Two published skills exist for the company; the agent only declares one - the
+    attached registry must not leak the other (PRD §6.6a: skills are attached per agent,
+    not company-wide)."""
+    from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
+
+    company_id = company_ids()
+    connection_id = make_connection(company_id)
+    make_skill(company_id, name="refund-policy", content="# Refund Policy", is_published=True)
+    make_skill(company_id, name="shipping-policy", content="# Shipping Policy", is_published=True)
+    spec = {**_valid_spec(connection_id), "skills": ["refund-policy"]}
+
+    result = await compile_spec(spec, "developer", company_id)
+    assert result["ok"] is True, result["errors"]
+
+    full_registry = await get_console_skill_registry(company_id)
+    scoped = [s for s in full_registry.skills if s.name in result["compiled_definition"]["skills"]]
+    skill_registry = ConsoleSkillRegistry(skills=scoped)
+
+    agent = build_agent(result["compiled_definition"], "sk-test-key", skill_registry=skill_registry)
+
+    assert agent.skills.enabled is True
+    names = [m.name for m in agent.skills.source.get_skills_metadata()]
+    assert names == ["refund-policy"]

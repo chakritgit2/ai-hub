@@ -18,9 +18,12 @@ import logging
 from pydantic import ValidationError
 
 from app.integrations.dynamiq_adapter import build_llm, llm_type_for_connection_type
+from app.integrations.skill_registry import ConsoleSkillRegistry
 from app.services.agent_spec import AgentSpecDoc, render_identity_prompt
 from app.services.connections import ConnectionRow, resolve_connection
 from app.services.node_allowlist import find_disallowed_types
+from app.services.skills import list_published_skills
+from app.services.tools import ToolRow, resolve_tool
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +50,14 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
             [{"path": "model.connection_id", "message": "no connection with this id for this company"}]
         )
 
-    compiled_definition = _build_compiled_definition(doc, connection)
+    tools, tool_errors = await _resolve_tools(doc, company_id)
+    skill_errors = await _validate_skills(doc, company_id)
+    if tool_errors or skill_errors:
+        return _failure(tool_errors + skill_errors)
+
+    compiled_definition = _build_compiled_definition(doc, connection, tools)
     compiled_definition["guardrails"] = doc.guardrails.model_dump()
+    compiled_definition["skills"] = doc.skills
 
     disallowed = find_disallowed_types(compiled_definition, role)
     if disallowed:
@@ -80,7 +89,46 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
     }
 
 
-def _build_compiled_definition(doc: AgentSpecDoc, connection: ConnectionRow) -> dict:
+_HTTP_TOOL_TYPE = "dynamiq.nodes.tools.HttpApiCall"
+
+
+async def _resolve_tools(doc: AgentSpecDoc, company_id: str) -> tuple[list[ToolRow], list[dict]]:
+    """Resolves + cross-company-validates every `doc.tools` reference, collecting *all*
+    errors rather than stopping at the first (PRD §7.7: every tool referenced by an agent
+    spec must belong to the agent's company).
+
+    Only `kind: "http"` tools can actually be built into a real node this round — no
+    tool-secret storage exists yet (`kind: builtin` needs its own connection/API-key model;
+    `kind: python` has no execution story at all) — so any other kind fails compilation
+    outright, for every role including admin, rather than being silently accepted and then
+    doing nothing at run time.
+    """
+    resolved: list[ToolRow] = []
+    errors: list[dict] = []
+    for index, ref in enumerate(doc.tools):
+        tool = await resolve_tool(company_id, ref.tool_id)
+        if tool is None:
+            errors.append({"path": f"tools[{index}].tool_id", "message": "no tool with this id for this company"})
+            continue
+        if tool.kind != "http":
+            errors.append({"path": f"tools[{index}].tool_id", "message": f"tool kind {tool.kind!r} not yet supported"})
+            continue
+        resolved.append(tool)
+    return resolved, errors
+
+
+async def _validate_skills(doc: AgentSpecDoc, company_id: str) -> list[dict]:
+    if not doc.skills:
+        return []
+    published_names = {skill.name for skill in await list_published_skills(company_id)}
+    return [
+        {"path": "skills", "message": f"no published skill named {name!r} for this company"}
+        for name in doc.skills
+        if name not in published_names
+    ]
+
+
+def _build_compiled_definition(doc: AgentSpecDoc, connection: ConnectionRow, tools: list[ToolRow]) -> dict:
     return {
         "version": 1,
         "agent": {
@@ -88,7 +136,10 @@ def _build_compiled_definition(doc: AgentSpecDoc, connection: ConnectionRow) -> 
             "name": doc.identity.name,
             "role": render_identity_prompt(doc.identity),
             "max_loops": DEFAULT_MAX_LOOPS,
-            "tools": [],
+            "tools": [
+                {"type": _HTTP_TOOL_TYPE, "id": tool.id, "name": tool.name, "config": tool.config}
+                for tool in tools
+            ],
             "llm": {
                 # Filled in once the allowlist check has passed — see compile_spec().
                 "type": None,
@@ -106,15 +157,40 @@ def _build_compiled_definition(doc: AgentSpecDoc, connection: ConnectionRow) -> 
     }
 
 
-def build_agent(compiled_definition: dict, api_key: str, memory=None):
+def _build_tools(tool_defs: list[dict]) -> list:
+    """Constructs real Dynamiq tool node instances from `compiled_definition["agent"]
+    ["tools"]`. `_resolve_tools` already guarantees only `_HTTP_TOOL_TYPE` entries ever
+    reach here - the explicit check below is a defensive backstop (matches this
+    codebase's general defense-in-depth style), not the primary gate.
+    """
+    from dynamiq.connections.connections import Http
+    from dynamiq.nodes.tools import HttpApiCall
+
+    tools = []
+    for tool_def in tool_defs:
+        if tool_def["type"] != _HTTP_TOOL_TYPE:
+            raise ValueError(f"unsupported tool type for execution: {tool_def['type']!r}")
+        config = tool_def["config"]
+        connection = Http(
+            url=config.get("url", ""),
+            method=config.get("method", "GET"),
+            headers=config.get("headers") or {},
+        )
+        tools.append(HttpApiCall(name=tool_def["name"], description=config.get("description", ""), connection=connection))
+    return tools
+
+
+def build_agent(compiled_definition: dict, api_key: str, memory=None, skill_registry: ConsoleSkillRegistry | None = None):
     """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
     (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
-    `_COMPILE_TIME_PLACEHOLDER_API_KEY`, no memory, and the result discarded (only
-    proving it's buildable), and Playground's agent-version resolution
+    `_COMPILE_TIME_PLACEHOLDER_API_KEY`, no memory, no skill_registry, and the result
+    discarded (only proving it's buildable), and Playground's agent-version resolution
     (`app.services.runtime`), with the connection's real decrypted secret, real
-    conversation memory when available, and the returned Agent actually run.
+    conversation memory and skill registry when available, and the returned Agent
+    actually run.
     """
     from dynamiq.nodes.agents import Agent
+    from dynamiq.skills.config import SkillsConfig
 
     agent_def = compiled_definition["agent"]
     llm_def = agent_def["llm"]
@@ -143,8 +219,9 @@ def build_agent(compiled_definition: dict, api_key: str, memory=None):
         llm=llm,
         role=agent_def["role"],
         max_loops=agent_def["max_loops"],
-        tools=[],
+        tools=_build_tools(agent_def.get("tools", [])),
         memory=memory,
+        skills=SkillsConfig(enabled=True, source=skill_registry) if skill_registry is not None else SkillsConfig(),
     )
 
 

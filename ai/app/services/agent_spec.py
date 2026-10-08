@@ -1,12 +1,13 @@
 """Agent spec schema — slice 1: Identity + Model (PRD §6.1/§6.1a); slice 2: Guardrails
-(PRD §6.4).
+(PRD §6.4); slice 3: Tools + Skills references (PRD §6.5/§6.6a) - resolution/cross-company
+validation/node construction lives in `app.services.compiler`, not here; this module only
+validates the *shape* a reference must have (a well-formed tool id, a skill name).
 
-Tools/Knowledge/Skills/Memory/Advanced tabs exist in the web editor already (every tab's
-data is sent in the spec regardless of which ones have a real backing table), but none of
-those sections have CRUD or a schema behind them yet — `AgentSpecDoc` only validates
-`identity`/`model`/`guardrails` and silently ignores anything else
-(`model_config = ConfigDict(extra="ignore")`), rather than rejecting a spec just because
-of an empty `tools: []`.
+Knowledge/Memory/Advanced tabs exist in the web editor already (every tab's data is sent in
+the spec regardless of which ones have a real backing table), but still have no schema
+behind them — `AgentSpecDoc` silently ignores anything else it doesn't recognize
+(`model_config = ConfigDict(extra="ignore")`), rather than rejecting a spec just because of
+an empty `memory: {}`.
 
 `AgentIdentitySpec`'s fields mirror `web/src/lib/api/types.ts`'s
 `AgentIdentity` exactly — this is the one spec shape the editor already
@@ -118,12 +119,30 @@ class GuardrailsSpec(BaseModel):
         return self
 
 
+class ToolRefSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    tool_id: str
+
+    @field_validator("tool_id")
+    @classmethod
+    def _tool_id_is_uuid(cls, value: str) -> str:
+        import uuid
+
+        uuid.UUID(value)  # raises ValueError -> wrapped as a pydantic ValidationError
+        return value
+
+
 class AgentSpecDoc(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     identity: AgentIdentitySpec
     model: ModelSpec
     guardrails: GuardrailsSpec = Field(default_factory=GuardrailsSpec)
+    tools: list[ToolRefSpec] = Field(default_factory=list)
+    # Skill *names*, not ids - SkillsTool/ConsoleSkillRegistry already address skills by
+    # name (PRD §6.6a: "SkillsTool (list -> get)"), not id.
+    skills: list[str] = Field(default_factory=list)
 
 
 def render_identity_prompt(identity: AgentIdentitySpec) -> str:

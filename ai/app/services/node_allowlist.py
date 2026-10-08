@@ -7,12 +7,14 @@ There's no closed enum of valid "type" strings anywhere in dynamiq itself —
 checked against the literal dotted-path strings this console ever writes into
 a `compiled_definition`.
 
-Slice 1 (Identity + Model) never puts a tool-type string into a
-`compiled_definition` — there's no Tools section/table yet — so
-`ADMIN_ONLY_NODE_TYPES` can't actually be hit via the compiler's normal path
-yet. The mechanism is still real and tested directly (see
-`tests/test_node_allowlist.py`), ready for Tools to start populating `type`
-entries without this function needing to change.
+`kind: "http"` tools are the one tool kind the compiler can actually build a real node for
+today (`app.services.compiler._build_tools`) — `kind: "builtin"`/`kind: "python"` tool
+references fail compilation outright, for every role including admin, before a `"type"`
+entry for them is ever written (see `app.services.compiler._resolve_tools`), so
+`ADMIN_ONLY_NODE_TYPES` still can't actually be hit via the compiler's normal path yet. The
+mechanism is real and tested directly (see `tests/test_node_allowlist.py`), ready for
+code-execution tool kinds to start populating `type` entries without this function needing
+to change.
 """
 
 # Verified importable from the installed dynamiq==0.65.0.
@@ -21,6 +23,7 @@ ALWAYS_ALLOWED_NODE_TYPES: frozenset[str] = frozenset(
         "dynamiq.nodes.agents.Agent",
         "dynamiq.connections.OpenAI",
         "dynamiq.nodes.llms.OpenAI",
+        "dynamiq.nodes.tools.HttpApiCall",
     }
 )
 

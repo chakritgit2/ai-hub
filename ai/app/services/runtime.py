@@ -21,6 +21,7 @@ from dynamiq.callbacks.base import BaseCallbackHandler
 from dynamiq.runnables.base import RunnableConfig, RunnableStatus
 
 from app.core.config import get_settings
+from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
 from app.services.agent_spec import GuardrailsSpec
 from app.services.agent_versions import resolve_agent_version
 from app.services.compiler import build_agent, compile_spec
@@ -169,7 +170,17 @@ async def _execute_agent_run(
             company_id, deployment_id, external_user_id, conversation_id
         )
 
-    agent = build_agent(compiled_definition, secret, memory=memory)
+    skill_registry = None
+    if compiled_definition.get("skills"):
+        # Reuses the cached full-company fetch, then scopes down to just this agent's own
+        # declared skills - every agent in a company sharing the same registry instance
+        # would otherwise see every skill the company owns, not just the ones its own spec
+        # lists (PRD §6.6a: "attached to agents in the editor's Skills tab").
+        full_registry = await get_console_skill_registry(company_id)
+        scoped_skills = [s for s in full_registry.skills if s.name in compiled_definition["skills"]]
+        skill_registry = ConsoleSkillRegistry(skills=scoped_skills)
+
+    agent = build_agent(compiled_definition, secret, memory=memory, skill_registry=skill_registry)
 
     usage_collector = _UsageCollector()
 
