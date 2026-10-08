@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { currentUser, roleForCompany } from '$lib/stores/auth';
+	import { currentUser, roleForCompany, logout } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
+	import { ssoLoginUrl } from '$lib/config/sso';
 
 	interface NavItem {
 		label: string;
@@ -91,17 +92,26 @@
 
 	<div class="border-t border-white/10 px-4 py-3">
 		{#if $currentUser}
-			<p class="truncate text-sm font-medium text-white">{$currentUser.email}</p>
-			<p class="text-xs capitalize text-neutral-400">{role}</p>
-		{:else if import.meta.env.DEV}
+			<div class="flex items-center justify-between gap-2">
+				<div class="min-w-0">
+					<p class="truncate text-sm font-medium text-white">{$currentUser.email}</p>
+					<p class="text-xs capitalize text-neutral-400">{role}</p>
+				</div>
+				<button
+					type="button"
+					on:click={logout}
+					class="shrink-0 text-xs text-neutral-400 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				>
+					Logout
+				</button>
+			</div>
+		{:else}
 			<a
-				href="http://localhost:8999/"
+				href={ssoLoginUrl}
 				class="text-xs text-primary underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			>
-				Sign in (dev SSO)
+				Sign in
 			</a>
-		{:else}
-			<p class="text-xs text-neutral-500">Not signed in</p>
 		{/if}
 	</div>
 </nav>

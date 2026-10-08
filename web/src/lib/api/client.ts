@@ -1,7 +1,9 @@
 import { PUBLIC_CONSOLE_API_BASE_URL } from '$env/static/public';
 import { get } from 'svelte/store';
+import { browser } from '$app/environment';
 import { companyId } from '$lib/stores/company';
 import { authToken } from '$lib/stores/token';
+import { ssoLoginUrl } from '$lib/config/sso';
 
 export class ApiError extends Error {
 	status: number;
@@ -69,6 +71,14 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
 		});
 	} catch (err) {
 		throw new ApiError(0, `Network error calling ${path}: ${(err as Error).message}`);
+	}
+
+	if (response.status === 401) {
+		// Every route but /healthz requires the Bearer token (PRD §7.1), so a 401 here
+		// always means the session is gone — bounce straight back to SSO rather than
+		// letting callers render a stale, half-authenticated page.
+		authToken.set(null);
+		if (browser) window.location.href = ssoLoginUrl;
 	}
 
 	if (response.status === 204) {
