@@ -19,5 +19,7 @@ AS $$
   WHERE kb.id = p_kb_id AND kb.company_id = p_company_id;
 $$;
 
+-- Used by both the compiler (ai_app) and the gateway's run path (gateway_app) - same
+-- reasoning as console.resolve_connection.
 REVOKE ALL ON FUNCTION console.resolve_knowledge_base(uuid, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION console.resolve_knowledge_base(uuid, uuid) TO ai_app;
+GRANT EXECUTE ON FUNCTION console.resolve_knowledge_base(uuid, uuid) TO ai_app, gateway_app;

@@ -27,5 +27,7 @@ AS $$
   WHERE av.id = p_agent_version_id AND av.company_id = p_company_id;
 $$;
 
+-- Used by both Playground (ai_app) and the gateway's run path (gateway_app) -
+-- app/services/runtime.py's resolve_* helpers back both callers identically.
 REVOKE ALL ON FUNCTION console.resolve_agent_version(uuid, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION console.resolve_agent_version(uuid, uuid) TO ai_app;
+GRANT EXECUTE ON FUNCTION console.resolve_agent_version(uuid, uuid) TO ai_app, gateway_app;

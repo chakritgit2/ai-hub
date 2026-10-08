@@ -20,5 +20,7 @@ AS $$
   WHERE s.company_id = p_company_id;
 $$;
 
+-- Used by both the compiler (ai_app) and the gateway's run path (gateway_app) - same
+-- reasoning as console.resolve_connection.
 REVOKE ALL ON FUNCTION console.resolve_published_skills(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION console.resolve_published_skills(uuid) TO ai_app;
+GRANT EXECUTE ON FUNCTION console.resolve_published_skills(uuid) TO ai_app, gateway_app;

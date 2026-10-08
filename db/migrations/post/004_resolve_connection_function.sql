@@ -29,5 +29,8 @@ AS $$
   WHERE c.id = p_connection_id AND c.company_id = p_company_id;
 $$;
 
+-- Used by both the compiler (ai_app) and the gateway's run path (gateway_app), which
+-- re-resolves a deployment's connection fresh on every run rather than trusting the
+-- publish-time snapshot in compiled_definition.
 REVOKE ALL ON FUNCTION console.resolve_connection(uuid, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION console.resolve_connection(uuid, uuid) TO ai_app;
+GRANT EXECUTE ON FUNCTION console.resolve_connection(uuid, uuid) TO ai_app, gateway_app;
