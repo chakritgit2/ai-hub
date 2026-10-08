@@ -75,7 +75,7 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
     compiled_definition["agent"]["llm"]["type"] = llm_type
 
     try:
-        build_agent(compiled_definition, _COMPILE_TIME_PLACEHOLDER_API_KEY)
+        build_agent(compiled_definition, _COMPILE_TIME_PLACEHOLDER_API_KEY, company_id)
     except Exception as exc:  # proves compiled_definition is actually buildable
         logger.exception("agent spec compilation failed to construct an Agent")
         return _failure([{"path": "model", "message": f"failed to construct agent: {exc}"}])
@@ -110,8 +110,18 @@ async def _resolve_tools(doc: AgentSpecDoc, company_id: str) -> tuple[list[ToolR
         if tool is None:
             errors.append({"path": f"tools[{index}].tool_id", "message": "no tool with this id for this company"})
             continue
+        if not tool.enabled:
+            # `console.resolve_tool` returns disabled rows too (company-ownership is its
+            # only filter) - disabled must be rejected here, or disabling a tool in the
+            # console (e.g. as a kill switch) would have no effect on agents already
+            # referencing it.
+            errors.append({"path": f"tools[{index}].tool_id", "message": "tool is disabled"})
+            continue
         if tool.kind != "http":
             errors.append({"path": f"tools[{index}].tool_id", "message": f"tool kind {tool.kind!r} not yet supported"})
+            continue
+        if not tool.config.get("url"):
+            errors.append({"path": f"tools[{index}].tool_id", "message": "tool config has no url"})
             continue
         resolved.append(tool)
     return resolved, errors
@@ -157,14 +167,19 @@ def _build_compiled_definition(doc: AgentSpecDoc, connection: ConnectionRow, too
     }
 
 
-def _build_tools(tool_defs: list[dict]) -> list:
+def _build_tools(tool_defs: list[dict], company_id: str) -> list:
     """Constructs real Dynamiq tool node instances from `compiled_definition["agent"]
     ["tools"]`. `_resolve_tools` already guarantees only `_HTTP_TOOL_TYPE` entries ever
     reach here - the explicit check below is a defensive backstop (matches this
     codebase's general defense-in-depth style), not the primary gate.
+
+    Uses `SafeHttpApiCall`, not Dynamiq's own `HttpApiCall`, so every real request this
+    tool makes is checked against the company's egress allowlist - see that class's
+    docstring for why the bare Dynamiq node can't be used as-is here.
     """
     from dynamiq.connections.connections import Http
-    from dynamiq.nodes.tools import HttpApiCall
+
+    from app.integrations.safe_http_tool import SafeHttpApiCall
 
     tools = []
     for tool_def in tool_defs:
@@ -176,11 +191,24 @@ def _build_tools(tool_defs: list[dict]) -> list:
             method=config.get("method", "GET"),
             headers=config.get("headers") or {},
         )
-        tools.append(HttpApiCall(name=tool_def["name"], description=config.get("description", ""), connection=connection))
+        tools.append(
+            SafeHttpApiCall(
+                name=tool_def["name"],
+                description=config.get("description", ""),
+                connection=connection,
+                company_id=company_id,
+            )
+        )
     return tools
 
 
-def build_agent(compiled_definition: dict, api_key: str, memory=None, skill_registry: ConsoleSkillRegistry | None = None):
+def build_agent(
+    compiled_definition: dict,
+    api_key: str,
+    company_id: str,
+    memory=None,
+    skill_registry: ConsoleSkillRegistry | None = None,
+):
     """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
     (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
     `_COMPILE_TIME_PLACEHOLDER_API_KEY`, no memory, no skill_registry, and the result
@@ -219,7 +247,7 @@ def build_agent(compiled_definition: dict, api_key: str, memory=None, skill_regi
         llm=llm,
         role=agent_def["role"],
         max_loops=agent_def["max_loops"],
-        tools=_build_tools(agent_def.get("tools", [])),
+        tools=_build_tools(agent_def.get("tools", []), company_id),
         memory=memory,
         skills=SkillsConfig(enabled=True, source=skill_registry) if skill_registry is not None else SkillsConfig(),
     )

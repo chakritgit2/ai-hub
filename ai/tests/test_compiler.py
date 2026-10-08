@@ -1,5 +1,8 @@
 import uuid
 
+import pytest
+from dynamiq.nodes.agents.exceptions import ToolExecutionException
+from dynamiq.nodes.tools.http_api_call import HttpApiCallInputSchema
 from fastapi.testclient import TestClient
 
 from app.main_runtime import app as runtime_app
@@ -95,7 +98,7 @@ async def test_compile_threads_connection_api_base_through_to_the_built_llm(make
     assert result["ok"] is True, result["errors"]
     assert result["compiled_definition"]["agent"]["llm"]["connection"]["api_base"] == custom_api_base
 
-    agent = build_agent(result["compiled_definition"], "sk-test-key")
+    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id)
     assert agent.llm.connection.url == custom_api_base
 
 
@@ -219,9 +222,31 @@ async def test_compile_attaches_a_real_http_tool(make_connection, make_tool):
     assert compiled_tools[0]["type"] == "dynamiq.nodes.tools.HttpApiCall"
     assert compiled_tools[0]["id"] == tool_id
 
-    agent = build_agent(result["compiled_definition"], "sk-test-key")
+    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id)
     assert len(agent.tools) == 1
     assert agent.tools[0].connection.url == "https://api.example.com/orders"
+    assert agent.tools[0].company_id == company_id
+
+
+@requires_postgres
+async def test_compiled_http_tool_execution_is_egress_blocked_by_default(make_connection, make_tool):
+    """The attached tool must actually go through SafeHttpClient at run time, not just
+    Dynamiq's own unprotected requests/httpx client - with no egress_allowlist row for
+    this company, calling the tool for real must be blocked exactly like the
+    /tools/{id}/test endpoint already is, even though the tool's own config is valid."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="http", config={"url": "https://api.example.com/orders", "method": "GET"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+    assert result["ok"] is True, result["errors"]
+
+    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id)
+    tool = agent.tools[0]
+
+    with pytest.raises(ToolExecutionException, match="egress_blocked"):
+        tool.execute(HttpApiCallInputSchema())
 
 
 @requires_postgres
@@ -248,6 +273,37 @@ async def test_compile_rejects_unknown_tool_id(make_connection):
 
     assert result["ok"] is False
     assert result["errors"][0]["path"] == "tools[0].tool_id"
+
+
+@requires_postgres
+async def test_compile_rejects_disabled_tool(make_connection, make_tool):
+    """`console.resolve_tool` returns disabled rows too (only company-ownership is
+    filtered in SQL) - the compiler must reject them itself, or disabling a tool in the
+    console (e.g. as a kill switch) would have no effect on agents already referencing it."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="http", config={"url": "https://api.example.com/orders"}, enabled=False)
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "admin", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "tools[0].tool_id"
+    assert "disabled" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_rejects_http_tool_with_no_url(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="http", config={})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "tools[0].tool_id"
+    assert "no url" in result["errors"][0]["message"]
 
 
 @requires_postgres
@@ -314,7 +370,7 @@ async def test_build_agent_scopes_skill_registry_to_only_the_declared_skills(
     scoped = [s for s in full_registry.skills if s.name in result["compiled_definition"]["skills"]]
     skill_registry = ConsoleSkillRegistry(skills=scoped)
 
-    agent = build_agent(result["compiled_definition"], "sk-test-key", skill_registry=skill_registry)
+    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id, skill_registry=skill_registry)
 
     assert agent.skills.enabled is True
     names = [m.name for m in agent.skills.source.get_skills_metadata()]

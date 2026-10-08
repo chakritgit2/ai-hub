@@ -78,7 +78,15 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiFetchOptions 
 		// always means the session is gone — bounce straight back to SSO rather than
 		// letting callers render a stale, half-authenticated page.
 		authToken.set(null);
-		if (browser) window.location.href = ssoLoginUrl;
+		if (browser) {
+			window.location.href = ssoLoginUrl;
+			// Navigation is async, not synchronous — without this, every caller still
+			// gets a thrown ApiError(401) a tick before the page actually unloads,
+			// which can flash an error state or log an unhandled rejection for no
+			// reason. Return a promise that never resolves so callers just hang until
+			// the browser replaces the page.
+			return new Promise<T>(() => {});
+		}
 	}
 
 	if (response.status === 204) {

@@ -153,7 +153,7 @@
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			>
 				<option value="vector">Vector</option>
-				<option value="hybrid">Hybrid (not yet supported for search — vector + keyword, later)</option>
+				<option value="hybrid">Hybrid (vector + keyword, fused and weighted by alpha)</option>
 			</select>
 		</label>
 		<label class="block">

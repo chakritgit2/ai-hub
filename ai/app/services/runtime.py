@@ -180,7 +180,7 @@ async def _execute_agent_run(
         scoped_skills = [s for s in full_registry.skills if s.name in compiled_definition["skills"]]
         skill_registry = ConsoleSkillRegistry(skills=scoped_skills)
 
-    agent = build_agent(compiled_definition, secret, memory=memory, skill_registry=skill_registry)
+    agent = build_agent(compiled_definition, secret, company_id, memory=memory, skill_registry=skill_registry)
 
     usage_collector = _UsageCollector()
 

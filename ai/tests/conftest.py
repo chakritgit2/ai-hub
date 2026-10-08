@@ -200,6 +200,7 @@ def make_tool():
         access_level: str = "read",
         auth_mode: str = "service",
         config: dict | None = None,
+        enabled: bool = True,
     ) -> str:
         tool_id = str(uuid.uuid4())
         with _connect() as conn:
@@ -207,9 +208,9 @@ def make_tool():
             # own freshly generated uuid4, never external input.
             conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
             conn.execute(
-                "INSERT INTO console.tools (id, company_id, name, kind, access_level, auth_mode, config) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (tool_id, company_id, name, kind, access_level, auth_mode, json.dumps(config or {})),
+                "INSERT INTO console.tools (id, company_id, name, kind, access_level, auth_mode, config, enabled) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (tool_id, company_id, name, kind, access_level, auth_mode, json.dumps(config or {}), enabled),
             )
             conn.commit()
         created.append((company_id, tool_id))

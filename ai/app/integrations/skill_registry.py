@@ -14,10 +14,9 @@ cache, same dict+`time.monotonic()` pattern as `app.core.auth`'s `_jwks_cache`) 
 serves synchronous in-memory lookups, exactly like dynamiq's own `FileSystem`/`Dynamiq`
 reference registries populate their own `skills` list up front.
 
-Not yet wired into a live agent run: `AgentSpecDoc` has no `skills` field yet (same gap as
-`tools`), so nothing currently constructs a `ConsoleSkillRegistry` for an actual Dynamiq
-`Agent` to call through `SkillsTool`. That's a follow-up alongside the equivalent Tools
-execution wiring.
+Wired into a live agent run by `app.services.runtime._execute_agent_run`, which scopes the
+cached company-wide registry down to just the compiled agent's own declared skill names
+before attaching it via `SkillsConfig` (see `app.services.compiler.build_agent`).
 """
 import time
 

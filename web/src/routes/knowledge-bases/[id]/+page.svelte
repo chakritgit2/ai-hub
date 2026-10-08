@@ -222,12 +222,6 @@
 
 		<section class="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
 			<h2 class="text-sm font-semibold text-neutral-700">Search test</h2>
-			{#if kb.retrieval_mode === 'hybrid'}
-				<p class="mt-1 text-xs text-warning-dark">
-					This KB is set to hybrid retrieval, which isn't implemented yet — search will fail until it's
-					switched back to vector or hybrid retrieval ships.
-				</p>
-			{/if}
 			<div class="mt-3 flex gap-2">
 				<input
 					type="text"
@@ -300,7 +294,7 @@
 					<span class="text-xs text-neutral-500">Retrieval mode</span>
 					<select bind:value={settingsForm.retrieval_mode} class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm">
 						<option value="vector">Vector</option>
-						<option value="hybrid">Hybrid (search not yet supported)</option>
+						<option value="hybrid">Vector + keyword (hybrid, fused by alpha)</option>
 					</select>
 				</label>
 				<label class="block">
