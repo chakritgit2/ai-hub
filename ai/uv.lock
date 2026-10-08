@@ -847,6 +847,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
+    { name = "pythainlp" },
     { name = "pyyaml" },
     { name = "redis" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -874,6 +875,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "pydantic-settings", specifier = ">=2.4,<3" },
     { name = "pyjwt", specifier = ">=2.9,<3" },
+    { name = "pythainlp", specifier = ">=5.3.8" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "redis", specifier = ">=5.0,<6" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2,<3" },
@@ -2984,6 +2986,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8e/c4/453c52c659521066969523e87d85d54139bbd17b78f09532fb8eb8cdb58e/pytest_asyncio-0.26.0.tar.gz", hash = "sha256:c4df2a697648241ff39e7f0e4a73050b03f123f760673956cf0d72a4990e312f", size = 54156, upload-time = "2025-03-25T06:22:28.883Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/7f/338843f449ace853647ace35870874f69a764d251872ed1b4de9f234822c/pytest_asyncio-0.26.0-py3-none-any.whl", hash = "sha256:7b51ed894f4fbea1340262bdae5135797ebbe21d8638978e35d31c6d19f72fb0", size = 19694, upload-time = "2025-03-25T06:22:27.807Z" },
+]
+
+[[package]]
+name = "pythainlp"
+version = "5.3.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a6/64/2a6f498cd05b15960e036c543d2efdfd9f2dddf784aaa491d980e2a7eddc/pythainlp-5.3.8.tar.gz", hash = "sha256:ef8cd131421b3f80a1262c63ce3391ccdfb155a60453051b09e6b5fdf1e62c0a", size = 19309864, upload-time = "2026-09-24T18:41:20.237Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c6/21/eec2b16a7e4f1ffb9577c62ef786e1eaad315ce2320c642835d11610b2de/pythainlp-5.3.8-py3-none-any.whl", hash = "sha256:7f4367782d250afa936f65a1c151129fb80c316c3b3dbaa08923de04705b53b3", size = 19852536, upload-time = "2026-09-24T18:41:17.248Z" },
 ]
 
 [[package]]

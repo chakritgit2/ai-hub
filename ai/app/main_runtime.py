@@ -49,7 +49,7 @@ from app.services.connection_secrets import decrypt_connection_secret, upsert_co
 from app.services.connections import resolve_connection
 from app.services.egress_allowlist import list_egress_allowlist
 from app.services.kb_export import export_knowledge_base_zip
-from app.services.kb_search import HybridRetrievalNotImplementedError, search_knowledge_base
+from app.services.kb_search import search_knowledge_base
 from app.services.knowledge_bases import (
     delete_kb_documents,
     find_kb_document_by_okf_id,
@@ -565,8 +565,6 @@ async def searchKnowledgeBase(id: str, body: KbSearchRequest, claims: InternalAu
 
     try:
         results = await search_knowledge_base(company_id, id, body.query, body.top_k)
-    except HybridRetrievalNotImplementedError:
-        raise HTTPException(status_code=422, detail="hybrid_retrieval_not_yet_implemented") from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

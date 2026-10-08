@@ -1,15 +1,14 @@
-"""Thai tokenizer stub (PRD §6.6).
+"""Thai tokenizer (PRD §6.6).
 
-Postgres full-text search cannot segment Thai (no spaces between words), so
-KB indexing stores a pre-tokenized `search_text` field using PyThaiNLP and
-the keyword side of hybrid retrieval uses the `simple` text search
-configuration over that pre-tokenized text.
-
-Note: the PyThaiNLP dependency itself is deferred to phase 2 (KB indexing is
-out of scope for this phase-1 skeleton) - this stub only fixes the call
-signature so callers can be wired up later without an API change.
+Postgres full-text search cannot segment Thai (no spaces between words), so KB indexing
+stores a pre-tokenized `search_text` field (space-joined tokens) and the keyword side of
+hybrid retrieval runs `to_tsvector('simple', ...)` over that pre-tokenized text instead of
+relying on Postgres's own (Thai-unaware) text search configurations. Applied uniformly
+regardless of detected language - sidesteps needing per-language detection at all, and
+`newmm` tokenizes non-Thai text reasonably too (see app.services.kb_hybrid).
 """
+from pythainlp.tokenize import word_tokenize
 
 
 def tokenize(text: str) -> list[str]:
-    raise NotImplementedError("tokenize: PyThaiNLP-based Thai tokenization deferred to phase 2")
+    return [token for token in word_tokenize(text, engine="newmm") if token.strip()]

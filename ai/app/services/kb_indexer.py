@@ -20,8 +20,10 @@ from app.core.config import get_settings
 from app.core.storage import get_object
 from app.integrations.dynamiq_adapter import build_embedder
 from app.integrations.okf import parse_okf, resolve_okf_metadata
+from app.integrations.thai_tokenizer import tokenize
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.connections import resolve_connection
+from app.services.kb_hybrid import ensure_search_text_column, write_search_text_batch
 from app.services.knowledge_bases import (
     get_kb_document,
     kb_vector_table_name,
@@ -75,13 +77,6 @@ async def index_kb_document(company_id: str, kb_id: str, document_id: str) -> di
             await update_kb_document_status(company_id, document_id, status="failed", error=error)
             return {"status": "failed", "chunk_count": 0, "error": error}
 
-        if kb.retrieval_mode == "hybrid":
-            # MVP guard (PRD scope decision, see plan) - fail loudly rather than
-            # silently falling back to vector-only for a KB configured as hybrid.
-            error = "hybrid_retrieval_not_yet_implemented"
-            await update_kb_document_status(company_id, document_id, status="failed", error=error)
-            return {"status": "failed", "chunk_count": 0, "error": error}
-
         await update_kb_document_status(company_id, document_id, status="processing")
 
         raw_markdown = (await asyncio.to_thread(get_object, document.object_key)).decode("utf-8")
@@ -126,6 +121,14 @@ async def index_kb_document(company_id: str, kb_id: str, document_id: str) -> di
                 stale_chunk_ids = [f"{document_id}:{i}" for i in range(document.chunk_count)]
                 await asyncio.to_thread(store.delete_documents, stale_chunk_ids)
             await asyncio.to_thread(store.write_documents, embedded_chunks)
+
+            # Pre-tokenized keyword text for hybrid search (PRD §6.6) - written
+            # unconditionally, not just for retrieval_mode == "hybrid": cheap, and means a
+            # KB switched to hybrid *after* indexing only needs its normal content-hash-
+            # triggered re-index, not a separate backfill feature.
+            await asyncio.to_thread(ensure_search_text_column, table_name)
+            search_text_by_id = {chunk.id: " ".join(tokenize(chunk.content)) for chunk in embedded_chunks}
+            await asyncio.to_thread(write_search_text_batch, table_name, search_text_by_id)
         finally:
             await asyncio.to_thread(store.close)
 
