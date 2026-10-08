@@ -2,5 +2,6 @@
 /.env
 /keys/
 .phpunit.result.cache
+.phpunit.cache/
 /build/
 *.log
