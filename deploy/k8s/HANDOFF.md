@@ -91,6 +91,46 @@ temporary login stand-in, MinIO/ai-worker deferred).
 - No HA (single-replica Postgres/Redis, no CloudNativePG/Sentinel), no Ingress/TLS/WAF, no
   NetworkPolicy, no backup — all explicit scope-downs from PRD §11 for this first pass, not
   oversights.
-- `ai-worker` (KB indexing) and MinIO are not deployed — the Knowledge Bases feature is out
-  of scope for "get chat working" and isn't touched by the compile/publish/deploy/gateway
-  path at all.
+- `redis-deployment.yaml` is committed and listed in `kustomization.yaml`, but isn't
+  actually running in the cluster (`kubectl -n ai-hub-advws get pods` shows no `redis-...`
+  pod as of this writing) — a pre-existing drift between git and the live cluster, found
+  while preparing the MinIO follow-up below. Not fixed here (out of scope for that task);
+  quota/rate-limit code already fails open without Redis, so nothing is broken by its
+  absence, but it should be applied at some point so that code path actually works as
+  designed.
+- `ai-worker` (the async indexing queue for Knowledge Bases) is still not deployed —
+  `kb_indexer.py` runs synchronously today, not through ARQ, so nothing needs it yet.
+  **MinIO itself is now prepared** (manifests below) — see "Follow-up: deploy MinIO".
+
+## Follow-up: deploy MinIO (KB storage — manifests ready, not yet applied)
+
+Knowledge Bases' OKF file storage (`ai/app/core/storage.py`) needs MinIO, which this first
+rollout deliberately deferred. The feature itself (OKF import/export, indexing, vector +
+Thai-aware hybrid search) is now built and tested locally — this is the one piece needed to
+make it testable/usable against this cluster. Prepared from the same read-only dev token
+used for the rest of this document — confirmed via `kubectl -n ai-hub-advws auth can-i
+create secrets/deployments/persistentvolumeclaims/configmaps` all returning `no`, so
+applying this needs the same write access as the original rollout (see point 1 above).
+
+**Files ready**: `deploy/k8s/base/minio-deployment.yaml` (new — Deployment + PVC + Service,
+same shape as `redis-deployment.yaml`/`postgres-statefulset.yaml`), `ai-config.yaml`
+(`MINIO_ENDPOINT`/`MINIO_BUCKET`/`MINIO_SECURE` added), `ai-runtime-deployment.yaml`
+(`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` added via `secretKeyRef` — not added to
+`ai-gateway-deployment.yaml`, since KB endpoints live only in ai-runtime's internal API),
+`kustomization.yaml` (lists the new file), `secrets.example.yaml` (documents the new
+`dynamiq-minio-credentials` Secret).
+
+**Steps once write access is available:**
+1. `kubectl -n ai-hub-advws create secret generic dynamiq-minio-credentials --from-literal=root_user=minioadmin --from-literal=root_password="$(openssl rand -base64 24)"`
+2. `kubectl apply -f deploy/k8s/base/minio-deployment.yaml`
+3. `kubectl apply -f deploy/k8s/base/ai-config.yaml`
+4. `kubectl apply -f deploy/k8s/base/ai-runtime-deployment.yaml` (rolls `ai-runtime` to pick
+   up the two new env vars)
+5. `kubectl -n ai-hub-advws get pods -w` until `minio-...` and the new `ai-runtime-...` pod
+   are both `Running`/`Ready`.
+6. Sanity check: `kubectl -n ai-hub-advws exec deploy/ai-runtime -- python -c "from app.core.storage import get_minio_client; print(get_minio_client().list_buckets())"`
+   — the `ai-console` bucket auto-creates on first connection, no manual step needed.
+
+**Deliberately not** a blanket `kubectl apply -k deploy/k8s/base/` — given the Redis drift
+found above, this applies only the 3 files this follow-up actually changes, leaving
+Postgres/console-api/ai-gateway/web/fake-sso untouched.

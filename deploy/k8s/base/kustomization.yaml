@@ -2,7 +2,8 @@
 # dedicated namespace ai-hub-advws (created fresh by infra, NOT shared with
 # operations-advws's cdi-advws namespace — see deploy/k8s/HANDOFF.md for the
 # cross-namespace implications this has for operations-advws reaching ai-gateway),
-# single-replica Postgres/Redis, ai-worker/MinIO deferred (Knowledge Bases only),
+# single-replica Postgres/Redis/MinIO, ai-worker still deferred (Knowledge Bases' async
+# indexing queue — kb_indexer.py runs synchronously today, no queue worker needed yet),
 # fake-sso.php as a temporary SSO stand-in. See deploy/k8s/base/*.yaml comments and the
 # session plan for the full rationale.
 #
@@ -18,6 +19,7 @@ resources:
   - secrets.example.yaml
   - postgres-statefulset.yaml
   - redis-deployment.yaml
+  - minio-deployment.yaml
   - ai-config.yaml
   - ai-runtime-deployment.yaml
   - ai-gateway-deployment.yaml
@@ -25,5 +27,6 @@ resources:
   - web-deployment.yaml
   - fake-sso-deployment.yaml
 
-# Deferred: ai-worker (arq, Knowledge Bases only), MinIO, NetworkPolicy, Ingress/TLS/WAF,
-# HPA — none are needed for the first "get chat working" rollout. See the plan for why.
+# Deferred: ai-worker (arq, Knowledge Bases' async indexing queue only), NetworkPolicy,
+# Ingress/TLS/WAF, HPA — none are needed for the first "get chat working" rollout, and
+# nothing indexes through a queue yet either. See the plan for why.
