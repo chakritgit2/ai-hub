@@ -15,6 +15,7 @@
 	let model = $state(form.model);
 	let selectedToolIds = $state(form.selectedToolIds);
 	let selectedSkillNames = $state(form.selectedSkillNames);
+	let selectedKnowledgeBaseIds = $state(form.selectedKnowledgeBaseIds);
 	let guardrails = $state(form.guardrails);
 
 	// `versions[0]` is the agent's current latest (already sorted version_no DESC by the
@@ -115,5 +116,13 @@
 		{/if}
 	</div>
 
-	<AgentSpecTabs bind:identity bind:model bind:selectedToolIds bind:selectedSkillNames bind:guardrails readonly />
+	<AgentSpecTabs
+		bind:identity
+		bind:model
+		bind:selectedToolIds
+		bind:selectedSkillNames
+		bind:selectedKnowledgeBaseIds
+		bind:guardrails
+		readonly
+	/>
 {/if}

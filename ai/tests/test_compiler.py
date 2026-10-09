@@ -10,9 +10,9 @@ from fastapi.testclient import TestClient
 from app.integrations.safe_http_client import EgressBlockedError
 from app.integrations.safe_openai_connection import SafeOpenAIConnection
 from app.main_runtime import app as runtime_app
-from app.services.compiler import build_agent, compile_spec
+from app.services.compiler import RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
 
-from .markers import requires_postgres
+from .markers import requires_minio, requires_openai_key, requires_postgres
 
 VALID_IDENTITY = {
     "name": "vending-support",
@@ -102,7 +102,7 @@ async def test_compile_threads_connection_api_base_through_to_the_built_llm(make
     assert result["ok"] is True, result["errors"]
     assert result["compiled_definition"]["agent"]["llm"]["connection"]["api_base"] == custom_api_base
 
-    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id)
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
     assert agent.llm.connection.url == custom_api_base
 
 
@@ -118,7 +118,7 @@ async def test_compile_threads_egress_allowlist_through_to_the_built_llm(make_co
     result = await compile_spec(_valid_spec(connection_id), "developer", company_id)
     assert result["ok"] is True, result["errors"]
 
-    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id, egress_allowlist=[])
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id, egress_allowlist=[])
     assert isinstance(agent.llm.connection, SafeOpenAIConnection)
 
     client = agent.llm.connection.connect()
@@ -132,7 +132,7 @@ async def test_compile_threads_egress_allowlist_through_to_the_built_llm(make_co
     plain_connection_id = make_connection(other_company_id)
     plain_result = await compile_spec(_valid_spec(plain_connection_id), "developer", other_company_id)
     assert plain_result["ok"] is True, plain_result["errors"]
-    plain_agent = build_agent(plain_result["compiled_definition"], "sk-test-key", other_company_id)
+    plain_agent = await build_agent(plain_result["compiled_definition"], "sk-test-key", other_company_id)
     assert type(plain_agent.llm.connection) is OpenAIConnection
 
 
@@ -256,7 +256,7 @@ async def test_compile_attaches_a_real_http_tool(make_connection, make_tool):
     assert compiled_tools[0]["type"] == "dynamiq.nodes.tools.HttpApiCall"
     assert compiled_tools[0]["id"] == tool_id
 
-    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id)
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
     assert len(agent.tools) == 1
     assert agent.tools[0].connection.url == "https://api.example.com/orders"
     assert agent.tools[0].company_id == company_id
@@ -276,7 +276,7 @@ async def test_compiled_http_tool_execution_is_egress_blocked_by_default(make_co
     result = await compile_spec(spec, "developer", company_id)
     assert result["ok"] is True, result["errors"]
 
-    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id)
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
     tool = agent.tools[0]
 
     with pytest.raises(ToolExecutionException, match="egress_blocked"):
@@ -404,8 +404,162 @@ async def test_build_agent_scopes_skill_registry_to_only_the_declared_skills(
     scoped = [s for s in full_registry.skills if s.name in result["compiled_definition"]["skills"]]
     skill_registry = ConsoleSkillRegistry(skills=scoped)
 
-    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id, skill_registry=skill_registry)
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id, skill_registry=skill_registry)
 
     assert agent.skills.enabled is True
     names = [m.name for m in agent.skills.source.get_skills_metadata()]
     assert names == ["refund-policy"]
+
+
+@requires_postgres
+@requires_minio
+@requires_openai_key
+async def test_compile_attaches_a_real_knowledge_base_retrieval_tool(
+    company_ids, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+):
+    """Happy path: a vector-mode KB with one real indexed document compiles into a real
+    `VectorStoreRetriever` tool, and `build_agent` actually constructs it (proving the
+    per-KB pgvector table is opened for real, not just shape-checked)."""
+    import hashlib
+    import os
+
+    from app.core.storage import kb_object_key, kb_prefix, put_object
+    from app.services.kb_indexer import index_kb_document
+    from app.services.knowledge_bases import kb_vector_table_name, upsert_kb_document
+
+    company_id = company_ids()
+    connection_id = make_connection(company_id)
+    await store_connection_secret(company_id, connection_id, os.environ["OPENAI_API_KEY"])
+    kb_id = make_knowledge_base(company_id, connection_id, retrieval_mode="vector")
+
+    content = "# Refund Policy\nRefunds are issued within 7 business days.\n"
+    object_key = kb_object_key(company_id, kb_id, None, "refund-policy")
+    put_object(object_key, content.encode("utf-8"))
+    minio_cleanup(kb_prefix(company_id, kb_id))
+    document_id = await upsert_kb_document(
+        company_id=company_id,
+        kb_id=kb_id,
+        okf_id="refund-policy",
+        path="refund-policy.md",
+        category=None,
+        frontmatter={"id": "refund-policy"},
+        object_key=object_key,
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+    indexed = await index_kb_document(company_id, kb_id, document_id)
+    assert indexed["status"] == "ready"
+
+    try:
+        spec = {**_valid_spec(connection_id), "knowledge": [{"kb_id": kb_id}]}
+        result = await compile_spec(spec, "developer", company_id)
+
+        assert result["ok"] is True, result["errors"]
+        compiled_tools = result["compiled_definition"]["agent"]["tools"]
+        assert len(compiled_tools) == 1
+        assert compiled_tools[0]["type"] == RETRIEVAL_TOOL_TYPE
+        assert compiled_tools[0]["id"] == kb_id
+
+        agent = await build_agent(
+            result["compiled_definition"],
+            "sk-test-key",
+            company_id,
+            knowledge_api_keys={kb_id: os.environ["OPENAI_API_KEY"]},
+        )
+        assert len(agent.tools) == 1
+        assert agent.tools[0].name == compiled_tools[0]["name"]
+    finally:
+        import psycopg
+
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        table_name = kb_vector_table_name(company_id, kb_id)
+        with psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user=settings.MEMORY_DB_USER,
+            password=settings.MEMORY_DB_PASSWORD,
+        ) as conn:
+            conn.execute(f'DROP TABLE IF EXISTS runtime."{table_name}"')
+            conn.commit()
+
+
+@requires_postgres
+async def test_compile_rejects_knowledge_base_not_yet_indexed(make_connection, make_knowledge_base):
+    """A KB with zero indexed documents has no per-KB pgvector table at all yet - must be
+    rejected at publish time, not silently accepted and left to fail at agent run time."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    kb_id = make_knowledge_base(company_id, connection_id, retrieval_mode="vector")
+    spec = {**_valid_spec(connection_id), "knowledge": [{"kb_id": kb_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is False
+    assert "failed to construct agent" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_rejects_cross_company_knowledge_base(make_connection, make_knowledge_base):
+    company_a = str(uuid.uuid4())
+    company_b = str(uuid.uuid4())
+    connection_id_a = make_connection(company_a)
+    connection_id_b = make_connection(company_b)
+    kb_id = make_knowledge_base(company_b, connection_id_b, retrieval_mode="vector")
+    spec = {**_valid_spec(connection_id_a), "knowledge": [{"kb_id": kb_id}]}
+
+    result = await compile_spec(spec, "developer", company_a)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "knowledge[0].kb_id"
+
+
+@requires_postgres
+async def test_compile_rejects_unknown_knowledge_base_id(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    spec = {**_valid_spec(connection_id), "knowledge": [{"kb_id": str(uuid.uuid4())}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "knowledge[0].kb_id"
+
+
+@requires_postgres
+async def test_compile_rejects_hybrid_mode_knowledge_base(make_connection, make_knowledge_base):
+    """Dynamiq's native `VectorStoreRetriever` (the only agent-attachable retrieval node
+    this project has) is vector-only - a hybrid-mode KB has no equivalent node, so it must
+    fail compilation outright rather than silently behaving like a vector-only KB."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    kb_id = make_knowledge_base(company_id, connection_id, retrieval_mode="hybrid")
+    spec = {**_valid_spec(connection_id), "knowledge": [{"kb_id": kb_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "knowledge[0].kb_id"
+    assert "hybrid" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_rejects_knowledge_base_with_cross_company_embedder_connection(
+    make_connection, make_knowledge_base
+):
+    """The KB row itself belongs to this company, but its embedder_connection_id points at
+    a connection that doesn't (e.g. the connection was deleted and a new one with the same
+    id never existed) - must be rejected the same way a dangling tool/connection reference
+    would be."""
+    company_a = str(uuid.uuid4())
+    company_b = str(uuid.uuid4())
+    connection_id_a = make_connection(company_a)
+    embedder_connection_id = make_connection(company_b)
+    kb_id = make_knowledge_base(company_a, embedder_connection_id, retrieval_mode="vector")
+    spec = {**_valid_spec(connection_id_a), "knowledge": [{"kb_id": kb_id}]}
+
+    result = await compile_spec(spec, "developer", company_a)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "knowledge[0].kb_id"

@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listConnections, listTools, listSkills } from '$lib/api/console';
+	import { listConnections, listTools, listSkills, listKnowledgeBases } from '$lib/api/console';
 	import type {
 		AgentIdentity,
 		Connection,
 		GuardrailCheckSpec,
 		GuardrailCheckType,
 		GuardrailsSpec,
+		KnowledgeBase,
 		ModelSpec,
 		Skill,
 		Tool
@@ -41,6 +42,16 @@
 	// but never offers one that won't.
 	function isSkillUsable(skill: Skill): boolean {
 		return skill.latest_version.is_published;
+	}
+
+	// Only retrieval_mode: "vector" knowledge bases can be attached to an agent today
+	// (ai/app/services/compiler.py's _resolve_knowledge) - Dynamiq's native
+	// VectorStoreRetriever node (the only agent-attachable retrieval node this project has)
+	// is vector-only; "hybrid" KBs (app/services/kb_hybrid.py's hand-rolled RRF fusion) have
+	// no equivalent node, so they fail compilation outright rather than silently behaving
+	// like a vector-only KB at run time.
+	function isKnowledgeBaseUsable(kb: KnowledgeBase): boolean {
+		return kb.retrieval_mode === 'vector';
 	}
 
 	// Mirrors ai/app/services/agent_spec.py's own constants exactly (_OUTPUT_ONLY_CHECK_TYPES,
@@ -193,7 +204,7 @@
 		{ id: 'identity', label: 'Identity', enabled: true },
 		{ id: 'model', label: 'Model', enabled: true },
 		{ id: 'tools', label: 'Tools', enabled: true },
-		{ id: 'knowledge', label: 'Knowledge', enabled: false, note: 'Phase 2 — PRD §6.6' },
+		{ id: 'knowledge', label: 'Knowledge', enabled: true },
 		{ id: 'skills', label: 'Skills', enabled: true },
 		{ id: 'memory', label: 'Memory', enabled: false, note: 'PRD §6.2' },
 		{ id: 'guardrails', label: 'Guardrails', enabled: true },
@@ -207,6 +218,7 @@
 		model = $bindable(),
 		selectedToolIds = $bindable(),
 		selectedSkillNames = $bindable(),
+		selectedKnowledgeBaseIds = $bindable(),
 		guardrails = $bindable(),
 		readonly = false
 	}: {
@@ -214,6 +226,7 @@
 		model: ModelFormState;
 		selectedToolIds: string[];
 		selectedSkillNames: string[];
+		selectedKnowledgeBaseIds: string[];
 		guardrails: GuardrailsSpec;
 		readonly?: boolean;
 	} = $props();
@@ -286,6 +299,15 @@
 			: selectedSkillNames.filter((name) => name !== skillName);
 	}
 
+	let knowledgeBases = $state<KnowledgeBase[]>([]);
+	let knowledgeBasesError = $state<string | null>(null);
+
+	function toggleKnowledgeBase(kbId: string, checked: boolean) {
+		selectedKnowledgeBaseIds = checked
+			? [...selectedKnowledgeBaseIds, kbId]
+			: selectedKnowledgeBaseIds.filter((id) => id !== kbId);
+	}
+
 	onMount(async () => {
 		await Promise.all([
 			listConnections()
@@ -302,6 +324,11 @@
 				.then((result) => (skills = result))
 				.catch((e) => {
 					skillsError = e instanceof Error ? e.message : 'Failed to load skills.';
+				}),
+			listKnowledgeBases()
+				.then((result) => (knowledgeBases = result))
+				.catch((e) => {
+					knowledgeBasesError = e instanceof Error ? e.message : 'Failed to load knowledge bases.';
 				})
 		]);
 	});
@@ -593,6 +620,48 @@
 					Only enabled <code>http</code> tools can be attached today (PRD §6.5) — other kinds
 					fail compilation until tool-secret storage and an execution story exist for them.
 					Manage tools on the <a href="/tools" class="text-primary underline">Tools</a> page.
+				</p>
+			</div>
+		{:else if activeTab === 'knowledge'}
+			<div class="space-y-4" inert={readonly}>
+				{#if knowledgeBasesError}
+					<div class="rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+						{knowledgeBasesError}
+					</div>
+				{:else if knowledgeBases.length === 0}
+					<p class="text-sm text-neutral-500">
+						No knowledge bases yet. <a href="/knowledge-bases" class="text-primary underline">Create a knowledge base</a> first.
+					</p>
+				{:else}
+					<ul class="divide-y divide-neutral-200 rounded-md border border-neutral-200">
+						{#each knowledgeBases as kb (kb.id)}
+							{@const usable = isKnowledgeBaseUsable(kb)}
+							<li class="flex items-start gap-3 p-3">
+								<input
+									type="checkbox"
+									id={`kb-${kb.id}`}
+									class="mt-1"
+									disabled={!usable}
+									checked={selectedKnowledgeBaseIds.includes(kb.id)}
+									onchange={(e) => toggleKnowledgeBase(kb.id, (e.currentTarget as HTMLInputElement).checked)}
+								/>
+								<label for={`kb-${kb.id}`} class="flex-1 {usable ? '' : 'opacity-60'}">
+									<p class="text-sm font-medium text-neutral-900">{kb.name}</p>
+									<p class="text-xs text-neutral-500">
+										retrieval: <code>{kb.retrieval_mode}</code>
+										{#if !usable}· hybrid retrieval isn't supported as an agent tool yet{/if}
+									</p>
+								</label>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+
+				<p class="text-xs text-neutral-500">
+					Only vector-mode knowledge bases can be attached today (PRD §6.6) — the compiler
+					builds a real retrieval tool from each one at publish time, which also requires at
+					least one document to have finished indexing into it.
+					Manage knowledge bases on the <a href="/knowledge-bases" class="text-primary underline">Knowledge</a> page.
 				</p>
 			</div>
 		{:else if activeTab === 'skills'}

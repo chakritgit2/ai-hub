@@ -193,6 +193,7 @@ export interface AgentVersion {
 		model?: ModelSpec;
 		tools?: { tool_id: string }[];
 		skills?: string[];
+		knowledge?: { kb_id: string }[];
 		guardrails?: GuardrailsSpec;
 	};
 	spec_version: string;

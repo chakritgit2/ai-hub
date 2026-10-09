@@ -10,8 +10,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import sqlalchemy as sa
+from dynamiq.connections.connections import PostgreSQL as PostgreSQLConnection
+from dynamiq.storages.vector.pgvector.pgvector import PGVectorIndexMethod, PGVectorStore
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core.config import get_settings
 from app.core.db import get_company_session
 from app.db.tables import kb_documents_table
 
@@ -20,6 +23,8 @@ from app.db.tables import kb_documents_table
 # the DB, not request input directly - defense in depth per the table-naming PRD §6.6
 # warns never resolve from the request/spec).
 _TABLE_NAME_PATTERN = re.compile(r"^kbv_[0-9a-f]{32}_[0-9a-f]{32}$")
+
+_EMBEDDING_DIMENSION = 1536  # must match kb_indexer.py's indexing dimension
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,33 @@ def kb_vector_table_name(company_id: str, kb_id: str) -> str:
     if not _TABLE_NAME_PATTERN.match(table_name):
         raise ValueError(f"unexpected KB vector table name: {table_name!r}")  # pragma: no cover - defense in depth
     return table_name
+
+
+def open_kb_vector_store(table_name: str) -> PGVectorStore:
+    """Opens the per-KB pgvector table for reading - raises `VectorStoreException` (via
+    `PGVectorStore`'s own constructor, `create_if_not_exist=False`) if no document has
+    finished indexing into it yet. Synchronous (real DB I/O) - callers on the asyncio event
+    loop must wrap this in `asyncio.to_thread`, same as `app.services.kb_search` does.
+
+    Shared by `kb_search.search_knowledge_base` (the standalone `/kb/search` endpoint) and
+    `app.services.compiler` (an agent's `VectorStoreRetriever` tool), so "is this KB
+    actually indexed" is one check, not two independently-maintained ones."""
+    settings = get_settings()
+    connection = PostgreSQLConnection(
+        host=settings.MEMORY_DB_HOST,
+        port=settings.MEMORY_DB_PORT,
+        database=settings.MEMORY_DB_NAME,
+        user=settings.MEMORY_DB_USER,
+        password=settings.MEMORY_DB_PASSWORD,
+    )
+    return PGVectorStore(
+        connection=connection,
+        schema_name="runtime",
+        table_name=table_name,
+        dimension=_EMBEDDING_DIMENSION,
+        create_if_not_exist=False,
+        index_method=PGVectorIndexMethod.EXACT,
+    )
 
 
 def _row_to_document(row: dict) -> KbDocumentRow:

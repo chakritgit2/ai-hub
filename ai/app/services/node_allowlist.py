@@ -24,6 +24,9 @@ ALWAYS_ALLOWED_NODE_TYPES: frozenset[str] = frozenset(
         "dynamiq.connections.OpenAI",
         "dynamiq.nodes.llms.OpenAI",
         "dynamiq.nodes.tools.HttpApiCall",
+        # Knowledge base retrieval (PRD §6.6) - read-only, not a code-execution concern,
+        # so it's always-allowed like HttpApiCall, not admin-only.
+        "dynamiq.nodes.retrievers.retriever.VectorStoreRetriever",
     }
 )
 

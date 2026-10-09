@@ -1,11 +1,12 @@
 """Agent spec schema — slice 1: Identity + Model (PRD §6.1/§6.1a); slice 2: Guardrails
-(PRD §6.4); slice 3: Tools + Skills references (PRD §6.5/§6.6a) - resolution/cross-company
-validation/node construction lives in `app.services.compiler`, not here; this module only
-validates the *shape* a reference must have (a well-formed tool id, a skill name).
+(PRD §6.4); slice 3: Tools + Skills references (PRD §6.5/§6.6a); slice 4: Knowledge
+references (PRD §6.6) - resolution/cross-company validation/node construction lives in
+`app.services.compiler`, not here; this module only validates the *shape* a reference must
+have (a well-formed tool id, a skill name, a well-formed KB id).
 
-Knowledge/Memory/Advanced tabs exist in the web editor already (every tab's data is sent in
-the spec regardless of which ones have a real backing table), but still have no schema
-behind them — `AgentSpecDoc` silently ignores anything else it doesn't recognize
+Memory/Advanced tabs exist in the web editor already (every tab's data is sent in the spec
+regardless of which ones have a real backing table), but still have no schema behind them —
+`AgentSpecDoc` silently ignores anything else it doesn't recognize
 (`model_config = ConfigDict(extra="ignore")`), rather than rejecting a spec just because of
 an empty `memory: {}`.
 
@@ -133,6 +134,20 @@ class ToolRefSpec(BaseModel):
         return value
 
 
+class KnowledgeRefSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kb_id: str
+
+    @field_validator("kb_id")
+    @classmethod
+    def _kb_id_is_uuid(cls, value: str) -> str:
+        import uuid
+
+        uuid.UUID(value)  # raises ValueError -> wrapped as a pydantic ValidationError
+        return value
+
+
 class AgentSpecDoc(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -143,6 +158,7 @@ class AgentSpecDoc(BaseModel):
     # Skill *names*, not ids - SkillsTool/ConsoleSkillRegistry already address skills by
     # name (PRD §6.6a: "SkillsTool (list -> get)"), not id.
     skills: list[str] = Field(default_factory=list)
+    knowledge: list[KnowledgeRefSpec] = Field(default_factory=list)
 
 
 def render_identity_prompt(identity: AgentIdentitySpec) -> str:

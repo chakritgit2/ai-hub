@@ -11,39 +11,17 @@ lists itself.
 import asyncio
 
 from dynamiq.components.retrievers.pgvector import PGVectorDocumentRetriever
-from dynamiq.connections.connections import PostgreSQL as PostgreSQLConnection
 from dynamiq.storages.vector.exceptions import VectorStoreException
-from dynamiq.storages.vector.pgvector.pgvector import PGVectorIndexMethod, PGVectorStore
+from dynamiq.storages.vector.pgvector.pgvector import PGVectorStore
 
-from app.core.config import get_settings
 from app.integrations.dynamiq_adapter import build_embedder
 from app.integrations.thai_tokenizer import tokenize
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.connections import resolve_connection
 from app.services.kb_hybrid import fuse_rankings, keyword_search
-from app.services.knowledge_bases import kb_vector_table_name, resolve_knowledge_base
+from app.services.knowledge_bases import kb_vector_table_name, open_kb_vector_store, resolve_knowledge_base
 
-_EMBEDDING_DIMENSION = 1536  # must match kb_indexer.py's indexing dimension
 _SUBQUERY_MULTIPLIER = 4  # matches Dynamiq's own top_k_subquery_multiplier default
-
-
-def _open_vector_store(table_name: str) -> PGVectorStore:
-    settings = get_settings()
-    connection = PostgreSQLConnection(
-        host=settings.MEMORY_DB_HOST,
-        port=settings.MEMORY_DB_PORT,
-        database=settings.MEMORY_DB_NAME,
-        user=settings.MEMORY_DB_USER,
-        password=settings.MEMORY_DB_PASSWORD,
-    )
-    return PGVectorStore(
-        connection=connection,
-        schema_name="runtime",
-        table_name=table_name,
-        dimension=_EMBEDDING_DIMENSION,
-        create_if_not_exist=False,
-        index_method=PGVectorIndexMethod.EXACT,
-    )
 
 
 def _hybrid_search(
@@ -90,7 +68,7 @@ async def search_knowledge_base(company_id: str, kb_id: str, query: str, top_k: 
 
     table_name = kb_vector_table_name(company_id, kb_id)
     try:
-        store = await asyncio.to_thread(_open_vector_store, table_name)
+        store = await asyncio.to_thread(open_kb_vector_store, table_name)
     except VectorStoreException as exc:
         # `create_if_not_exist=False` makes PGVectorStore's constructor itself raise when
         # the per-KB table doesn't exist yet - i.e. no document has finished indexing.

@@ -39,6 +39,7 @@
 	let model = $state(blankForm.model);
 	let selectedToolIds = $state<string[]>([]);
 	let selectedSkillNames = $state<string[]>([]);
+	let selectedKnowledgeBaseIds = $state<string[]>([]);
 	let guardrails = $state(blankForm.guardrails);
 
 	function loadFrom(newAgent: Agent | null, newVersions: AgentVersion[]) {
@@ -50,6 +51,7 @@
 		model = form.model;
 		selectedToolIds = form.selectedToolIds;
 		selectedSkillNames = form.selectedSkillNames;
+		selectedKnowledgeBaseIds = form.selectedKnowledgeBaseIds;
 		guardrails = form.guardrails;
 		versionId = latest && !latest.is_published ? latest.id : null;
 		// Clear banners left over from whatever the page was previously showing (a prior
@@ -108,6 +110,7 @@
 				model: modelResult,
 				tools: selectedToolIds.map((tool_id) => ({ tool_id })),
 				skills: selectedSkillNames,
+				knowledge: selectedKnowledgeBaseIds.map((kb_id) => ({ kb_id })),
 				guardrails: guardrailsResult
 			}
 		};
@@ -214,6 +217,7 @@
 				model: blankModelSpec(),
 				tools: [],
 				skills: [],
+				knowledge: [],
 				guardrails: blankGuardrails()
 			};
 			const version = await createAgentVersion(agent.id, { spec: sourceSpec });
@@ -414,6 +418,7 @@
 			bind:model
 			bind:selectedToolIds
 			bind:selectedSkillNames
+			bind:selectedKnowledgeBaseIds
 			bind:guardrails
 			{readonly}
 		/>

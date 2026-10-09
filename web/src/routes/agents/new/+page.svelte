@@ -10,6 +10,7 @@
 	let model = $state(blankModelFormState());
 	let selectedToolIds = $state<string[]>([]);
 	let selectedSkillNames = $state<string[]>([]);
+	let selectedKnowledgeBaseIds = $state<string[]>([]);
 	let guardrails = $state(blankGuardrails());
 
 	let tabsRef: ReturnType<typeof AgentSpecTabs> | undefined;
@@ -53,6 +54,7 @@
 				model: modelResult,
 				tools: selectedToolIds.map((tool_id) => ({ tool_id })),
 				skills: selectedSkillNames,
+				knowledge: selectedKnowledgeBaseIds.map((kb_id) => ({ kb_id })),
 				guardrails: guardrailsResult
 			}
 		};
@@ -186,5 +188,6 @@
 	bind:model
 	bind:selectedToolIds
 	bind:selectedSkillNames
+	bind:selectedKnowledgeBaseIds
 	bind:guardrails
 />

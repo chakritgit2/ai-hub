@@ -50,6 +50,7 @@ export interface SpecFormState {
 	model: ModelFormState;
 	selectedToolIds: string[];
 	selectedSkillNames: string[];
+	selectedKnowledgeBaseIds: string[];
 	guardrails: GuardrailsSpec;
 }
 
@@ -60,6 +61,7 @@ export function formStateFromVersion(version: AgentVersion | null | undefined): 
 		model: toModelFormState(version?.spec.model),
 		selectedToolIds: (version?.spec.tools ?? []).map((t) => t.tool_id),
 		selectedSkillNames: version?.spec.skills ?? [],
+		selectedKnowledgeBaseIds: (version?.spec.knowledge ?? []).map((k) => k.kb_id),
 		guardrails: version?.spec.guardrails ?? blankGuardrails()
 	};
 }

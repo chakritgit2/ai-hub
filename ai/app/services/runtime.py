@@ -24,7 +24,7 @@ from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
 from app.services.agent_spec import GuardrailsSpec
 from app.services.agent_versions import resolve_agent_version
-from app.services.compiler import build_agent, compile_spec
+from app.services.compiler import RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.conversations import get_or_create_conversation
 from app.services.deployments import resolve_deployment
@@ -187,13 +187,27 @@ async def _execute_agent_run(
         # query for - see app.integrations.safe_openai_connection.
         egress_allowlist = await list_egress_allowlist(company_id)
 
-    agent = build_agent(
+    # Each attached knowledge base has its own embedder connection, independent of the
+    # agent's own LLM connection resolved above - so its secret needs its own lookup,
+    # same `decrypt_connection_secret` call as the LLM's, just once per KB.
+    knowledge_api_keys = {}
+    for tool_def in agent_def.get("tools", []):
+        if tool_def["type"] != RETRIEVAL_TOOL_TYPE:
+            continue
+        embedder_connection_id = tool_def["config"]["embedder_connection_id"]
+        kb_secret = await decrypt_connection_secret(company_id, embedder_connection_id)
+        if kb_secret is None:
+            raise ValueError(f"no secret stored for connection {embedder_connection_id!r}")
+        knowledge_api_keys[tool_def["id"]] = kb_secret
+
+    agent = await build_agent(
         compiled_definition,
         secret,
         company_id,
         memory=memory,
         skill_registry=skill_registry,
         egress_allowlist=egress_allowlist,
+        knowledge_api_keys=knowledge_api_keys,
     )
 
     usage_collector = _UsageCollector()
