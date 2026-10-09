@@ -2,10 +2,11 @@
 # dedicated namespace ai-hub-advws (created fresh by infra, NOT shared with
 # operations-advws's cdi-advws namespace — see deploy/k8s/HANDOFF.md for the
 # cross-namespace implications this has for operations-advws reaching ai-gateway),
-# single-replica Postgres/Redis/MinIO, ai-worker still deferred (Knowledge Bases' async
-# indexing queue — kb_indexer.py runs synchronously today, no queue worker needed yet),
-# fake-sso.php as a temporary SSO stand-in. See deploy/k8s/base/*.yaml comments and the
-# session plan for the full rationale.
+# single-replica Postgres/Redis, Knowledge Bases' OKF files on a plain PVC (no MinIO —
+# see ai-runtime-deployment.yaml), ai-worker now deployed too (see ai-worker-deployment.yaml
+# — the ARQ consumer for KB indexing/evals/conversation cleanup), fake-sso.php as a
+# temporary SSO stand-in. See deploy/k8s/base/*.yaml comments and the session plan for
+# the full rationale.
 #
 # operations-advws itself deploys plain manifests directly (no kustomize in that repo) —
 # these resources can equally be applied with `kubectl apply -f deploy/k8s/base/` if that
@@ -19,14 +20,13 @@ resources:
   - secrets.example.yaml
   - postgres-statefulset.yaml
   - redis-deployment.yaml
-  - minio-deployment.yaml
   - ai-config.yaml
   - ai-runtime-deployment.yaml
+  - ai-worker-deployment.yaml
   - ai-gateway-deployment.yaml
   - console-api-deployment.yaml
   - web-deployment.yaml
   - fake-sso-deployment.yaml
 
-# Deferred: ai-worker (arq, Knowledge Bases' async indexing queue only), NetworkPolicy,
-# Ingress/TLS/WAF, HPA — none are needed for the first "get chat working" rollout, and
-# nothing indexes through a queue yet either. See the plan for why.
+# Deferred: NetworkPolicy, Ingress/TLS/WAF, HPA — none are needed for the first
+# "get chat working" rollout. See the plan for why.

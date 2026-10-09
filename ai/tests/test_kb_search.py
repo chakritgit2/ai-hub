@@ -7,9 +7,9 @@ from app.services.kb_indexer import index_kb_document
 from app.services.kb_search import search_knowledge_base
 from app.services.knowledge_bases import kb_vector_table_name, upsert_kb_document
 
-from .markers import requires_minio, requires_openai_key, requires_postgres
+from .markers import requires_openai_key, requires_postgres
 
-pytestmark = [requires_postgres, requires_minio]
+pytestmark = [requires_postgres]
 
 
 async def test_search_knowledge_base_raises_for_missing_kb(company_ids):
@@ -21,7 +21,7 @@ async def test_search_knowledge_base_raises_for_missing_kb(company_ids):
 
 @requires_openai_key
 async def test_hybrid_search_finds_document_by_unspaced_thai_term(
-    company_ids, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, store_connection_secret, storage_cleanup
 ):
     """PRD §13's own hybrid-search test scenario: a product code / Thai term with no
     spaces (Postgres's own text search can't segment it) must still surface the right
@@ -42,7 +42,7 @@ async def test_hybrid_search_finds_document_by_unspaced_thai_term(
     for okf_id, content in documents.items():
         object_key = kb_object_key(company_id, kb_id, None, okf_id)
         put_object(object_key, content.encode("utf-8"))
-        minio_cleanup(kb_prefix(company_id, kb_id))
+        storage_cleanup(kb_prefix(company_id, kb_id))
         document_id = await upsert_kb_document(
             company_id=company_id,
             kb_id=kb_id,
@@ -99,7 +99,7 @@ async def test_search_knowledge_base_before_any_document_indexed_raises_value_er
 
 @requires_openai_key
 async def test_search_knowledge_base_returns_relevant_chunk(
-    company_ids, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, store_connection_secret, storage_cleanup
 ):
     company_id = company_ids()
     connection_id = make_connection(company_id)
@@ -110,7 +110,7 @@ async def test_search_knowledge_base_returns_relevant_chunk(
     okf_id = "refund-doc"
     object_key = kb_object_key(company_id, kb_id, None, okf_id)
     put_object(object_key, content.encode("utf-8"))
-    minio_cleanup(kb_prefix(company_id, kb_id))
+    storage_cleanup(kb_prefix(company_id, kb_id))
 
     import hashlib
 

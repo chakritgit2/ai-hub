@@ -1,7 +1,9 @@
 # ai-runtime: /internal/v1/* (compile/publish, connection test/secret, KB indexing/search).
 # Same image as ai-gateway, different command/port (deploy/docker/ai/Dockerfile's own TODO).
-# KB *execution* via the compiler/agent run path is still a separate, larger deferred
-# piece — this deployment only needs MinIO so indexing/search themselves are testable.
+# KB OKF files live on the `kb-storage` PVC mounted below (app.core.storage,
+# KB_STORAGE_ROOT) — previously MinIO, switched to a plain volume (no extra licensed
+# service, see deploy/k8s/HANDOFF.md). Not mounted on ai-gateway: KB storage is only ever
+# read/written from ai-runtime's internal API.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -54,20 +56,12 @@ spec:
                 secretKeyRef:
                   name: dynamiq-console-secrets
                   key: SSH_PASSWORD
-            - name: MINIO_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: dynamiq-minio-credentials
-                  key: root_user
-            - name: MINIO_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: dynamiq-minio-credentials
-                  key: root_password
           volumeMounts:
             - name: jwt-keys
               mountPath: /etc/dynamiq/keys
               readOnly: true
+            - name: kb-storage
+              mountPath: /data/kb-storage
           readinessProbe:
             httpGet:
               path: /healthz
@@ -77,6 +71,20 @@ spec:
         - name: jwt-keys
           secret:
             secretName: dynamiq-jwt-keys
+        - name: kb-storage
+          persistentVolumeClaim:
+            claimName: kb-storage
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kb-storage
+  namespace: ai-hub-advws
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
 ---
 apiVersion: v1
 kind: Service

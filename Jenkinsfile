@@ -66,6 +66,7 @@ pipeline {
                     sh """
                         kubectl -n ai-hub-advws set image deployment/ai-runtime ai=${REGISTRY}/dynamiq-console/ai:${IMAGE_TAG}
                         kubectl -n ai-hub-advws set image deployment/ai-gateway ai=${REGISTRY}/dynamiq-console/ai:${IMAGE_TAG}
+                        kubectl -n ai-hub-advws set image deployment/ai-worker ai=${REGISTRY}/dynamiq-console/ai:${IMAGE_TAG}
                         kubectl -n ai-hub-advws set image deployment/console-api console-api=${REGISTRY}/dynamiq-console/console-api:${IMAGE_TAG}
                         kubectl -n ai-hub-advws set image deployment/web web=${REGISTRY}/dynamiq-console/web:${IMAGE_TAG}
                     """

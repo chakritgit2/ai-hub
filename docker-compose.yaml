@@ -1,6 +1,8 @@
 # Local development only — NOT the production topology (see deploy/k8s for that, still a
 # placeholder). Brings up the shared infra so console-api/ai/web can be run locally against
-# something real. PRD-001 §5 (Postgres 16 + pgvector, Redis, MinIO).
+# something real. PRD-001 §5 (Postgres 16 + pgvector, Redis). Knowledge Bases' OKF files
+# live on a plain local directory (app.core.storage, KB_STORAGE_ROOT) - no object-store
+# service needed.
 
 services:
   postgres:
@@ -24,18 +26,5 @@ services:
     ports:
       - "6379:6379"
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
-
 volumes:
   postgres_data:
-  minio_data:

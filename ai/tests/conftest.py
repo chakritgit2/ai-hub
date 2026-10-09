@@ -342,10 +342,10 @@ def make_knowledge_base():
 
 
 @pytest.fixture
-def minio_cleanup():
-    """Deletes every MinIO object under the given prefixes after the test - tests that
-    exercise kb_indexer/kb_search/kb_export write real objects to the real local MinIO
-    (docker-compose), there is nothing to mock against."""
+def storage_cleanup():
+    """Deletes every object under the given prefixes after the test - tests that
+    exercise kb_indexer/kb_search/kb_export write real files under KB_STORAGE_ROOT,
+    there is nothing to mock against."""
     from app.core.storage import delete_prefix
 
     prefixes: list[str] = []

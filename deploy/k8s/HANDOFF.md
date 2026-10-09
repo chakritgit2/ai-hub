@@ -104,6 +104,11 @@ temporary login stand-in, MinIO/ai-worker deferred).
 
 ## Follow-up: deploy MinIO (KB storage — manifests ready, not yet applied)
 
+**Superseded — see "Follow-up: remove MinIO..." below.** MinIO was applied per this
+section, but then dropped again (license/cost concern) in favor of a plain PVC. Left here
+only as history of why `ai-config`/`ai-runtime-deployment` once looked the way they did;
+follow the newer section instead, not this one.
+
 Knowledge Bases' OKF file storage (`ai/app/core/storage.py`) needs MinIO, which this first
 rollout deliberately deferred. The feature itself (OKF import/export, indexing, vector +
 Thai-aware hybrid search) is now built and tested locally — this is the one piece needed to
@@ -141,3 +146,54 @@ same shape as `redis-deployment.yaml`/`postgres-statefulset.yaml`), `ai-config.y
 **Deliberately not** a blanket `kubectl apply -k deploy/k8s/base/` — given the Redis drift
 found above, this applies only the 3 files this follow-up actually changes, leaving
 Postgres/console-api/ai-gateway/web/fake-sso untouched.
+
+## Follow-up: remove MinIO, switch Knowledge Base storage to a local PVC, deploy ai-worker
+
+**Why**: MinIO's license/cost was a concern, and nothing here needed an actual S3 API —
+just "put/get/delete a blob by key". Knowledge Bases' OKF files now live as plain files
+on a PVC mounted into `ai-runtime` (and `ai-worker`, see below), via
+`ai/app/core/storage.py` + `KB_STORAGE_ROOT`.
+
+Separately (found while testing this on the cluster): KB document import
+(`enqueueKbDocumentIndexing` in `ai/app/main_runtime.py`) already enqueues indexing
+through ARQ/Redis, but **no `ai-worker` deployment has ever existed on this cluster** —
+so a queued import previously sat at `status="queued"` forever, nothing ever consumed the
+queue. This follow-up adds that deployment too.
+
+**What's in this follow-up**: `ai/app/core/storage.py` rewritten for plain file I/O (no
+more `minio` package dependency — removed from `ai/pyproject.toml`/`uv.lock`);
+`deploy/k8s/base/ai-config.yaml` (`MINIO_*` keys removed, `KB_STORAGE_ROOT` added);
+`deploy/k8s/base/ai-runtime-deployment.yaml` (new `kb-storage` PVC + volume mount, old
+`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` env removed); `deploy/k8s/base/minio-deployment.yaml`
+deleted; `deploy/k8s/base/ai-worker-deployment.yaml` (new — the ARQ consumer, shares the
+`kb-storage` PVC, no Service/ports since it's not an HTTP server);
+`deploy/k8s/base/secrets.example.yaml` (`dynamiq-minio-credentials` entry removed);
+`Jenkinsfile` (now also `set image`s `deployment/ai-worker` on every build).
+
+**Important**: the existing Jenkins job only runs `kubectl set image` on deployments that
+*already exist* — it never applies manifest/config changes. Every step below needs to be
+run manually, once, by someone with write access, before the next Jenkins-triggered
+deploy can "just work" for `ai-worker`/the new PVC/the new ConfigMap key.
+
+**Steps once write access is available** (run in this order):
+1. `kubectl -n ai-hub-advws apply -f deploy/k8s/base/ai-config.yaml`
+2. `kubectl -n ai-hub-advws apply -f deploy/k8s/base/ai-runtime-deployment.yaml` — pod
+   spec changed (new volume mount, removed env), so this rolls `ai-runtime` automatically;
+   no separate `rollout restart` needed.
+3. `kubectl -n ai-hub-advws apply -f deploy/k8s/base/ai-worker-deployment.yaml` — creates
+   `ai-worker` for the first time.
+4. Remove the now-orphaned MinIO resources (kustomize doesn't prune on its own):
+   ```
+   kubectl -n ai-hub-advws delete deployment minio
+   kubectl -n ai-hub-advws delete service minio
+   kubectl -n ai-hub-advws delete pvc minio-data
+   kubectl -n ai-hub-advws delete secret dynamiq-minio-credentials
+   ```
+5. `kubectl -n ai-hub-advws get pods` — confirm an `ai-worker-...` pod is `Running`/`Ready`
+   and no `minio-...` pod remains.
+
+**Note on the `kb-storage` PVC**: `ReadWriteOnce`, mounted by both `ai-runtime` and
+`ai-worker`. Fine on this cluster's current single-node topology (everything schedules
+onto `kube-dev` today) — if a second node is ever added, pin both Deployments to the same
+node (matching point 5's node-affinity question from the original handoff above), or this
+PVC will fail to attach to the second pod with a multi-attach error.

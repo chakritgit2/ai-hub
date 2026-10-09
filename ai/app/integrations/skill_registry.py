@@ -2,10 +2,10 @@
 
 Skills are managed on the Skills page per company (Markdown `SKILL.md`, versioned/published)
 and stored in `console.skills`/`console.skill_versions` — content lives directly in Postgres
-for this slice (not MinIO: nothing in this codebase has ever written to MinIO, no client
-library is even a direct dependency, and a `SKILL.md` capped at 100 KB fits a `text` column
-fine — real MinIO-backed storage is the natural follow-up once `.zip`/scripts/attachments
-support is built, which is phase 3 per the PRD's own phasing).
+for this slice (not on disk like Knowledge Bases' OKF files, `app.core.storage`: a
+`SKILL.md` capped at 100 KB fits a `text` column fine — moving to file-backed storage is
+the natural follow-up once `.zip`/scripts/attachments support is built, which is phase 3
+per the PRD's own phasing).
 
 `BaseSkillRegistry.get_skills_metadata`/`get_skill_instructions` are *synchronous* (dynamiq's
 own ABC), but this app's DB layer is async-only — so this registry is never queried per call;

@@ -6,18 +6,18 @@ from app.core.storage import kb_object_key, kb_prefix, put_object
 from app.services.kb_export import export_knowledge_base_zip
 from app.services.knowledge_bases import upsert_kb_document
 
-from .markers import requires_minio, requires_postgres
+from .markers import requires_postgres
 
-pytestmark = [requires_postgres, requires_minio]
+pytestmark = [requires_postgres]
 
 
 async def test_export_knowledge_base_zip_includes_all_documents_with_categories(
-    company_ids, make_connection, make_knowledge_base, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, storage_cleanup
 ):
     company_id = company_ids()
     connection_id = make_connection(company_id)
     kb_id = make_knowledge_base(company_id, connection_id)
-    minio_cleanup(kb_prefix(company_id, kb_id))
+    storage_cleanup(kb_prefix(company_id, kb_id))
 
     root_content = b"# Root doc"
     nested_content = b"# Refund policy"
@@ -59,7 +59,7 @@ async def test_export_knowledge_base_zip_includes_all_documents_with_categories(
 
 
 async def test_export_knowledge_base_zip_uses_path_not_okf_id_plus_extension(
-    company_ids, make_connection, make_knowledge_base, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, storage_cleanup
 ):
     """Regression guard: when a file has no frontmatter `id`, resolve_okf_metadata falls
     back to the filename itself (e.g. "test-doc.md") as okf_id - rebuilding the archive
@@ -68,7 +68,7 @@ async def test_export_knowledge_base_zip_uses_path_not_okf_id_plus_extension(
     company_id = company_ids()
     connection_id = make_connection(company_id)
     kb_id = make_knowledge_base(company_id, connection_id)
-    minio_cleanup(kb_prefix(company_id, kb_id))
+    storage_cleanup(kb_prefix(company_id, kb_id))
 
     content = b"# No frontmatter id here"
     object_key = kb_object_key(company_id, kb_id, None, "test-doc.md")

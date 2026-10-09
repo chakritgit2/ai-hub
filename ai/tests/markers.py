@@ -66,22 +66,6 @@ requires_redis = pytest.mark.skipif(
 )
 
 
-def _minio_available() -> bool:
-    from app.core.storage import get_minio_client
-
-    try:
-        get_minio_client()
-    except Exception:
-        return False
-    return True
-
-
-requires_minio = pytest.mark.skipif(
-    not _minio_available(),
-    reason="MinIO not reachable at MINIO_ENDPOINT - skipping object-storage-backed test",
-)
-
-
 def fake_runtime_claims(
     company_id: str = "",
     agent_version_id: str = "00000000-0000-0000-0000-000000000000",

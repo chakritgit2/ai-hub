@@ -78,12 +78,10 @@ class Settings(BaseSettings):
     RUN_TIMEOUT_SECONDS: int = 120
     CONVERSATION_TTL_DAYS: int = 30
 
-    # --- Object storage (PRD §6.6/§7.7: OKF files in MinIO under kb/{company_id}/{kb_id}/...) ---
-    MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ACCESS_KEY: str = "minioadmin"
-    MINIO_SECRET_KEY: str = "minioadmin"
-    MINIO_BUCKET: str = "ai-console"
-    MINIO_SECURE: bool = False
+    # --- Object storage (PRD §6.6/§7.7: OKF files on disk under kb/{company_id}/{kb_id}/...)
+    # - a plain local/PVC-mounted directory, not an object store (no licensing/cost concern,
+    # no extra service to run) - see app.core.storage for the read/write/delete API.
+    KB_STORAGE_ROOT: str = ".data/kb-storage"
 
     # --- Observability ---
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None

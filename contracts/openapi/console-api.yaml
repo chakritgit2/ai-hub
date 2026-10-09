@@ -794,7 +794,7 @@ paths:
     delete:
       operationId: deleteKnowledgeBase
       x-phase: 2
-      summary: Deletes the KB plus its MinIO objects, pgvector table, and kb_documents rows.
+      summary: Deletes the KB plus its stored objects, pgvector table, and kb_documents rows.
       responses: { "204": { description: No Content } }
   /kb/{id}/documents:
     parameters:

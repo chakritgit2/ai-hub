@@ -6,16 +6,16 @@ from app.core.storage import kb_object_key, kb_prefix, put_object
 from app.services.kb_indexer import index_kb_document
 from app.services.knowledge_bases import get_kb_document, kb_vector_table_name, upsert_kb_document
 
-from .markers import requires_minio, requires_openai_key, requires_postgres
+from .markers import requires_openai_key, requires_postgres
 
-pytestmark = [requires_postgres, requires_minio]
+pytestmark = [requires_postgres]
 
 
-async def _seed_document(company_id, kb_id, minio_cleanup, *, okf_id="doc-1", category=None, content=None):
+async def _seed_document(company_id, kb_id, storage_cleanup, *, okf_id="doc-1", category=None, content=None):
     content = content or "# Test Doc\nSome body content for indexing.\n"
     object_key = kb_object_key(company_id, kb_id, category, okf_id)
     put_object(object_key, content.encode("utf-8"))
-    minio_cleanup(kb_prefix(company_id, kb_id))
+    storage_cleanup(kb_prefix(company_id, kb_id))
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     document_id = await upsert_kb_document(
         company_id=company_id,
@@ -39,11 +39,11 @@ async def test_index_kb_document_fails_cleanly_when_document_missing(company_ids
     assert result["error"] == "kb_document_not_found"
 
 
-async def test_index_kb_document_fails_when_kb_missing(company_ids, minio_cleanup):
+async def test_index_kb_document_fails_when_kb_missing(company_ids, storage_cleanup):
     company_id = company_ids()
     fake_kb_id = str(uuid.uuid4())
 
-    document_id, _ = await _seed_document(company_id, fake_kb_id, minio_cleanup)
+    document_id, _ = await _seed_document(company_id, fake_kb_id, storage_cleanup)
 
     result = await index_kb_document(company_id, fake_kb_id, document_id)
 
@@ -55,7 +55,7 @@ async def test_index_kb_document_fails_when_kb_missing(company_ids, minio_cleanu
 
 @requires_openai_key
 async def test_index_kb_document_hybrid_mode_populates_search_text(
-    company_ids, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, store_connection_secret, storage_cleanup
 ):
     """Hybrid-mode indexing follows the exact same path as vector-mode (PRD §6.6) - the
     only difference is the pre-tokenized `search_text` column it also writes, which hybrid
@@ -66,7 +66,7 @@ async def test_index_kb_document_hybrid_mode_populates_search_text(
     kb_id = make_knowledge_base(company_id, connection_id, retrieval_mode="hybrid")
 
     document_id, _ = await _seed_document(
-        company_id, kb_id, minio_cleanup, content="# Refund policy\nสอบถามเพิ่มเติมได้ที่ศูนย์บริการลูกค้า\n"
+        company_id, kb_id, storage_cleanup, content="# Refund policy\nสอบถามเพิ่มเติมได้ที่ศูนย์บริการลูกค้า\n"
     )
 
     result = await index_kb_document(company_id, kb_id, document_id)
@@ -96,7 +96,7 @@ async def test_index_kb_document_hybrid_mode_populates_search_text(
 
 @requires_openai_key
 async def test_index_kb_document_happy_path_writes_vector_rows(
-    company_ids, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, store_connection_secret, storage_cleanup
 ):
     company_id = company_ids()
     connection_id = make_connection(company_id)
@@ -106,7 +106,7 @@ async def test_index_kb_document_happy_path_writes_vector_rows(
     document_id, _ = await _seed_document(
         company_id,
         kb_id,
-        minio_cleanup,
+        storage_cleanup,
         content="# Refund policy\n## Product not dispensed\nContact support for a refund.\n",
     )
 
@@ -141,7 +141,7 @@ async def test_index_kb_document_happy_path_writes_vector_rows(
 
 @requires_openai_key
 async def test_reindexing_with_fewer_chunks_removes_stale_chunk_rows(
-    company_ids, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, store_connection_secret, storage_cleanup
 ):
     """Regression guard: if a re-indexed document now produces fewer chunks than its
     previous version, the vector table must not keep the old version's extra chunk rows
@@ -155,7 +155,7 @@ async def test_reindexing_with_fewer_chunks_removes_stale_chunk_rows(
     long_content = (
         "# Doc\n## Section one\n" + ("word " * 60) + "\n## Section two\n" + ("word " * 60) + "\n"
     )
-    document_id, _ = await _seed_document(company_id, kb_id, minio_cleanup, content=long_content)
+    document_id, _ = await _seed_document(company_id, kb_id, storage_cleanup, content=long_content)
     first_result = await index_kb_document(company_id, kb_id, document_id)
     assert first_result["status"] == "ready"
     assert first_result["chunk_count"] > 1
@@ -163,7 +163,7 @@ async def test_reindexing_with_fewer_chunks_removes_stale_chunk_rows(
     # Re-upsert the same (kb, okf_id) with much shorter content -> fewer chunks, same
     # document_id (upsert_kb_document's ON CONFLICT path keeps the row's id).
     short_content = "# Doc\nOne short line.\n"
-    second_document_id, _ = await _seed_document(company_id, kb_id, minio_cleanup, content=short_content)
+    second_document_id, _ = await _seed_document(company_id, kb_id, storage_cleanup, content=short_content)
     assert second_document_id == document_id  # same row, re-queued
 
     second_result = await index_kb_document(company_id, kb_id, document_id)
@@ -192,7 +192,7 @@ async def test_reindexing_with_fewer_chunks_removes_stale_chunk_rows(
 
 @requires_openai_key
 async def test_index_kb_document_skips_reindex_when_content_unchanged(
-    company_ids, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, store_connection_secret, storage_cleanup
 ):
     """Re-upserting the same (kb, okf_id) with identical content shouldn't be indexed
     twice with different chunk ids - this test exercises upsert_kb_document's
@@ -204,7 +204,7 @@ async def test_index_kb_document_skips_reindex_when_content_unchanged(
     await store_connection_secret(company_id, connection_id, os.environ["OPENAI_API_KEY"])
     kb_id = make_knowledge_base(company_id, connection_id)
 
-    document_id, content_hash = await _seed_document(company_id, kb_id, minio_cleanup)
+    document_id, content_hash = await _seed_document(company_id, kb_id, storage_cleanup)
     first_result = await index_kb_document(company_id, kb_id, document_id)
     assert first_result["status"] == "ready"
 

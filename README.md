@@ -24,7 +24,7 @@ dependency pinned to `0.65.0` — it does not modify the library.
 ## Local development
 
 ```sh
-docker compose up -d          # Postgres 16+pgvector, Redis, MinIO
+docker compose up -d          # Postgres 16+pgvector, Redis
 
 psql "$DATABASE_URL" -f db/migrations/pre/001_schemas_roles_extensions.sql
 

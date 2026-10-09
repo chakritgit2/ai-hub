@@ -1,0 +1,69 @@
+# ai-worker: the ARQ consumer for app.worker.WorkerSettings (PRD §6.6/§6.7) - KB document
+# indexing (enqueueKbDocumentIndexing in main_runtime.py enqueues `index_document` here),
+# eval runs (phase 3, not reachable yet), and the daily expired-conversation cleanup cron.
+# Without this deployment, a queued KB import sits at status="queued" forever - nothing
+# else ever consumes the queue.
+#
+# No Service/ports/probes: this is a pure queue consumer, no HTTP server.
+#
+# Shares the `kb-storage` PVC with ai-runtime (ReadWriteOnce - both pods must land on the
+# same node to mount it at once; fine on this cluster's current single-node dev topology,
+# but add a matching nodeSelector/nodeAffinity to both Deployments if the cluster ever
+# grows a second node and this pod ends up Pending with a volume multi-attach error - see
+# deploy/k8s/HANDOFF.md's own open question #5 on node affinity).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-worker
+  namespace: ai-hub-advws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-worker
+  template:
+    metadata:
+      labels:
+        app: ai-worker
+    spec:
+      imagePullSecrets:
+        - name: dockersecret
+      containers:
+        - name: ai
+          image: cr.advws.com/dynamiq-console/ai:TODO-tag
+          args: ["uv", "run", "arq", "app.worker.WorkerSettings"]
+          ports:
+            # sshd (bin/start.sh) — SFTP access into the running pod, not exposed via Service.
+            - name: sftp
+              containerPort: 2222
+          envFrom:
+            - configMapRef:
+                name: dynamiq-ai-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-db-credentials
+                  key: ai_app_database_url
+            - name: CONSOLE_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-console-secrets
+                  key: CONSOLE_MASTER_KEY
+            - name: HASH_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-console-secrets
+                  key: HASH_PEPPER
+            - name: SSH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-console-secrets
+                  key: SSH_PASSWORD
+          volumeMounts:
+            - name: kb-storage
+              mountPath: /data/kb-storage
+      volumes:
+        - name: kb-storage
+          persistentVolumeClaim:
+            claimName: kb-storage

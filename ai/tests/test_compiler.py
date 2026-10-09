@@ -12,7 +12,7 @@ from app.integrations.safe_openai_connection import SafeOpenAIConnection
 from app.main_runtime import app as runtime_app
 from app.services.compiler import RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
 
-from .markers import requires_minio, requires_openai_key, requires_postgres
+from .markers import requires_openai_key, requires_postgres
 
 VALID_IDENTITY = {
     "name": "vending-support",
@@ -412,10 +412,9 @@ async def test_build_agent_scopes_skill_registry_to_only_the_declared_skills(
 
 
 @requires_postgres
-@requires_minio
 @requires_openai_key
 async def test_compile_attaches_a_real_knowledge_base_retrieval_tool(
-    company_ids, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+    company_ids, make_connection, make_knowledge_base, store_connection_secret, storage_cleanup
 ):
     """Happy path: a vector-mode KB with one real indexed document compiles into a real
     `VectorStoreRetriever` tool, and `build_agent` actually constructs it (proving the
@@ -435,7 +434,7 @@ async def test_compile_attaches_a_real_knowledge_base_retrieval_tool(
     content = "# Refund Policy\nRefunds are issued within 7 business days.\n"
     object_key = kb_object_key(company_id, kb_id, None, "refund-policy")
     put_object(object_key, content.encode("utf-8"))
-    minio_cleanup(kb_prefix(company_id, kb_id))
+    storage_cleanup(kb_prefix(company_id, kb_id))
     document_id = await upsert_kb_document(
         company_id=company_id,
         kb_id=kb_id,

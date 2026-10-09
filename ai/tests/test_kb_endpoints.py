@@ -11,9 +11,9 @@ from app.main_runtime import app as runtime_app
 from app.main_runtime import require_internal_auth
 from app.services.knowledge_bases import list_kb_documents
 
-from .markers import fake_internal_claims, requires_minio, requires_openai_key, requires_postgres, requires_redis
+from .markers import fake_internal_claims, requires_openai_key, requires_postgres, requires_redis
 
-pytestmark = [requires_postgres, requires_minio, requires_redis]
+pytestmark = [requires_postgres, requires_redis]
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ async def test_list_documents_route_404s_for_unknown_kb(internal_client):
 
 
 async def test_list_documents_route_returns_seeded_documents(
-    internal_client, make_connection, make_knowledge_base, minio_cleanup
+    internal_client, make_connection, make_knowledge_base, storage_cleanup
 ):
     import hashlib
 
@@ -67,7 +67,7 @@ async def test_list_documents_route_returns_seeded_documents(
     client, company_id = internal_client
     connection_id = make_connection(company_id)
     kb_id = make_knowledge_base(company_id, connection_id)
-    minio_cleanup(kb_prefix(company_id, kb_id))
+    storage_cleanup(kb_prefix(company_id, kb_id))
 
     content = b"# Doc"
     object_key = kb_object_key(company_id, kb_id, None, "doc-1")
@@ -93,7 +93,7 @@ async def test_list_documents_route_returns_seeded_documents(
 
 
 async def test_import_same_filename_in_different_categories_does_not_collide(
-    internal_client, make_connection, make_knowledge_base, minio_cleanup
+    internal_client, make_connection, make_knowledge_base, storage_cleanup
 ):
     """Regression guard: two files named identically in different zip folders (e.g.
     en/faq.md, th/faq.md), neither with a frontmatter id, must not collide on okf_id -
@@ -104,7 +104,7 @@ async def test_import_same_filename_in_different_categories_does_not_collide(
 
     from app.core.storage import kb_prefix
 
-    minio_cleanup(kb_prefix(company_id, kb_id))
+    storage_cleanup(kb_prefix(company_id, kb_id))
 
     resp = await client.post(
         f"/internal/v1/kb/{kb_id}/documents",
@@ -133,7 +133,7 @@ def test_import_route_requires_internal_token():
 
 @requires_openai_key
 async def test_full_import_search_export_delete_round_trip(
-    internal_client, make_connection, make_knowledge_base, store_connection_secret, minio_cleanup
+    internal_client, make_connection, make_knowledge_base, store_connection_secret, storage_cleanup
 ):
     import asyncio
 
@@ -144,7 +144,7 @@ async def test_full_import_search_export_delete_round_trip(
 
     from app.core.storage import kb_prefix
 
-    minio_cleanup(kb_prefix(company_id, kb_id))
+    storage_cleanup(kb_prefix(company_id, kb_id))
 
     import_resp = await client.post(
         f"/internal/v1/kb/{kb_id}/documents",

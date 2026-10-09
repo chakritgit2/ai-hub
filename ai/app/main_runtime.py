@@ -484,7 +484,7 @@ async def listKbDocuments(id: str, claims: InternalAuth) -> Response:
 
 @app.post("/internal/v1/kb/{id}/documents", response_model=list[KbImportResultItem])
 async def enqueueKbDocumentIndexing(id: str, body: list[KbImportFile], claims: InternalAuth) -> Response:
-    """Stores each uploaded OKF file in MinIO and enqueues `index_document` (PRD §6.6) -
+    """Stores each uploaded OKF file on disk and enqueues `index_document` (PRD §6.6) -
     skips re-indexing a file whose content is byte-for-byte unchanged from what's already
     stored for that `(kb, okf_id)` (PRD: "saving re-indexes only files whose content_hash
     changed"). `console-api` has already unzipped `.zip` uploads into this flat list
@@ -577,8 +577,8 @@ async def exportKnowledgeBase(id: str, claims: InternalAuth) -> Response:
 
 @app.delete("/internal/v1/kb/{id}")
 async def deleteKnowledgeBaseData(id: str, claims: InternalAuth) -> Response:
-    """Cleans up everything ai-runtime owns for a KB being deleted: MinIO objects, the
-    per-KB vector table, and its `kb_documents` rows - called by console-api before it
+    """Cleans up everything ai-runtime owns for a KB being deleted: its stored objects,
+    the per-KB vector table, and its `kb_documents` rows - called by console-api before it
     deletes the `console.knowledge_bases` row itself."""
     company_id = claims["company_id"]
     if not _is_uuid(id):

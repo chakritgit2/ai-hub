@@ -200,7 +200,7 @@ paths:
       operationId: enqueueKbDocumentIndexing
       x-phase: 2
       summary: >-
-        Stores each uploaded OKF file in MinIO and enqueues indexing (PRD §6.6).
+        Stores each uploaded OKF file on disk and enqueues indexing (PRD §6.6).
         Skips re-indexing a file whose content is unchanged from what's already stored
         for that (kb, okf_id). Vector-only retrieval this round — PDF/DOCX/TXT→OKF
         conversion and Thai tokenization/hybrid retrieval are not implemented yet.
@@ -243,7 +243,7 @@ paths:
     delete:
       operationId: deleteKnowledgeBaseData
       x-phase: 2
-      summary: Deletes the KB's MinIO objects, its pgvector table, and its kb_documents rows.
+      summary: Deletes the KB's stored objects, its pgvector table, and its kb_documents rows.
       responses:
         "204": { description: No Content }
 
