@@ -94,6 +94,14 @@ export function cloneAgent(id: string): Promise<Agent> {
 	return apiFetch<Agent>(`/agents/${id}/clone`, { method: 'POST' });
 }
 
+export function archiveAgent(id: string): Promise<Agent> {
+	return apiFetch<Agent>(`/agents/${id}/archive`, { method: 'POST' });
+}
+
+export function unarchiveAgent(id: string): Promise<Agent> {
+	return apiFetch<Agent>(`/agents/${id}/unarchive`, { method: 'POST' });
+}
+
 /** Phase 3. */
 export function exportAgent(id: string): Promise<string> {
 	return apiFetch<string>(`/agents/${id}/export`);

@@ -47,6 +47,8 @@ return function (Router $router): void {
     $admin('GET', '/agents/{id:[^/]+}', 'Agents', 'getAgent');
     $admin('PATCH', '/agents/{id:[^/]+}', 'Agents', 'updateAgent');
     $admin('POST', '/agents/{id:[^/]+}/clone', 'Agents', 'cloneAgent');
+    $admin('POST', '/agents/{id:[^/]+}/archive', 'Agents', 'archiveAgent');
+    $admin('POST', '/agents/{id:[^/]+}/unarchive', 'Agents', 'unarchiveAgent');
     $admin('GET', '/agents/{id:[^/]+}/export', 'Agents', 'exportAgent');
     $admin('POST', '/agents/{id:[^/]+}/import', 'Agents', 'importAgent');
     $admin('GET', '/agents/{id:[^/]+}/versions', 'Agents', 'listAgentVersions');

@@ -159,12 +159,42 @@ export interface ModelSpec {
 	max_tokens?: number;
 }
 
+// Mirrors ai/app/services/agent_spec.py's GuardrailCheckSpec/GuardrailsSpec exactly.
+// valid_json/valid_choices are output-only (the compiler rejects them in `input`); mask is
+// invalid for max_length/valid_json/valid_choices (nothing identifiable to redact).
+export type GuardrailCheckType = 'max_length' | 'regex_blocklist' | 'pii' | 'valid_json' | 'valid_choices';
+export type GuardrailAction = 'block' | 'mask' | 'flag';
+
+export interface GuardrailCheckSpec {
+	check_type: GuardrailCheckType;
+	action: GuardrailAction;
+	on_error: 'block' | 'flag';
+	fallback_message?: string | null;
+	// check_type === 'max_length'
+	max_length?: number | null;
+	// check_type === 'regex_blocklist'
+	pattern?: string | null;
+	// check_type === 'valid_choices'
+	choices?: string[] | null;
+}
+
+export interface GuardrailsSpec {
+	input: GuardrailCheckSpec[];
+	output: GuardrailCheckSpec[];
+}
+
 export interface AgentVersion {
 	id: string;
 	company_id: string;
 	agent_id: string;
 	version_no: number;
-	spec: Record<string, unknown> & { identity?: AgentIdentity; model?: ModelSpec };
+	spec: Record<string, unknown> & {
+		identity?: AgentIdentity;
+		model?: ModelSpec;
+		tools?: { tool_id: string }[];
+		skills?: string[];
+		guardrails?: GuardrailsSpec;
+	};
 	spec_version: string;
 	compiled_definition?: Record<string, unknown> | null;
 	compiler_version?: string | null;

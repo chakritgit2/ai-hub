@@ -220,6 +220,114 @@ class AgentsController extends ControllerBase
         return $this->jsonResponse($this->formatAgent($cloned), 201);
     }
 
+    /**
+     * Soft-deletes an agent (PRD: no hard delete — agent_versions/deployments/runs
+     * reference it, and `archived_at` already exists on this table for exactly this).
+     *
+     * Existence/state check and the UPDATE run inside one transaction, the UPDATE's own
+     * WHERE re-checks `archived_at IS NULL`, and the result is read off `affectedRows()`
+     * - same race-safety pattern as publishAgentVersion's `AND is_published = false` -
+     * so two concurrent archive calls can't both report success.
+     */
+    public function archiveAgent(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireWriteRole()) !== null) {
+            return $error;
+        }
+        if (!$this->isUuid($id)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $result = $this->runInCompanyTransaction(function ($db) use ($id) {
+            $existing = $db->fetchOne(
+                'SELECT id FROM console.agents WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $id]
+            );
+            if (empty($existing)) {
+                return ['outcome' => 'not_found'];
+            }
+
+            $db->execute(
+                "UPDATE console.agents SET status = 'archived', archived_at = now(), updated_at = now()
+                 WHERE id = :id AND archived_at IS NULL",
+                ['id' => $id]
+            );
+            if ($db->affectedRows() === 0) {
+                return ['outcome' => 'already_archived'];
+            }
+
+            return ['outcome' => 'ok', 'row' => $db->fetchOne(
+                'SELECT id, company_id, name, description, status, archived_at, created_at, updated_at
+                 FROM console.agents WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $id]
+            )];
+        });
+
+        if ($result['outcome'] === 'not_found') {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        if ($result['outcome'] === 'already_archived') {
+            return $this->jsonResponse(['error' => 'already_archived'], 409);
+        }
+
+        return $this->jsonResponse($this->formatAgent($result['row']));
+    }
+
+    /** Reverses archiveAgent - same single-transaction, WHERE-guarded, affectedRows() pattern. */
+    public function unarchiveAgent(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireWriteRole()) !== null) {
+            return $error;
+        }
+        if (!$this->isUuid($id)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $result = $this->runInCompanyTransaction(function ($db) use ($id) {
+            $existing = $db->fetchOne(
+                'SELECT id FROM console.agents WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $id]
+            );
+            if (empty($existing)) {
+                return ['outcome' => 'not_found'];
+            }
+
+            $db->execute(
+                "UPDATE console.agents SET status = 'draft', archived_at = null, updated_at = now()
+                 WHERE id = :id AND archived_at IS NOT NULL",
+                ['id' => $id]
+            );
+            if ($db->affectedRows() === 0) {
+                return ['outcome' => 'not_archived'];
+            }
+
+            return ['outcome' => 'ok', 'row' => $db->fetchOne(
+                'SELECT id, company_id, name, description, status, archived_at, created_at, updated_at
+                 FROM console.agents WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $id]
+            )];
+        });
+
+        if ($result['outcome'] === 'not_found') {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        if ($result['outcome'] === 'not_archived') {
+            return $this->jsonResponse(['error' => 'not_archived'], 409);
+        }
+
+        return $this->jsonResponse($this->formatAgent($result['row']));
+    }
+
     public function exportAgent(string $id): Response
     {
         return $this->notImplemented();
@@ -264,8 +372,12 @@ class AgentsController extends ControllerBase
         if (($error = $this->requireWriteRole()) !== null) {
             return $error;
         }
-        if ($this->findAgent($id) === null) {
+        $agent = $this->findAgent($id);
+        if ($agent === null) {
             return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        if ($agent['archived_at'] !== null) {
+            return $this->jsonResponse(['error' => 'agent_archived'], 409);
         }
 
         $body = $this->request->getJsonRawBody(true) ?? [];
@@ -337,6 +449,14 @@ class AgentsController extends ControllerBase
         }
         if (($error = $this->requireWriteRole()) !== null) {
             return $error;
+        }
+
+        $agent = $this->findAgent($id);
+        if ($agent === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        if ($agent['archived_at'] !== null) {
+            return $this->jsonResponse(['error' => 'agent_archived'], 409);
         }
 
         $existing = $this->findAgentVersion($id, $vid);
@@ -419,6 +539,14 @@ class AgentsController extends ControllerBase
         }
         if (($error = $this->requireWriteRole()) !== null) {
             return $error;
+        }
+
+        $agent = $this->findAgent($id);
+        if ($agent === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        if ($agent['archived_at'] !== null) {
+            return $this->jsonResponse(['error' => 'agent_archived'], 409);
         }
 
         $existing = $this->findAgentVersion($id, $vid);

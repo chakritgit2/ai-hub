@@ -470,6 +470,24 @@ paths:
       operationId: cloneAgent
       responses:
         "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } } }
+  /agents/{id}/archive:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: archiveAgent
+      summary: Soft-deletes an agent (sets status=archived, archived_at=now()) — there is no hard delete for agents.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } } }
+  /agents/{id}/unarchive:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: unarchiveAgent
+      summary: Reverses archiveAgent (clears status back to draft, archived_at to null).
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } } }
   /agents/{id}/export:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }

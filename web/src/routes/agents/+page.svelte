@@ -9,6 +9,7 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let search = $state('');
+	let showArchived = $state(false);
 
 	async function load() {
 		loading = true;
@@ -33,13 +34,15 @@
 	});
 
 	let filtered = $derived(
-		agents.filter((a) => {
-			const q = search.trim().toLowerCase();
-			if (!q) return true;
-			return [a.display_name, a.name, a.role, a.owner].some((v) =>
-				v?.toLowerCase().includes(q)
-			);
-		})
+		agents
+			.filter((a) => showArchived || a.status !== 'archived')
+			.filter((a) => {
+				const q = search.trim().toLowerCase();
+				if (!q) return true;
+				return [a.display_name, a.name, a.role, a.owner].some((v) =>
+					v?.toLowerCase().includes(q)
+				);
+			})
 	);
 </script>
 
@@ -53,8 +56,8 @@
 	</a>
 {/snippet}
 
-<div class="mb-4">
-	<label class="block max-w-sm">
+<div class="mb-4 flex flex-wrap items-center gap-4">
+	<label class="block max-w-sm flex-1">
 		<span class="sr-only">Search agents</span>
 		<input
 			type="search"
@@ -63,6 +66,10 @@
 			class="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm
 				focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 		/>
+	</label>
+	<label class="flex items-center gap-2 text-sm text-neutral-600">
+		<input type="checkbox" bind:checked={showArchived} />
+		Show archived
 	</label>
 </div>
 
