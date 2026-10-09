@@ -38,7 +38,6 @@ from app.integrations.dynamiq_adapter import build_llm
 from app.integrations.okf import parse_okf, resolve_okf_metadata
 from app.integrations.safe_http_client import (
     EgressBlockedError,
-    PinnedTransport,
     SafeHttpClient,
     SafeHttpClientError,
     parse_host_port,
@@ -353,30 +352,21 @@ async def testConnection(id: str, claims: InternalAuth) -> Response:
         if secret is None:
             return TestResult(ok=False, detail="no secret stored for this connection")
 
-        _connection_obj, llm = build_llm(connection.type, {"api_key": secret, "url": connection.api_base})
+        _connection_obj, llm = build_llm(
+            connection.type, {"api_key": secret, "url": connection.api_base, "egress_allowlist": allowlist}
+        )
     except ValueError as exc:
         return TestResult(ok=False, detail=str(exc))
     except Exception as exc:  # surface as a clear upstream error, not a 500 crash
         logger.exception("connection test setup failed")
         return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
 
-    test_client = llm.client
-    if connection.api_base:
-        # A custom api_base is a company-supplied, potentially-attacker-influenced
-        # URL (PRD §7.4), unlike the default api.openai.com — so this call, not just the
-        # pre-flight check above, must go through the egress allowlist + DNS-pinned
-        # transport. `llm.client` is the `dynamiq`/`openai` library's own client, built
-        # without a way to inject a transport, so a second client sharing the same
-        # credentials/base_url is built here just for this reachability probe.
-        test_client = openai.OpenAI(
-            api_key=secret,
-            base_url=connection.api_base,
-            http_client=httpx.Client(transport=PinnedTransport(allowlist)),
-            max_retries=0,  # an egress-blocked host is never going to succeed on retry
-        )
-
+    # A custom api_base is a company-supplied, potentially-attacker-influenced URL (PRD
+    # §7.4) - `build_llm`/`_build_openai` already routes it through a `SafeOpenAIConnection`
+    # (egress allowlist + DNS-pinned transport) above, so `llm.client` itself is already
+    # safe to call directly here; no second disposable client needed.
     try:
-        await asyncio.to_thread(test_client.models.list)
+        await asyncio.to_thread(llm.client.models.list)
     except openai.AuthenticationError as exc:
         return TestResult(ok=False, detail=f"authentication failed: {exc}")
     except openai.APIError as exc:

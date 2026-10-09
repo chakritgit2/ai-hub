@@ -28,6 +28,7 @@ from app.services.compiler import build_agent, compile_spec
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.conversations import get_or_create_conversation
 from app.services.deployments import resolve_deployment
+from app.services.egress_allowlist import list_egress_allowlist
 from app.services.guardrails import log_guardrail_events, run_checks
 from app.services.quotas import QuotaExceededError, check_rate_limit, reconcile_quota, reserve_quota
 from app.services.runs import RunUsage, log_run
@@ -180,7 +181,20 @@ async def _execute_agent_run(
         scoped_skills = [s for s in full_registry.skills if s.name in compiled_definition["skills"]]
         skill_registry = ConsoleSkillRegistry(skills=scoped_skills)
 
-    agent = build_agent(compiled_definition, secret, company_id, memory=memory, skill_registry=skill_registry)
+    egress_allowlist = None
+    if agent_def["llm"]["connection"].get("api_base"):
+        # Only a custom api_base is a company-controlled SSRF vector worth the extra
+        # query for - see app.integrations.safe_openai_connection.
+        egress_allowlist = await list_egress_allowlist(company_id)
+
+    agent = build_agent(
+        compiled_definition,
+        secret,
+        company_id,
+        memory=memory,
+        skill_registry=skill_registry,
+        egress_allowlist=egress_allowlist,
+    )
 
     usage_collector = _UsageCollector()
 

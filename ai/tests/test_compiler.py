@@ -1,10 +1,14 @@
 import uuid
 
+import openai
 import pytest
+from dynamiq.connections.connections import OpenAI as OpenAIConnection
 from dynamiq.nodes.agents.exceptions import ToolExecutionException
 from dynamiq.nodes.tools.http_api_call import HttpApiCallInputSchema
 from fastapi.testclient import TestClient
 
+from app.integrations.safe_http_client import EgressBlockedError
+from app.integrations.safe_openai_connection import SafeOpenAIConnection
 from app.main_runtime import app as runtime_app
 from app.services.compiler import build_agent, compile_spec
 
@@ -100,6 +104,36 @@ async def test_compile_threads_connection_api_base_through_to_the_built_llm(make
 
     agent = build_agent(result["compiled_definition"], "sk-test-key", company_id)
     assert agent.llm.connection.url == custom_api_base
+
+
+@requires_postgres
+async def test_compile_threads_egress_allowlist_through_to_the_built_llm(make_connection):
+    """A custom api_base is company-supplied and potentially attacker-influenced (PRD
+    §7.4) - build_agent must wire it through app.integrations.safe_openai_connection's
+    SafeOpenAIConnection, not Dynamiq's own unprotected OpenAIConnection, the same way
+    _build_tools already does for HTTP tools (app.integrations.safe_http_tool)."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id, api_base="https://openrouter.ai/api/v1")
+
+    result = await compile_spec(_valid_spec(connection_id), "developer", company_id)
+    assert result["ok"] is True, result["errors"]
+
+    agent = build_agent(result["compiled_definition"], "sk-test-key", company_id, egress_allowlist=[])
+    assert isinstance(agent.llm.connection, SafeOpenAIConnection)
+
+    client = agent.llm.connection.connect()
+    with pytest.raises(openai.APIError) as exc_info:
+        client.models.list()
+    assert isinstance(exc_info.value.__cause__, EgressBlockedError)
+
+    # Without a custom api_base, the default-endpoint connection must stay a plain
+    # OpenAIConnection (same unprotected-but-fine path) - no egress query, no blocking.
+    other_company_id = str(uuid.uuid4())
+    plain_connection_id = make_connection(other_company_id)
+    plain_result = await compile_spec(_valid_spec(plain_connection_id), "developer", other_company_id)
+    assert plain_result["ok"] is True, plain_result["errors"]
+    plain_agent = build_agent(plain_result["compiled_definition"], "sk-test-key", other_company_id)
+    assert type(plain_agent.llm.connection) is OpenAIConnection
 
 
 @requires_postgres

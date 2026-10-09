@@ -21,6 +21,7 @@ from app.integrations.dynamiq_adapter import build_llm, llm_type_for_connection_
 from app.integrations.skill_registry import ConsoleSkillRegistry
 from app.services.agent_spec import AgentSpecDoc, render_identity_prompt
 from app.services.connections import ConnectionRow, resolve_connection
+from app.services.egress_allowlist import EgressAllowlistEntry
 from app.services.node_allowlist import find_disallowed_types
 from app.services.skills import list_published_skills
 from app.services.tools import ToolRow, resolve_tool
@@ -208,6 +209,7 @@ def build_agent(
     company_id: str,
     memory=None,
     skill_registry: ConsoleSkillRegistry | None = None,
+    egress_allowlist: list[EgressAllowlistEntry] | None = None,
 ):
     """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
     (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
@@ -216,6 +218,11 @@ def build_agent(
     (`app.services.runtime`), with the connection's real decrypted secret, real
     conversation memory and skill registry when available, and the returned Agent
     actually run.
+
+    `egress_allowlist` only matters when the connection has a custom `api_base`
+    (`app.integrations.dynamiq_adapter._build_openai`/`SafeOpenAIConnection`) - omitting
+    it is fail-closed, not fail-open: a custom-api_base connection with no allowlist
+    passed through simply blocks every request rather than skipping the check.
     """
     from dynamiq.nodes.agents import Agent
     from dynamiq.skills.config import SkillsConfig
@@ -239,6 +246,7 @@ def build_agent(
             # proxy, Azure OpenAI, ...) unreachable in practice. _build_openai already
             # reads this as "url" (see app/integrations/dynamiq_adapter.py).
             "url": connection_def.get("api_base"),
+            "egress_allowlist": egress_allowlist,
         },
     )
 

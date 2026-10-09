@@ -103,6 +103,18 @@ def _host_matches(pattern: str, host: str) -> bool:
     return False
 
 
+def host_in_allowlist(egress_allowlist: Sequence[EgressAllowlistEntry], host: str, port: int) -> bool:
+    """Pure pattern-match against a company's egress allowlist - no DNS/network involved,
+    unlike `SafeHttpClient.check_host`/`PinnedTransport`'s own per-request check (which
+    additionally resolves and pins the IP). Lets a caller decide up front that a host can
+    *never* succeed - e.g. to skip a client's own retry-on-any-exception behavior for a
+    destination that's going to be rejected identically on every attempt."""
+    return any(
+        _host_matches(entry.host_pattern, host) and (entry.port is None or entry.port == port)
+        for entry in egress_allowlist
+    )
+
+
 def _is_blocked_ip(ip: str) -> bool:
     address = ipaddress.ip_address(ip)
     # ::ffff:10.0.0.1 etc. parse as a distinct IPv6Address that's never `in` any of the

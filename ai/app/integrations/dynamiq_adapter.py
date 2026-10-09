@@ -16,6 +16,8 @@ from dynamiq.connections.connections import OpenAI as OpenAIConnection
 from dynamiq.nodes.llms import BaseLLM
 from dynamiq.nodes.llms import OpenAI as OpenAILLM
 
+from app.integrations.safe_openai_connection import SafeOpenAIConnection
+
 
 def _build_openai(config: dict[str, Any]) -> tuple[OpenAIConnection, BaseLLM]:
     api_key = config.get("api_key")
@@ -26,9 +28,18 @@ def _build_openai(config: dict[str, Any]) -> tuple[OpenAIConnection, BaseLLM]:
     # has nothing to do with whatever connection this call is actually supposed to use.
     if api_key is not None:
         kwargs["api_key"] = api_key
-    if config.get("url"):
-        kwargs["url"] = config["url"]
-    connection = OpenAIConnection(**kwargs)
+
+    custom_url = config.get("url")
+    if custom_url:
+        kwargs["url"] = custom_url
+        # A custom api_base is company-supplied and potentially attacker-influenced
+        # (PRD §7.4), unlike the provider's own default endpoint - it must go through
+        # the egress allowlist (see app.integrations.safe_openai_connection). The
+        # default endpoint isn't a company-controlled SSRF vector and most companies
+        # won't have an allowlist entry for it at all, so it stays a plain connection.
+        connection = SafeOpenAIConnection(egress_allowlist=config.get("egress_allowlist") or [], **kwargs)
+    else:
+        connection = OpenAIConnection(**kwargs)
 
     llm_kwargs: dict[str, Any] = {}
     if config.get("temperature") is not None:
