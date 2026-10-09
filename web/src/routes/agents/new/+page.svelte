@@ -6,10 +6,11 @@
 		createAgentVersion,
 		updateAgentVersion,
 		publishAgentVersion,
-		listConnections
+		listConnections,
+		listTools
 	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
-	import type { AgentIdentity, Connection, ModelSpec } from '$lib/api/types';
+	import type { AgentIdentity, Connection, ModelSpec, Tool } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 
 	// Only connection types the compiler can actually build an LLM for today
@@ -17,6 +18,11 @@
 	// else fails at publish time with "Unsupported connection type", so there's no point
 	// offering it here. Update this allowlist if the compiler gains another provider.
 	const USABLE_CONNECTION_TYPES = new Set(['dynamiq.connections.OpenAI', 'openai']);
+
+	// Only kind: "http" tools can actually be built into a real node today
+	// (ai/app/services/compiler.py's _resolve_tools) - builtin/python references fail
+	// compilation outright for every role, so there's no point offering them here.
+	const USABLE_TOOL_KINDS = new Set(['http']);
 
 	type TabId =
 		| 'identity'
@@ -40,7 +46,7 @@
 	const tabs: Tab[] = [
 		{ id: 'identity', label: 'Identity', enabled: true },
 		{ id: 'model', label: 'Model', enabled: true },
-		{ id: 'tools', label: 'Tools', enabled: false, note: 'Phase 2 — PRD §6.5' },
+		{ id: 'tools', label: 'Tools', enabled: true },
 		{ id: 'knowledge', label: 'Knowledge', enabled: false, note: 'Phase 2 — PRD §6.6' },
 		{ id: 'skills', label: 'Skills', enabled: false, note: 'Phase 2 — PRD §6.6a' },
 		{ id: 'memory', label: 'Memory', enabled: false, note: 'PRD §6.2' },
@@ -81,6 +87,16 @@
 	let connectionsError = $state<string | null>(null);
 	let usableConnections = $derived(connections.filter((c) => USABLE_CONNECTION_TYPES.has(c.type)));
 
+	let tools = $state<Tool[]>([]);
+	let toolsError = $state<string | null>(null);
+	let selectedToolIds = $state<string[]>([]);
+
+	function toggleTool(toolId: string, checked: boolean) {
+		selectedToolIds = checked
+			? [...selectedToolIds, toolId]
+			: selectedToolIds.filter((id) => id !== toolId);
+	}
+
 	// Set once Save draft's createAgent/createAgentVersion succeed - lets a retry after a
 	// partial failure (e.g. agent created but version creation threw) skip re-creating
 	// what already exists instead of leaving an orphaned agent row behind.
@@ -99,6 +115,11 @@
 			connections = await listConnections();
 		} catch (e) {
 			connectionsError = e instanceof Error ? e.message : 'Failed to load connections.';
+		}
+		try {
+			tools = await listTools();
+		} catch (e) {
+			toolsError = e instanceof Error ? e.message : 'Failed to load tools.';
 		}
 	});
 
@@ -149,7 +170,11 @@
 			...(!isUnset(model.temperature) ? { temperature: Number(model.temperature) } : {}),
 			...(!isUnset(model.max_tokens) ? { max_tokens: Number(model.max_tokens) } : {})
 		};
-		const spec = { identity, model: modelSpec };
+		const spec = {
+			identity,
+			model: modelSpec,
+			tools: selectedToolIds.map((tool_id) => ({ tool_id }))
+		};
 
 		saving = true;
 		try {
@@ -481,6 +506,48 @@
 					(PRD §6.1).
 				</p>
 			</form>
+		{:else if activeTab === 'tools'}
+			<div class="space-y-4">
+				{#if toolsError}
+					<div class="rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+						{toolsError}
+					</div>
+				{:else if tools.length === 0}
+					<p class="text-sm text-neutral-500">
+						No tools yet. <a href="/tools" class="text-primary underline">Create a tool</a> first.
+					</p>
+				{:else}
+					<ul class="divide-y divide-neutral-200 rounded-md border border-neutral-200">
+						{#each tools as tool (tool.id)}
+							{@const usable = USABLE_TOOL_KINDS.has(tool.kind) && tool.enabled}
+							<li class="flex items-start gap-3 p-3">
+								<input
+									type="checkbox"
+									id={`tool-${tool.id}`}
+									class="mt-1"
+									disabled={!usable}
+									checked={selectedToolIds.includes(tool.id)}
+									onchange={(e) => toggleTool(tool.id, (e.currentTarget as HTMLInputElement).checked)}
+								/>
+								<label for={`tool-${tool.id}`} class="flex-1 {usable ? '' : 'opacity-60'}">
+									<p class="text-sm font-medium text-neutral-900">{tool.name}</p>
+									<p class="text-xs text-neutral-500">
+										kind: <code>{tool.kind}</code>
+										{#if !tool.enabled}· disabled{/if}
+										{#if tool.kind !== 'http'}· not supported by the compiler yet{/if}
+									</p>
+								</label>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+
+				<p class="text-xs text-neutral-500">
+					Only enabled <code>http</code> tools can be attached today (PRD §6.5) — other kinds
+					fail compilation until tool-secret storage and an execution story exist for them.
+					Manage tools on the <a href="/tools" class="text-primary underline">Tools</a> page.
+				</p>
+			</div>
 		{:else}
 			{@const tab = tabs.find((t) => t.id === activeTab)}
 			<div class="rounded-md border border-dashed border-neutral-300 p-8 text-center">
