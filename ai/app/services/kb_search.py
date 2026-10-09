@@ -62,7 +62,7 @@ async def search_knowledge_base(company_id: str, kb_id: str, query: str, top_k: 
     if secret is None:
         raise ValueError("embedder_connection_secret_not_found")
 
-    _connection, embedder = build_embedder(connection_row.type, {"api_key": secret})
+    _connection, embedder = build_embedder(connection_row.type, {"api_key": secret, "url": connection_row.api_base})
     embedded = await embedder.embed_text_async(query)
     query_embedding = embedded["embedding"]
 

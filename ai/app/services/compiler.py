@@ -234,6 +234,7 @@ def _build_compiled_definition(
                     "config": {
                         "embedder_connection_id": kb.embedder_connection_id,
                         "embedder_connection_type": embedder_connection.type,
+                        "embedder_connection_api_base": embedder_connection.api_base,
                         "top_k": _KNOWLEDGE_TOP_K,
                     },
                 }
@@ -293,7 +294,10 @@ async def _build_knowledge_tool(tool_def: dict, company_id: str, api_key: str):
 
     config = tool_def["config"]
     kb_id = tool_def["id"]
-    _connection, embedder = build_embedder(config["embedder_connection_type"], {"api_key": api_key})
+    _connection, embedder = build_embedder(
+        config["embedder_connection_type"],
+        {"api_key": api_key, "url": config.get("embedder_connection_api_base")},
+    )
     table_name = kb_vector_table_name(company_id, kb_id)
     store = await asyncio.to_thread(open_kb_vector_store, table_name)
     retriever = PGVectorDocumentRetriever(vector_store=store, top_k=config["top_k"])

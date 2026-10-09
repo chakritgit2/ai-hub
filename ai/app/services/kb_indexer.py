@@ -105,7 +105,7 @@ async def index_kb_document(company_id: str, kb_id: str, document_id: str) -> di
             await update_kb_document_status(company_id, document_id, status="failed", error=error)
             return {"status": "failed", "chunk_count": 0, "error": error}
 
-        _connection, embedder = build_embedder(connection_row.type, {"api_key": secret})
+        _connection, embedder = build_embedder(connection_row.type, {"api_key": secret, "url": connection_row.api_base})
         embedded = await embedder.embed_documents_async(chunks)
         embedded_chunks = embedded["documents"]
 
