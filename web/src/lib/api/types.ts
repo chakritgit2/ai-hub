@@ -152,12 +152,19 @@ export interface AgentIdentity {
 	instructions?: string;
 }
 
+export interface ModelSpec {
+	connection_id: string;
+	model: string;
+	temperature?: number;
+	max_tokens?: number;
+}
+
 export interface AgentVersion {
 	id: string;
 	company_id: string;
 	agent_id: string;
 	version_no: number;
-	spec: Record<string, unknown> & { identity?: AgentIdentity };
+	spec: Record<string, unknown> & { identity?: AgentIdentity; model?: ModelSpec };
 	spec_version: string;
 	compiled_definition?: Record<string, unknown> | null;
 	compiler_version?: string | null;

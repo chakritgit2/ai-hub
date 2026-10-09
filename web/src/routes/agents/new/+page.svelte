@@ -1,8 +1,22 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { createAgent } from '$lib/api/console';
-	import type { AgentIdentity } from '$lib/api/types';
+	import {
+		createAgent,
+		createAgentVersion,
+		updateAgentVersion,
+		publishAgentVersion,
+		listConnections
+	} from '$lib/api/console';
+	import { ApiError } from '$lib/api/client';
+	import type { AgentIdentity, Connection, ModelSpec } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
+
+	// Only connection types the compiler can actually build an LLM for today
+	// (ai/app/integrations/dynamiq_adapter.py's _CONNECTION_BUILDERS/_LLM_TYPES) - anything
+	// else fails at publish time with "Unsupported connection type", so there's no point
+	// offering it here. Update this allowlist if the compiler gains another provider.
+	const USABLE_CONNECTION_TYPES = new Set(['dynamiq.connections.OpenAI', 'openai']);
 
 	type TabId =
 		| 'identity'
@@ -25,7 +39,7 @@
 	// Order per PRD §6.1: Identity, Model, Tools, Knowledge, Skills, Memory, Guardrails, Advanced.
 	const tabs: Tab[] = [
 		{ id: 'identity', label: 'Identity', enabled: true },
-		{ id: 'model', label: 'Model', enabled: false, note: 'PRD §6.1 — connection, model, temperature, fallback' },
+		{ id: 'model', label: 'Model', enabled: true },
 		{ id: 'tools', label: 'Tools', enabled: false, note: 'Phase 2 — PRD §6.5' },
 		{ id: 'knowledge', label: 'Knowledge', enabled: false, note: 'Phase 2 — PRD §6.6' },
 		{ id: 'skills', label: 'Skills', enabled: false, note: 'Phase 2 — PRD §6.6a' },
@@ -54,8 +68,39 @@
 	let languagesInput = $state('th');
 	let tagsInput = $state('');
 
+	// temperature/max_tokens start as '' (empty = omit) but bind:value on a number input
+	// resets a cleared field to `null`, not `''` (Svelte's own to_number() does this) - so
+	// both must be treated as "unset", not just ''. Converted to a real ModelSpec only at
+	// save time, so we never send temperature: NaN or max_tokens: 0 for a field the user
+	// left (or cleared back to) blank.
+	let model = $state<{ connection_id: string; model: string; temperature: string | number | null; max_tokens: string | number | null }>(
+		{ connection_id: '', model: '', temperature: '', max_tokens: '' }
+	);
+	const isUnset = (value: string | number | null): boolean => value === '' || value === null;
+	let connections = $state<Connection[]>([]);
+	let connectionsError = $state<string | null>(null);
+	let usableConnections = $derived(connections.filter((c) => USABLE_CONNECTION_TYPES.has(c.type)));
+
+	// Set once Save draft's createAgent/createAgentVersion succeed - lets a retry after a
+	// partial failure (e.g. agent created but version creation threw) skip re-creating
+	// what already exists instead of leaving an orphaned agent row behind.
+	let agentId = $state<string | null>(null);
+	let versionId = $state<string | null>(null);
+	let isPublished = $state(false);
+
 	let saving = $state(false);
+	let publishing = $state(false);
 	let error = $state<string | null>(null);
+	let publishErrors = $state<{ path: string; message: string }[]>([]);
+	let savedNotice = $state(false);
+
+	onMount(async () => {
+		try {
+			connections = await listConnections();
+		} catch (e) {
+			connectionsError = e instanceof Error ? e.message : 'Failed to load connections.';
+		}
+	});
 
 	function slugify(value: string): string {
 		return value
@@ -77,8 +122,9 @@
 	});
 
 	async function saveDraft() {
-		saving = true;
 		error = null;
+		publishErrors = [];
+		savedNotice = false;
 		identity.languages = languagesInput
 			.split(',')
 			.map((l) => l.trim())
@@ -88,17 +134,66 @@
 			.map((t) => t.trim())
 			.filter(Boolean);
 
+		if (!model.connection_id || !model.model.trim()) {
+			error = 'Model: please select a connection and enter a model name.';
+			return;
+		}
+		if (!isUnset(model.max_tokens) && (!Number.isInteger(Number(model.max_tokens)) || Number(model.max_tokens) <= 0)) {
+			error = 'Model: max tokens must be a whole number greater than 0.';
+			return;
+		}
+
+		const modelSpec: ModelSpec = {
+			connection_id: model.connection_id,
+			model: model.model.trim(),
+			...(!isUnset(model.temperature) ? { temperature: Number(model.temperature) } : {}),
+			...(!isUnset(model.max_tokens) ? { max_tokens: Number(model.max_tokens) } : {})
+		};
+		const spec = { identity, model: modelSpec };
+
+		saving = true;
 		try {
-			const agent = await createAgent({
-				name: identity.name,
-				description: identity.role,
-				status: 'draft'
-			});
-			await goto(`/agents/${agent.id}`);
+			if (!agentId) {
+				const agent = await createAgent({
+					name: identity.name,
+					description: identity.role,
+					status: 'draft'
+				});
+				agentId = agent.id;
+			}
+
+			if (!versionId) {
+				const version = await createAgentVersion(agentId, { spec });
+				versionId = version.id;
+			} else {
+				await updateAgentVersion(agentId, versionId, { spec });
+			}
+			savedNotice = true;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to save the draft agent.';
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function publish() {
+		if (!agentId || !versionId || isPublished) return;
+		error = null;
+		publishErrors = [];
+		savedNotice = false;
+		publishing = true;
+		try {
+			await publishAgentVersion(agentId, versionId);
+			isPublished = true;
+			await goto(`/agents/${agentId}`);
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 422 && e.body && typeof e.body === 'object' && 'errors' in e.body) {
+				publishErrors = (e.body as { errors: { path: string; message: string }[] }).errors;
+			} else {
+				error = e instanceof Error ? e.message : 'Failed to publish.';
+			}
+		} finally {
+			publishing = false;
 		}
 	}
 </script>
@@ -108,19 +203,21 @@
 		<button
 			type="button"
 			class="rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium
-				text-neutral-700 shadow-sm hover:bg-neutral-50"
+				text-neutral-700 shadow-sm hover:bg-neutral-50 disabled:opacity-50"
 			onclick={saveDraft}
-			disabled={saving}
+			disabled={saving || publishing || isPublished}
 		>
-			{saving ? 'Saving…' : 'Save draft'}
+			{saving ? 'Saving…' : versionId ? 'Save changes' : 'Save draft'}
 		</button>
 		<button
 			type="button"
-			class="rounded-md bg-neutral-200 px-4 py-2 text-sm font-medium text-neutral-500"
-			disabled
-			title="Publish is available once the draft is saved"
+			class="rounded-md px-4 py-2 text-sm font-medium shadow-sm disabled:cursor-not-allowed
+				{versionId && !isPublished ? 'bg-primary text-white hover:bg-primary-600' : 'bg-neutral-200 text-neutral-500'}"
+			onclick={publish}
+			disabled={!versionId || isPublished || saving || publishing}
+			title={versionId ? undefined : 'Publish is available once the draft is saved'}
 		>
-			Publish
+			{publishing ? 'Publishing…' : isPublished ? 'Published' : 'Publish'}
 		</button>
 	</div>
 {/snippet}
@@ -149,6 +246,29 @@
 		{#if error}
 			<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
 				{error}
+			</div>
+		{/if}
+
+		{#if publishErrors.length > 0}
+			<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+				<p class="font-medium">Publish failed — compiling the spec reported these problems:</p>
+				<ul class="mt-1 list-disc pl-5">
+					{#each publishErrors as e (e.path)}
+						<li><code>{e.path}</code>: {e.message}</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
+
+		{#if savedNotice}
+			<div class="mb-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-primary-700">
+				Draft saved. You can keep editing, or Publish when ready.
+			</div>
+		{/if}
+
+		{#if isPublished}
+			<div class="mb-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-primary-700">
+				Published. Redirecting…
 			</div>
 		{/if}
 
@@ -290,6 +410,75 @@
 					The compiler assembles this identity into the agent's system prompt from a shared
 					template, including instructions to decline <code>out_of_scope</code> requests and follow
 					<code>handoff</code> (PRD §6.1a).
+				</p>
+			</form>
+		{:else if activeTab === 'model'}
+			<form class="space-y-5" onsubmit={(e) => e.preventDefault()}>
+				<label class="block">
+					<span class="text-sm font-medium text-neutral-700">Connection</span>
+					{#if connectionsError}
+						<div class="mt-1 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+							{connectionsError}
+						</div>
+					{:else if connections.length > 0 && usableConnections.length === 0}
+						<p class="mt-1 text-sm text-neutral-500">
+							No OpenAI-compatible connections found.
+							<a href="/connections" class="text-primary underline">Create a connection</a> first.
+						</p>
+					{:else}
+						<select
+							bind:value={model.connection_id}
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						>
+							<option value="" disabled>Select a connection</option>
+							{#each usableConnections as connection (connection.id)}
+								<option value={connection.id}>{connection.name}</option>
+							{/each}
+						</select>
+					{/if}
+				</label>
+
+				<label class="block">
+					<span class="text-sm font-medium text-neutral-700">Model</span>
+					<input
+						type="text"
+						bind:value={model.model}
+						placeholder="gpt-4o-mini"
+						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
+							focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+					/>
+				</label>
+
+				<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Temperature (optional)</span>
+						<input
+							type="number"
+							step="0.1"
+							min="0"
+							max="2"
+							bind:value={model.temperature}
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Max tokens (optional)</span>
+						<input
+							type="number"
+							step="1"
+							min="1"
+							bind:value={model.max_tokens}
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+				</div>
+
+				<p class="text-xs text-neutral-500">
+					Only connections the compiler can build an LLM from today (OpenAI-compatible) are listed
+					(PRD §6.1).
 				</p>
 			</form>
 		{:else}
