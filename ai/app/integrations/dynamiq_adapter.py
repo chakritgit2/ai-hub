@@ -13,6 +13,8 @@ from typing import Any
 from dynamiq.components.embedders.base import BaseEmbedder
 from dynamiq.components.embedders.openai import OpenAIEmbedder
 from dynamiq.connections.connections import OpenAI as OpenAIConnection
+from dynamiq.nodes.embedders.base import TextEmbedder
+from dynamiq.nodes.embedders.openai import OpenAITextEmbedder
 from dynamiq.nodes.llms import BaseLLM
 from dynamiq.nodes.llms import OpenAI as OpenAILLM
 
@@ -118,8 +120,42 @@ def build_embedder(connection_type: str, config: dict[str, Any]) -> tuple[Any, B
 
     Raises `ValueError` for an unsupported/unknown connection type, same contract as
     `build_llm`.
+
+    Only for callers that invoke the embedder directly (`kb_search`/`kb_indexer` call
+    `embed_text_async`/`embed_documents_async` themselves) - a `BaseEmbedder` *component*
+    is not itself a `dynamiq.nodes.node.Node` and cannot be wired into a Node graph (e.g.
+    `VectorStoreRetriever.text_embedder`, which Pydantic-validates as a `TextEmbedder`
+    Node); use `build_embedder_node` for that.
     """
     builder = _EMBEDDER_BUILDERS.get(connection_type)
+    if builder is None:
+        raise ValueError(f"Unsupported connection type: {connection_type!r}")
+    return builder(config)
+
+
+def _build_openai_text_embedder_node(config: dict[str, Any]) -> TextEmbedder:
+    api_key = config.get("api_key")
+    kwargs: dict[str, Any] = {}
+    if api_key is not None:
+        kwargs["api_key"] = api_key
+    if config.get("url"):
+        kwargs["url"] = config["url"]
+    connection = OpenAIConnection(**kwargs)
+    return OpenAITextEmbedder(connection=connection, model=config.get("model", "text-embedding-3-small"))
+
+
+_EMBEDDER_NODE_BUILDERS: dict[str, Callable[[dict[str, Any]], TextEmbedder]] = {
+    "dynamiq.connections.OpenAI": _build_openai_text_embedder_node,
+    "openai": _build_openai_text_embedder_node,
+}
+
+
+def build_embedder_node(connection_type: str, config: dict[str, Any]) -> TextEmbedder:
+    """Build a `TextEmbedder` *Node* for `connection_type` - for wiring into a Node graph
+    (`VectorStoreRetriever.text_embedder`), as opposed to `build_embedder`'s bare component
+    for direct `embed_text_async`/`embed_documents_async` calls. Raises `ValueError` for an
+    unsupported/unknown connection type, same contract as `build_embedder`/`build_llm`."""
+    builder = _EMBEDDER_NODE_BUILDERS.get(connection_type)
     if builder is None:
         raise ValueError(f"Unsupported connection type: {connection_type!r}")
     return builder(config)

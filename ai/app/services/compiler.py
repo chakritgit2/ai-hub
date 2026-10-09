@@ -23,7 +23,7 @@ import logging
 
 from pydantic import ValidationError
 
-from app.integrations.dynamiq_adapter import build_embedder, build_llm, llm_type_for_connection_type
+from app.integrations.dynamiq_adapter import build_embedder_node, build_llm, llm_type_for_connection_type
 from app.integrations.skill_registry import ConsoleSkillRegistry
 from app.services.agent_spec import AgentSpecDoc, render_identity_prompt
 from app.services.connections import ConnectionRow, resolve_connection
@@ -289,12 +289,16 @@ async def _build_knowledge_tool(tool_def: dict, company_id: str, api_key: str):
     `app.services.kb_search.search_knowledge_base` already does for the standalone
     `/kb/search` endpoint.
     """
-    from dynamiq.components.retrievers.pgvector import PGVectorDocumentRetriever
+    # Node classes, not the bare components of the same name under
+    # dynamiq.components.* - VectorStoreRetriever Pydantic-validates text_embedder/
+    # document_retriever as Node subclasses (TextEmbedder/Retriever), and rejects a raw
+    # component with a model_type validation error.
+    from dynamiq.nodes.retrievers.pgvector import PGVectorDocumentRetriever
     from dynamiq.nodes.retrievers.retriever import VectorStoreRetriever
 
     config = tool_def["config"]
     kb_id = tool_def["id"]
-    _connection, embedder = build_embedder(
+    embedder = build_embedder_node(
         config["embedder_connection_type"],
         {"api_key": api_key, "url": config.get("embedder_connection_api_base")},
     )
