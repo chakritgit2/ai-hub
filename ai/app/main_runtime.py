@@ -196,6 +196,11 @@ async def runPlayground(
             company_id=claims["company_id"],
             external_user_id=body.user.external_id if body.user else None,
             conversation_id=body.conversation_id,
+            claims=body.user.claims if body.user else {},
+            # Falls back to the runtime token's own user_id (not `claims` above, the
+            # verified runtime-token claims this route itself received) as the delegated
+            # `sub` (PRD §7.5) when no simulated external user was supplied.
+            identity_sub=body.user.external_id if body.user else claims["user_id"],
         )
     except Exception as exc:  # surface as a clear upstream error, not a 500 crash
         logger.exception("playground run failed")

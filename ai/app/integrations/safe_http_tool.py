@@ -12,6 +12,7 @@ company's allowlist change takes effect on the agent's very next tool call, not 
 after a recompile.
 """
 import asyncio
+import logging
 
 from dynamiq.nodes.agents.exceptions import ToolExecutionException
 from dynamiq.nodes.node import ensure_config
@@ -22,6 +23,9 @@ from dynamiq.types.cancellation import check_cancellation
 
 from app.integrations.safe_http_client import SafeHttpClient, SafeHttpClientError
 from app.services.egress_allowlist import list_egress_allowlist
+from app.services.identity import DelegatedIdentityContext, mint_delegated_token
+
+logger = logging.getLogger(__name__)
 
 
 class SafeHttpApiCall(HttpApiCall):
@@ -30,6 +34,9 @@ class SafeHttpApiCall(HttpApiCall):
     DNS-rebinding-safe pinned connect, capped redirects/timeout/response size)."""
 
     company_id: str
+    auth_mode: str = "service"
+    audience: str | None = None
+    identity: DelegatedIdentityContext | None = None
 
     def _safe_request_kwargs(self, input_data: HttpApiCallInputSchema) -> dict:
         request_kwargs = self._build_request_kwargs(input_data)
@@ -37,6 +44,32 @@ class SafeHttpApiCall(HttpApiCall):
         # this client" contract - the node's own configurable `timeout` field (passed by
         # the parent's _build_request_kwargs) doesn't apply when routed through it.
         request_kwargs.pop("timeout", None)
+        if self.auth_mode == "delegated":
+            if self.identity is None:
+                # Fail closed, not fail open: a missing identity must never fall back to
+                # minting a blank-sub/act/run_id-but-still-validly-signed token - the
+                # entire point of PRD §7.5 is that a valid signature implies a real,
+                # attributable caller.
+                raise ToolExecutionException(
+                    f"Tool {self.name!r} is auth_mode='delegated' but no run identity was supplied - refusing to "
+                    "mint an anonymous delegated token.",
+                    recoverable=False,
+                )
+            identity = self.identity
+            token = mint_delegated_token(
+                self.company_id, identity.sub, identity.claims, identity.act, identity.run_id, self.audience or ""
+            )
+            # Overwritten last, after `_build_request_kwargs` already merged the LLM's own
+            # tool-call input headers in - a prompt-injected `Authorization` header must
+            # never be able to suppress or replace the real delegated identity.
+            request_kwargs.setdefault("headers", {})["Authorization"] = f"Bearer {token}"
+            logger.info(
+                "delegated identity token attached: tool=%s run_id=%s act=%s sub=%s",
+                self.name,
+                identity.run_id,
+                identity.act,
+                identity.sub,
+            )
         return request_kwargs
 
     async def _run_safe_request(self, request_kwargs: dict):

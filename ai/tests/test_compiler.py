@@ -341,6 +341,63 @@ async def test_compile_rejects_http_tool_with_no_url(make_connection, make_tool)
 
 
 @requires_postgres
+async def test_compile_rejects_delegated_tool_without_audience(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(
+        company_id, kind="http", auth_mode="delegated", config={"url": "https://api.example.com/orders"}
+    )
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "tools[0].tool_id"
+    assert "audience" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_attaches_auth_mode_and_audience_to_http_tool_def(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(
+        company_id,
+        kind="http",
+        auth_mode="delegated",
+        audience="https://partner.example.com",
+        config={"url": "https://api.example.com/orders"},
+    )
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    compiled_tools = result["compiled_definition"]["agent"]["tools"]
+    assert compiled_tools[0]["auth_mode"] == "delegated"
+    assert compiled_tools[0]["audience"] == "https://partner.example.com"
+
+
+@requires_postgres
+async def test_compile_leaves_service_mode_tools_unauthenticated(make_connection, make_tool):
+    """Regression guard for the scope boundary: a default auth_mode='service' tool must
+    compile/build exactly as before - no Authorization header behavior change."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="http", config={"url": "https://api.example.com/orders"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    compiled_tools = result["compiled_definition"]["agent"]["tools"]
+    assert compiled_tools[0]["auth_mode"] == "service"
+    assert compiled_tools[0]["audience"] is None
+
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
+    assert agent.tools[0].auth_mode == "service"
+
+
+@requires_postgres
 async def test_compile_rejects_builtin_tool_kind_even_for_admin(make_connection, make_tool):
     """kind: builtin (Tavily/Exa) has no connection/API-key model yet - fails compilation
     for every role, including admin, rather than being silently accepted and doing nothing

@@ -30,6 +30,7 @@ from app.services.conversations import get_or_create_conversation
 from app.services.deployments import resolve_deployment
 from app.services.egress_allowlist import list_egress_allowlist
 from app.services.guardrails import log_guardrail_events, run_checks
+from app.services.identity import DelegatedIdentityContext
 from app.services.quotas import QuotaExceededError, check_rate_limit, reconcile_quota, reserve_quota
 from app.services.runs import RunUsage, log_run
 
@@ -105,6 +106,8 @@ async def _execute_agent_run(
     external_user_id: str | None,
     conversation_id: str | None,
     deployment_id: str | None,
+    identity_claims: dict | None = None,
+    identity_sub: str | None = None,
 ) -> dict:
     """Shared core: guardrail checks, memory, build+run the real Agent, usage tracking,
     `logs.runs`/`logs.guardrail_events` writes. Raises on resolution-adjacent failures
@@ -120,6 +123,19 @@ async def _execute_agent_run(
     run_id = str(uuid4())
     trace_id = str(uuid4())
     started = time.monotonic()
+
+    # PRD §7.5: the per-run delegated-identity context every `auth_mode: delegated` HTTP
+    # tool this run builds will mint its Authorization JWT from - `act` identifies which
+    # deployment/agent-version is acting, `sub` falls back to the memory-scoping
+    # external_user_id when the caller didn't resolve a more specific one (session-token
+    # claims aren't collected into identity_claims yet for Playground, see
+    # run_playground_agent/main_runtime.runPlayground).
+    act = f"deployment:{deployment_id}" if deployment_id else f"agent_version:{agent_version_id}"
+    effective_sub = identity_sub if identity_sub is not None else (external_user_id or "")
+    effective_claims = dict(identity_claims or {})
+    if source == "playground":
+        effective_claims["playground"] = True
+    identity_context = DelegatedIdentityContext(sub=effective_sub, claims=effective_claims, act=act, run_id=run_id)
 
     agent_def = compiled_definition["agent"]
     connection_id = agent_def["llm"]["connection"]["connection_id"]
@@ -208,6 +224,7 @@ async def _execute_agent_run(
         skill_registry=skill_registry,
         egress_allowlist=egress_allowlist,
         knowledge_api_keys=knowledge_api_keys,
+        identity=identity_context,
     )
 
     usage_collector = _UsageCollector()
@@ -327,6 +344,8 @@ async def run_playground_agent(
     external_user_id: str | None = None,
     conversation_id: str | None = None,
     deployment_id: str | None = None,
+    claims: dict | None = None,
+    identity_sub: str | None = None,
 ) -> dict:
     """Resolve `agent_version_id`, compile it live, build a real Agent from the
     company's own decrypted connection secret, and run it - with memory when a
@@ -343,6 +362,11 @@ async def run_playground_agent(
     Guardrails (PRD §6.4) are never caller-injectable - they come only from the
     resolved agent version's own compiled definition, same reasoning as why the public
     Playground route itself can't accept a client-supplied guardrails config.
+
+    `claims`/`identity_sub` feed `auth_mode: delegated` tool calls' identity JWT (PRD
+    §7.5) - `identity_sub` lets a caller supply the runtime token's own user id as the
+    delegated `sub` when no simulated external user was given, distinct from
+    `external_user_id`'s memory-scoping role.
     """
     compiled_definition = await _resolve_and_compile(company_id, agent_version_id, role)
     guardrails = GuardrailsSpec.model_validate(compiled_definition["guardrails"])
@@ -357,6 +381,8 @@ async def run_playground_agent(
         external_user_id=external_user_id,
         conversation_id=conversation_id,
         deployment_id=deployment_id,
+        identity_claims=claims,
+        identity_sub=identity_sub,
     )
 
 
@@ -367,6 +393,7 @@ async def run_deployment_agent(
     input_text: str,
     external_user_id: str | None = None,
     conversation_id: str | None = None,
+    claims: dict | None = None,
 ) -> dict:
     """Resolve `deployment_id`'s agent version, compile it live with the deployment's
     own `guardrail_overrides` layered on top (PRD §6.4), reserve quota before running and
@@ -408,6 +435,7 @@ async def run_deployment_agent(
             external_user_id=external_user_id,
             conversation_id=conversation_id,
             deployment_id=deployment_id,
+            identity_claims=claims,
         )
         return result
     except Exception as exc:

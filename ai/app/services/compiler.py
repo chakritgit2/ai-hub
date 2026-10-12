@@ -28,6 +28,7 @@ from app.integrations.skill_registry import ConsoleSkillRegistry
 from app.services.agent_spec import AgentSpecDoc, render_identity_prompt
 from app.services.connections import ConnectionRow, resolve_connection
 from app.services.egress_allowlist import EgressAllowlistEntry
+from app.services.identity import DelegatedIdentityContext
 from app.services.knowledge_bases import (
     KnowledgeBaseRow,
     kb_vector_table_name,
@@ -150,6 +151,11 @@ async def _resolve_tools(doc: AgentSpecDoc, company_id: str) -> tuple[list[ToolR
         if not tool.config.get("url"):
             errors.append({"path": f"tools[{index}].tool_id", "message": "tool config has no url"})
             continue
+        if tool.auth_mode == "delegated" and not tool.audience:
+            errors.append(
+                {"path": f"tools[{index}].tool_id", "message": "delegated tool requires an audience (JWT aud) to be configured"}
+            )
+            continue
         resolved.append(tool)
     return resolved, errors
 
@@ -223,7 +229,14 @@ def _build_compiled_definition(
             "role": render_identity_prompt(doc.identity),
             "max_loops": DEFAULT_MAX_LOOPS,
             "tools": [
-                {"type": _HTTP_TOOL_TYPE, "id": tool.id, "name": tool.name, "config": tool.config}
+                {
+                    "type": _HTTP_TOOL_TYPE,
+                    "id": tool.id,
+                    "name": tool.name,
+                    "config": tool.config,
+                    "auth_mode": tool.auth_mode,
+                    "audience": tool.audience,
+                }
                 for tool in tools
             ]
             + [
@@ -257,10 +270,14 @@ def _build_compiled_definition(
     }
 
 
-def _build_http_tool(tool_def: dict, company_id: str):
+def _build_http_tool(tool_def: dict, company_id: str, identity: DelegatedIdentityContext | None = None):
     """Uses `SafeHttpApiCall`, not Dynamiq's own `HttpApiCall`, so every real request this
     tool makes is checked against the company's egress allowlist - see that class's
-    docstring for why the bare Dynamiq node can't be used as-is here."""
+    docstring for why the bare Dynamiq node can't be used as-is here.
+
+    `identity` is the current run's delegated-identity context (PRD §7.5) - only ever
+    consumed when `tool_def["auth_mode"] == "delegated"`; `None` at `compile_spec`'s own
+    self-proof call, which never executes a real request anyway."""
     from dynamiq.connections.connections import Http
 
     from app.integrations.safe_http_tool import SafeHttpApiCall
@@ -276,6 +293,9 @@ def _build_http_tool(tool_def: dict, company_id: str):
         description=config.get("description", ""),
         connection=connection,
         company_id=company_id,
+        auth_mode=tool_def.get("auth_mode", "service"),
+        audience=tool_def.get("audience"),
+        identity=identity,
     )
 
 
@@ -313,7 +333,12 @@ async def _build_knowledge_tool(tool_def: dict, company_id: str, api_key: str):
     )
 
 
-async def _build_tools(tool_defs: list[dict], company_id: str, knowledge_api_keys: dict[str, str]) -> list:
+async def _build_tools(
+    tool_defs: list[dict],
+    company_id: str,
+    knowledge_api_keys: dict[str, str],
+    identity: DelegatedIdentityContext | None = None,
+) -> list:
     """Constructs real Dynamiq tool/retrieval node instances from
     `compiled_definition["agent"]["tools"]`. `_resolve_tools`/`_resolve_knowledge` already
     guarantee only `_HTTP_TOOL_TYPE`/`RETRIEVAL_TOOL_TYPE` entries ever reach here - the
@@ -323,7 +348,7 @@ async def _build_tools(tool_defs: list[dict], company_id: str, knowledge_api_key
     tools = []
     for tool_def in tool_defs:
         if tool_def["type"] == _HTTP_TOOL_TYPE:
-            tools.append(_build_http_tool(tool_def, company_id))
+            tools.append(_build_http_tool(tool_def, company_id, identity))
         elif tool_def["type"] == RETRIEVAL_TOOL_TYPE:
             tools.append(await _build_knowledge_tool(tool_def, company_id, knowledge_api_keys[tool_def["id"]]))
         else:
@@ -339,6 +364,7 @@ async def build_agent(
     skill_registry: ConsoleSkillRegistry | None = None,
     egress_allowlist: list[EgressAllowlistEntry] | None = None,
     knowledge_api_keys: dict[str, str] | None = None,
+    identity: DelegatedIdentityContext | None = None,
 ):
     """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
     (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
@@ -359,6 +385,11 @@ async def build_agent(
     whenever `compiled_definition` has any `RETRIEVAL_TOOL_TYPE` tool entries; the two
     callers build it differently (`compile_spec`: every KB mapped to the same compile-time
     placeholder; `app.services.runtime`: each KB's own decrypted secret).
+
+    `identity` is the current run's `DelegatedIdentityContext` (PRD §7.5) - threaded into
+    every `auth_mode: delegated` HTTP tool this agent has, so it can mint a per-call
+    identity JWT. `None` at `compile_spec`'s self-proof call (no real request is ever made
+    there) and whenever the agent has no delegated tools.
     """
     from dynamiq.nodes.agents import Agent
     from dynamiq.skills.config import SkillsConfig
@@ -391,7 +422,7 @@ async def build_agent(
         llm=llm,
         role=agent_def["role"],
         max_loops=agent_def["max_loops"],
-        tools=await _build_tools(agent_def.get("tools", []), company_id, knowledge_api_keys or {}),
+        tools=await _build_tools(agent_def.get("tools", []), company_id, knowledge_api_keys or {}, identity),
         memory=memory,
         skills=SkillsConfig(enabled=True, source=skill_registry) if skill_registry is not None else SkillsConfig(),
     )

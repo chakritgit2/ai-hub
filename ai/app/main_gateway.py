@@ -255,8 +255,10 @@ async def runDeployment(
 
     if identity.auth_kind == "session_token":
         external_user_id = identity.external_user_id
+        identity_claims = identity.claims
     else:
         external_user_id = body.user.external_id if body.user else None
+        identity_claims = body.user.claims if body.user else {}
 
     try:
         result = await run_deployment_agent(
@@ -266,6 +268,7 @@ async def runDeployment(
             body.input,
             external_user_id=external_user_id,
             conversation_id=body.conversation_id,
+            claims=identity_claims,
         )
     except QuotaExceededError as exc:
         return JSONResponse(
