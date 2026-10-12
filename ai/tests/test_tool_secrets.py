@@ -1,6 +1,6 @@
 import uuid
 
-from app.services.tool_secrets import get_tool_secret, upsert_tool_secret
+from app.services.tool_secrets import delete_tool_secret, get_tool_secret, upsert_tool_secret
 
 from .markers import requires_postgres
 
@@ -62,3 +62,28 @@ async def test_get_tool_secret_is_invisible_from_a_different_company(make_tool):
 
     assert await get_tool_secret(other_company_id, tool_id) is None
     assert await get_tool_secret(owner_company_id, tool_id) is not None
+
+
+@requires_postgres
+async def test_delete_tool_secret_removes_a_stored_secret(make_tool):
+    company_id = str(uuid.uuid4())
+    tool_id = make_tool(company_id)
+    await upsert_tool_secret(
+        company_id=company_id, tool_id=tool_id, ciphertext=b"secret", nonce=b"nonce", dek_version=1
+    )
+
+    await delete_tool_secret(company_id, tool_id)
+
+    assert await get_tool_secret(company_id, tool_id) is None
+
+
+@requires_postgres
+async def test_delete_tool_secret_is_a_no_op_when_nothing_stored(make_tool):
+    """Called unconditionally by ToolsController::deleteTool after the tool is already
+    gone - must never raise just because there was nothing to clean up."""
+    company_id = str(uuid.uuid4())
+    tool_id = make_tool(company_id)
+
+    await delete_tool_secret(company_id, tool_id)
+
+    assert await get_tool_secret(company_id, tool_id) is None

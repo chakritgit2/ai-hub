@@ -56,6 +56,16 @@ async def get_tool_secret(company_id: str, tool_id: str) -> ToolSecretRow | None
     return None if row is None else ToolSecretRow(**row)
 
 
+async def delete_tool_secret(company_id: str, tool_id: str) -> None:
+    """Best-effort cleanup called when the owning `console.tools` row is deleted
+    (`ToolsController::deleteTool`) - a no-op if no secret was ever stored, same
+    convention as `app.services.connection_secrets.delete_connection_secret`."""
+    async with get_company_session(company_id) as session:
+        await session.execute(
+            sa.delete(tool_secrets_table).where(tool_secrets_table.c.tool_id == uuid.UUID(tool_id))
+        )
+
+
 async def decrypt_tool_secret(company_id: str, tool_id: str) -> str | None:
     """The stored secret in plaintext, or `None` if nothing has been stored for this
     tool yet - `None` is a normal, fail-open outcome here (unlike a connection, an

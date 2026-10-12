@@ -161,3 +161,44 @@ async def test_test_tool_attaches_no_header_when_no_secret_stored(monkeypatch, i
     assert test_resp.status_code == 200
     assert test_resp.json()["ok"] is True
     assert "Authorization" not in captured["headers"]
+
+
+def test_delete_tool_secret_route_requires_internal_token():
+    resp = TestClient(runtime_app).delete(
+        "/internal/v1/tools/00000000-0000-4000-8000-000000000000/secret",
+        headers={"X-Company-Id": "company-1"},
+    )
+    assert resp.status_code == 401
+
+
+@requires_postgres
+async def test_delete_tool_secret_removes_a_stored_secret(internal_client, make_tool, _cleanup_company_keys):
+    client, company_id = internal_client
+    _cleanup_company_keys(company_id)
+    tool_id = make_tool(company_id)
+    put_resp = await client.put(f"/internal/v1/tools/{tool_id}/secret", json={"secret": "sk-to-be-deleted"})
+    assert put_resp.status_code == 204
+
+    delete_resp = await client.delete(f"/internal/v1/tools/{tool_id}/secret")
+
+    assert delete_resp.status_code == 204
+    assert await get_tool_secret(company_id, tool_id) is None
+
+
+@requires_postgres
+async def test_delete_tool_secret_is_a_no_op_when_nothing_stored(internal_client, make_tool):
+    """Called unconditionally by ToolsController::deleteTool after the console.tools row
+    is already gone - must succeed even when there was never a secret to clean up."""
+    client, company_id = internal_client
+    tool_id = make_tool(company_id)
+
+    delete_resp = await client.delete(f"/internal/v1/tools/{tool_id}/secret")
+
+    assert delete_resp.status_code == 204
+
+
+@requires_postgres
+async def test_delete_tool_secret_malformed_id_is_404(internal_client):
+    client, _company_id = internal_client
+    resp = await client.delete("/internal/v1/tools/not-a-uuid/secret")
+    assert resp.status_code == 404

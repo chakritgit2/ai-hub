@@ -153,6 +153,14 @@ paths:
                 secret: { type: string }
       responses:
         "204": { description: Stored }
+    delete:
+      operationId: deleteConnectionSecret
+      summary: >-
+        Cleans up runtime.connection_secrets for a connection being deleted - called by
+        console-api after it has already deleted the console.connections row (best-effort,
+        never re-resolves the connection). A no-op if no secret was ever stored.
+      responses:
+        "204": { description: Deleted (or nothing was stored) }
 
   /connections/{id}/test:
     parameters:
@@ -186,6 +194,13 @@ paths:
                 secret: { type: string }
       responses:
         "204": { description: Stored }
+    delete:
+      operationId: deleteToolSecret
+      summary: >-
+        Cleans up runtime.tool_secrets for a tool being deleted - the auth_mode: "service"
+        counterpart to DELETE /connections/{id}/secret above.
+      responses:
+        "204": { description: Deleted (or nothing was stored) }
 
   /tools/{id}/test:
     parameters:

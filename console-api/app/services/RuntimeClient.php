@@ -94,6 +94,26 @@ class RuntimeClient
     }
 
     /**
+     * DELETE /internal/v1/connections/{id}/secret — cleans up a connection's stored
+     * secret, used by ConnectionsController::deleteConnection() after it has already
+     * deleted the console.connections row itself.
+     */
+    public function deleteConnectionSecret(string $connectionId): void
+    {
+        $this->request('DELETE', "connections/{$connectionId}/secret", []);
+    }
+
+    /**
+     * DELETE /internal/v1/tools/{id}/secret — cleans up a tool's stored secret, used by
+     * ToolsController::deleteTool() after it has already deleted the console.tools row
+     * itself.
+     */
+    public function deleteToolSecret(string $toolId): void
+    {
+        $this->request('DELETE', "tools/{$toolId}/secret", []);
+    }
+
+    /**
      * GET /internal/v1/kb/{id}/documents — the KB's document list/status, used by
      * KbController::listKnowledgeBaseDocuments() to back the detail page's document panel.
      *

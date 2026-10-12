@@ -55,6 +55,17 @@ async def get_connection_secret(company_id: str, connection_id: str) -> Connecti
     return None if row is None else ConnectionSecretRow(**row)
 
 
+async def delete_connection_secret(company_id: str, connection_id: str) -> None:
+    """Best-effort cleanup called when the owning `console.connections` row is deleted
+    (`ConnectionsController::deleteConnection`) - a no-op if nothing was ever stored."""
+    async with get_company_session(company_id) as session:
+        await session.execute(
+            sa.delete(connection_secrets_table).where(
+                connection_secrets_table.c.connection_id == uuid.UUID(connection_id)
+            )
+        )
+
+
 async def decrypt_connection_secret(company_id: str, connection_id: str) -> str | None:
     """The stored secret in plaintext, or `None` if nothing has been stored for this
     connection yet. Shared by `testConnection` and Playground's agent-version resolution

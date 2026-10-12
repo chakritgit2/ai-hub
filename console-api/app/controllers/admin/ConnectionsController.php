@@ -240,6 +240,19 @@ class ConnectionsController extends ControllerBase
             );
         }
 
+        /** @var RuntimeClient $runtimeClient */
+        $runtimeClient = $this->getDI()->getShared('runtimeClient');
+        try {
+            $runtimeClient->deleteConnectionSecret($id);
+        } catch (RuntimeException $exception) {
+            // Best-effort from here on: the connection is already gone from the catalog
+            // (the authoritative delete above succeeded), so the user-visible operation
+            // is done - a leftover runtime.connection_secrets row is an ops cleanup
+            // concern, not a reason to report failure for an already-completed delete.
+            // Same "log, don't fail the request" convention as KbController::deleteKnowledgeBase.
+            error_log("ConnectionsController::deleteConnection: secret cleanup failed for {$id}: " . $exception->getMessage());
+        }
+
         return $this->noContentResponse();
     }
 

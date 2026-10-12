@@ -169,3 +169,49 @@ async def test_put_then_test_with_real_key_is_ok_true(internal_client, make_conn
     test_resp = await client.post(f"/internal/v1/connections/{connection_id}/test")
     assert test_resp.status_code == 200
     assert test_resp.json()["ok"] is True
+
+
+def test_delete_connection_secret_route_requires_internal_token():
+    resp = TestClient(runtime_app).delete(
+        "/internal/v1/connections/00000000-0000-4000-8000-000000000000/secret",
+        headers={"X-Company-Id": "company-1"},
+    )
+    assert resp.status_code == 401
+
+
+@requires_postgres
+async def test_delete_connection_secret_removes_a_stored_secret(
+    internal_client, make_connection, _cleanup_company_keys
+):
+    client, company_id = internal_client
+    _cleanup_company_keys(company_id)
+    connection_id = make_connection(company_id)
+    put_resp = await client.put(
+        f"/internal/v1/connections/{connection_id}/secret", json={"secret": "sk-to-be-deleted"}
+    )
+    assert put_resp.status_code == 204
+
+    delete_resp = await client.delete(f"/internal/v1/connections/{connection_id}/secret")
+
+    assert delete_resp.status_code == 204
+    assert await get_connection_secret(company_id, connection_id) is None
+
+
+@requires_postgres
+async def test_delete_connection_secret_is_a_no_op_when_nothing_stored(internal_client, make_connection):
+    """Called unconditionally by ConnectionsController::deleteConnection after the
+    console.connections row is already gone - must succeed even when there was never a
+    secret to clean up."""
+    client, company_id = internal_client
+    connection_id = make_connection(company_id)
+
+    delete_resp = await client.delete(f"/internal/v1/connections/{connection_id}/secret")
+
+    assert delete_resp.status_code == 204
+
+
+@requires_postgres
+async def test_delete_connection_secret_malformed_id_is_404(internal_client):
+    client, _company_id = internal_client
+    resp = await client.delete("/internal/v1/connections/not-a-uuid/secret")
+    assert resp.status_code == 404

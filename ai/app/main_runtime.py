@@ -44,7 +44,11 @@ from app.integrations.safe_http_client import (
 )
 from app.services.company_keys import get_or_create_company_dek
 from app.services.compiler import compile_spec
-from app.services.connection_secrets import decrypt_connection_secret, upsert_connection_secret
+from app.services.connection_secrets import (
+    decrypt_connection_secret,
+    delete_connection_secret,
+    upsert_connection_secret,
+)
 from app.services.connections import resolve_connection
 from app.services.egress_allowlist import list_egress_allowlist
 from app.services.kb_export import export_knowledge_base_zip
@@ -58,7 +62,7 @@ from app.services.knowledge_bases import (
     upsert_kb_document,
 )
 from app.services.runtime import run_playground_agent
-from app.services.tool_secrets import decrypt_tool_secret, upsert_tool_secret
+from app.services.tool_secrets import decrypt_tool_secret, delete_tool_secret, upsert_tool_secret
 from app.services.tools import resolve_tool
 
 logger = logging.getLogger(__name__)
@@ -323,6 +327,23 @@ async def putConnectionSecret(id: str, body: ConnectionSecretInput, claims: Inte
     return Response(status_code=204)
 
 
+@app.delete("/internal/v1/connections/{id}/secret", status_code=204)
+async def deleteConnectionSecret(id: str, claims: InternalAuth) -> Response:
+    """Cleans up `runtime.connection_secrets` for a connection being deleted - called by
+    `ConnectionsController::deleteConnection` *after* it has already deleted the
+    `console.connections` row itself (same "console-side delete first, then best-effort
+    ai-runtime cleanup" convention as `deleteKnowledgeBaseData`), so this never re-resolves
+    the connection - by the time this is called, the row is already gone. A no-op, not a
+    404, if no secret was ever stored.
+    """
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    await delete_connection_secret(company_id, id)
+    return Response(status_code=204)
+
+
 @app.post("/internal/v1/connections/{id}/test", response_model=TestResult)
 async def testConnection(id: str, claims: InternalAuth) -> Response:
     """Decrypts the stored secret and makes one cheap real call to the provider
@@ -411,6 +432,21 @@ async def putToolSecret(id: str, body: ConnectionSecretInput, claims: InternalAu
     except Exception as exc:  # surface as a clear upstream error, not a 500 crash
         logger.exception("storing tool secret failed")
         return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+    return Response(status_code=204)
+
+
+@app.delete("/internal/v1/tools/{id}/secret", status_code=204)
+async def deleteToolSecret(id: str, claims: InternalAuth) -> Response:
+    """Cleans up `runtime.tool_secrets` for a tool being deleted - the `auth_mode:
+    "service"` counterpart to `deleteConnectionSecret` above, same "console-side delete
+    first, this is best-effort cleanup called after" convention, same "no re-resolve, a
+    no-op rather than 404 if nothing was stored" contract.
+    """
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="tool_not_found")
+
+    await delete_tool_secret(company_id, id)
     return Response(status_code=204)
 
 

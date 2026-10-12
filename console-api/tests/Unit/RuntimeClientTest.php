@@ -137,6 +137,60 @@ final class RuntimeClientTest extends TestCase
         self::assertSame('sk-tool-secret', $body['secret']);
     }
 
+    public function testDeleteConnectionSecretSendsSignedTokenAndNoBody(): void
+    {
+        /** @var Request|null $capturedRequest */
+        $capturedRequest = null;
+        $history = static function ($request) use (&$capturedRequest): void {
+            $capturedRequest = $request;
+        };
+
+        $mock = new MockHandler([new Response(204)]);
+        $stack = HandlerStack::create($mock);
+        $stack->push(\GuzzleHttp\Middleware::tap($history));
+        $http = new Client(['handler' => $stack, 'base_uri' => 'http://ai-runtime.invalid/internal/v1/']);
+
+        $client = $this->makeRuntimeClient($http, 'company-1');
+
+        $client->deleteConnectionSecret('11111111-1111-1111-1111-111111111111');
+
+        self::assertNotNull($capturedRequest);
+        self::assertSame('DELETE', $capturedRequest->getMethod());
+        self::assertSame(
+            '/internal/v1/connections/11111111-1111-1111-1111-111111111111/secret',
+            $capturedRequest->getUri()->getPath()
+        );
+        self::assertSame('company-1', $capturedRequest->getHeaderLine('X-Company-Id'));
+        self::assertStringStartsWith('Bearer ', $capturedRequest->getHeaderLine('Authorization'));
+    }
+
+    public function testDeleteToolSecretSendsSignedTokenAndNoBody(): void
+    {
+        /** @var Request|null $capturedRequest */
+        $capturedRequest = null;
+        $history = static function ($request) use (&$capturedRequest): void {
+            $capturedRequest = $request;
+        };
+
+        $mock = new MockHandler([new Response(204)]);
+        $stack = HandlerStack::create($mock);
+        $stack->push(\GuzzleHttp\Middleware::tap($history));
+        $http = new Client(['handler' => $stack, 'base_uri' => 'http://ai-runtime.invalid/internal/v1/']);
+
+        $client = $this->makeRuntimeClient($http, 'company-1');
+
+        $client->deleteToolSecret('22222222-2222-2222-2222-222222222222');
+
+        self::assertNotNull($capturedRequest);
+        self::assertSame('DELETE', $capturedRequest->getMethod());
+        self::assertSame(
+            '/internal/v1/tools/22222222-2222-2222-2222-222222222222/secret',
+            $capturedRequest->getUri()->getPath()
+        );
+        self::assertSame('company-1', $capturedRequest->getHeaderLine('X-Company-Id'));
+        self::assertStringStartsWith('Bearer ', $capturedRequest->getHeaderLine('Authorization'));
+    }
+
     public function testTestConnectionSendsSignedTokenAndReturnsDecodedResult(): void
     {
         /** @var Request|null $capturedRequest */

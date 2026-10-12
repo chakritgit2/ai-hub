@@ -225,6 +225,19 @@ class ToolsController extends ControllerBase
             static fn ($db) => $db->execute('DELETE FROM console.tools WHERE id = :id', ['id' => $id])
         );
 
+        /** @var RuntimeClient $runtimeClient */
+        $runtimeClient = $this->getDI()->getShared('runtimeClient');
+        try {
+            $runtimeClient->deleteToolSecret($id);
+        } catch (RuntimeException $exception) {
+            // Best-effort from here on: the tool is already gone from the catalog (the
+            // authoritative delete above succeeded), so the user-visible operation is
+            // done - a leftover runtime.tool_secrets row is an ops cleanup concern, not a
+            // reason to report failure for an already-completed delete. Same "log, don't
+            // fail the request" convention as KbController::deleteKnowledgeBase.
+            error_log("ToolsController::deleteTool: secret cleanup failed for {$id}: " . $exception->getMessage());
+        }
+
         return $this->noContentResponse();
     }
 
