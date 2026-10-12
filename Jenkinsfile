@@ -60,22 +60,6 @@ pipeline {
             }
         }
 
-        stage('Run DB migrations') {
-            // Runs schemas/roles -> Phinx -> Alembic -> post/*.sql BEFORE the image
-            // rollout below, not after — a schema-changing deploy with no migration
-            // step left the Tools endpoints 500ing in production until this was
-            // fixed; see deploy/k8s/bootstrap-db.sh's own header comment for why the
-            // ordering matters and why every step here is safe to re-run on every
-            // single deploy. No new Jenkins credential needed: the script pulls DB
-            // passwords itself from the dynamiq-db-credentials k8s Secret via
-            // `kubectl get secret`, using this same kubeconfig.
-            steps {
-                withKubeConfig([credentialsId: KUBECONFIG_CREDENTIALS_ID]) {
-                    sh 'bash deploy/k8s/bootstrap-db.sh'
-                }
-            }
-        }
-
         stage('Deploy') {
             steps {
                 withKubeConfig([credentialsId: KUBECONFIG_CREDENTIALS_ID]) {
@@ -86,6 +70,24 @@ pipeline {
                         kubectl -n ai-hub-advws set image deployment/console-api console-api=${REGISTRY}/dynamiq-console/console-api:${IMAGE_TAG}
                         kubectl -n ai-hub-advws set image deployment/web web=${REGISTRY}/dynamiq-console/web:${IMAGE_TAG}
                     """
+                }
+            }
+        }
+
+        stage('Run DB migrations') {
+            // Runs AFTER the image rollout above, not before — Phinx/Alembic (and the
+            // migration files they apply) live inside the console-api/ai-runtime images
+            // themselves, so running this against the still-old pods would apply the OLD
+            // image's migrations, never picking up what just got deployed. See
+            // deploy/k8s/bootstrap-db.sh's own header comment for the full reasoning
+            // (it waits on `kubectl rollout status` for both pods before running Phinx/
+            // Alembic, to exec into the newly-rolled-out pods, not a still-terminating
+            // old one). No new Jenkins credential needed: the script pulls DB passwords
+            // itself from the dynamiq-db-credentials k8s Secret via `kubectl get secret`,
+            // using this same kubeconfig.
+            steps {
+                withKubeConfig([credentialsId: KUBECONFIG_CREDENTIALS_ID]) {
+                    sh 'bash deploy/k8s/bootstrap-db.sh'
                 }
             }
         }
