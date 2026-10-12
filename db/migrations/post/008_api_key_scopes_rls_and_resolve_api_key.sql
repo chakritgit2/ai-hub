@@ -4,9 +4,11 @@
 -- (that file predates this table, so it isn't there yet).
 ALTER TABLE console.api_key_scopes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.api_key_scopes FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.api_key_scopes;
 CREATE POLICY company_isolation ON console.api_key_scopes
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid)
   WITH CHECK (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.api_key_scopes;
 CREATE POLICY platform_admin_read_all ON console.api_key_scopes
   FOR SELECT TO console_platform USING (true);
 
@@ -24,7 +26,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON console.api_key_scopes TO console_app, c
 -- company_id against the caller's own session would make it a cross-company existence
 -- oracle for no current benefit. Add the grant in the same change that wires up that
 -- call and its company_id check, not ahead of it.
-CREATE OR REPLACE FUNCTION console.resolve_api_key(p_key_hash varchar, p_slug varchar)
+-- DROP first, not CREATE OR REPLACE: same reasoning as 003_resolve_api_key_function.sql -
+-- 009_resolve_api_key_allowed_ips.sql changes this function's return columns, and this
+-- file's own definition must unconditionally drop whatever shape currently exists on a
+-- re-run rather than assume the 2-column shape it's about to (re-)create.
+DROP FUNCTION IF EXISTS console.resolve_api_key(varchar, varchar);
+CREATE FUNCTION console.resolve_api_key(p_key_hash varchar, p_slug varchar)
 RETURNS TABLE(company_id uuid, deployment_id uuid)
 LANGUAGE sql
 SECURITY DEFINER

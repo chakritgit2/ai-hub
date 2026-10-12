@@ -6,31 +6,37 @@
 
 ALTER TABLE console.company_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.company_members FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.company_members;
 CREATE POLICY company_isolation ON console.company_members
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
 
 ALTER TABLE console.connections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.connections FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.connections;
 CREATE POLICY company_isolation ON console.connections
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
 
 ALTER TABLE console.agents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.agents FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.agents;
 CREATE POLICY company_isolation ON console.agents
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
 
 ALTER TABLE console.agent_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.agent_versions FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.agent_versions;
 CREATE POLICY company_isolation ON console.agent_versions
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
 
 ALTER TABLE console.deployments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.deployments FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.deployments;
 CREATE POLICY company_isolation ON console.deployments
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
 
 ALTER TABLE console.api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.api_keys FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.api_keys;
 CREATE POLICY company_isolation ON console.api_keys
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
 
@@ -41,24 +47,32 @@ CREATE POLICY company_isolation ON console.api_keys
 -- ever read them back.
 ALTER TABLE console.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.audit_logs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.audit_logs;
 CREATE POLICY company_isolation ON console.audit_logs
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid)
   WITH CHECK (company_id IS NULL OR company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
 
 -- console_platform (platform_admin) gets an explicit cross-company read policy per table,
 -- not BYPASSRLS (PRD §7.3).
+DROP POLICY IF EXISTS platform_admin_read_all ON console.company_members;
 CREATE POLICY platform_admin_read_all ON console.company_members
   FOR SELECT TO console_platform USING (true);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.connections;
 CREATE POLICY platform_admin_read_all ON console.connections
   FOR SELECT TO console_platform USING (true);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.agents;
 CREATE POLICY platform_admin_read_all ON console.agents
   FOR SELECT TO console_platform USING (true);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.agent_versions;
 CREATE POLICY platform_admin_read_all ON console.agent_versions
   FOR SELECT TO console_platform USING (true);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.deployments;
 CREATE POLICY platform_admin_read_all ON console.deployments
   FOR SELECT TO console_platform USING (true);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.api_keys;
 CREATE POLICY platform_admin_read_all ON console.api_keys
   FOR SELECT TO console_platform USING (true);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.audit_logs;
 CREATE POLICY platform_admin_read_all ON console.audit_logs
   FOR SELECT TO console_platform USING (true);
 

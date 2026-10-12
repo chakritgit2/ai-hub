@@ -4,15 +4,19 @@
 
 ALTER TABLE console.skills ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.skills FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.skills;
 CREATE POLICY company_isolation ON console.skills
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.skills;
 CREATE POLICY platform_admin_read_all ON console.skills
   FOR SELECT TO console_platform USING (true);
 
 ALTER TABLE console.skill_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.skill_versions FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.skill_versions;
 CREATE POLICY company_isolation ON console.skill_versions
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.skill_versions;
 CREATE POLICY platform_admin_read_all ON console.skill_versions
   FOR SELECT TO console_platform USING (true);
 

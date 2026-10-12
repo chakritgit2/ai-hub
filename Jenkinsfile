@@ -60,6 +60,22 @@ pipeline {
             }
         }
 
+        stage('Run DB migrations') {
+            // Runs schemas/roles -> Phinx -> Alembic -> post/*.sql BEFORE the image
+            // rollout below, not after — a schema-changing deploy with no migration
+            // step left the Tools endpoints 500ing in production until this was
+            // fixed; see deploy/k8s/bootstrap-db.sh's own header comment for why the
+            // ordering matters and why every step here is safe to re-run on every
+            // single deploy. No new Jenkins credential needed: the script pulls DB
+            // passwords itself from the dynamiq-db-credentials k8s Secret via
+            // `kubectl get secret`, using this same kubeconfig.
+            steps {
+                withKubeConfig([credentialsId: KUBECONFIG_CREDENTIALS_ID]) {
+                    sh 'bash deploy/k8s/bootstrap-db.sh'
+                }
+            }
+        }
+
         stage('Deploy') {
             steps {
                 withKubeConfig([credentialsId: KUBECONFIG_CREDENTIALS_ID]) {

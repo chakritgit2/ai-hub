@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
-# One-time production DB bootstrap for the ai-hub-advws deployment (see the session plan).
-# Run manually after `kubectl apply -k deploy/k8s/base` has created the postgres/console-api/
-# ai-runtime pods, with kubectl pointed at ai-hub-advws-cluster. Idempotent for step 1
-# (pre/001's role creation uses IF NOT EXISTS); steps 2-4 are plain migrations, safe to
-# re-run once applied (Phinx/Alembic track their own version tables).
+# DB bootstrap/migration runner for the ai-hub-advws deployment. Originally a one-time
+# manual step after `kubectl apply -k deploy/k8s/base` first created the postgres/
+# console-api/ai-runtime pods — now run on every Jenkins deploy (Jenkinsfile's "Run DB
+# migrations" stage, before `kubectl set image`) since a schema-changing deploy with no
+# migration step left the Tools endpoints 500ing in production until this was run by
+# hand. Fully idempotent and safe to re-run every time: step 1's role/schema creation
+# uses IF NOT EXISTS; steps 2-3 (Phinx/Alembic) track applied versions in
+# phinxlog/alembic_version and no-op when nothing new exists; step 4's post/*.sql files
+# all use DROP POLICY IF EXISTS / CREATE OR REPLACE FUNCTION / CREATE OR REPLACE VIEW
+# (fixed 2026-10-12 — CREATE POLICY has no IF NOT EXISTS/OR REPLACE form in Postgres, so
+# every post/*.sql file with a policy must drop it first).
+#
+# Runs BEFORE kubectl set image, not after — an additive schema change (new nullable
+# column, new table) is safe for the still-running old-code pods, but new-code pods
+# hitting an un-migrated schema is exactly the outage this script now exists to prevent.
 #
 # Order matters: schemas/roles -> Phinx (console tables, owned by db_owner) ->
 # Alembic (runtime/logs tables, owned by ai_app) -> post/*.sql (views/RLS/functions that

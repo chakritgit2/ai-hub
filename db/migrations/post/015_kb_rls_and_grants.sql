@@ -4,8 +4,10 @@
 
 ALTER TABLE console.knowledge_bases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.knowledge_bases FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.knowledge_bases;
 CREATE POLICY company_isolation ON console.knowledge_bases
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.knowledge_bases;
 CREATE POLICY platform_admin_read_all ON console.knowledge_bases
   FOR SELECT TO console_platform USING (true);
 

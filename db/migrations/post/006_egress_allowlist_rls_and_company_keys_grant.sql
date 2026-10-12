@@ -11,9 +11,11 @@
 -- through this policy).
 ALTER TABLE console.egress_allowlist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.egress_allowlist FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.egress_allowlist;
 CREATE POLICY company_isolation ON console.egress_allowlist
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid)
   WITH CHECK (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.egress_allowlist;
 CREATE POLICY platform_admin_read_all ON console.egress_allowlist
   FOR SELECT TO console_platform USING (true);
 

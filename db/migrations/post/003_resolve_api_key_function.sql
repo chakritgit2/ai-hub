@@ -5,7 +5,13 @@
 -- so this stub checks company match only; TODO(phase 1 completion): add the scope join once
 -- console.api_key_scopes exists).
 
-CREATE OR REPLACE FUNCTION console.resolve_api_key(p_key_hash varchar, p_slug varchar)
+-- DROP first, not CREATE OR REPLACE: 009_resolve_api_key_allowed_ips.sql later changes
+-- this function's return columns, and Postgres refuses to REPLACE a function across a
+-- return-type change ("cannot change return type of existing function") - on a re-run
+-- (every deploy, see deploy/k8s/bootstrap-db.sh) this file runs before 009 every time, so
+-- it must unconditionally drop whatever shape currently exists rather than assume its own.
+DROP FUNCTION IF EXISTS console.resolve_api_key(varchar, varchar);
+CREATE FUNCTION console.resolve_api_key(p_key_hash varchar, p_slug varchar)
 RETURNS TABLE(company_id uuid, deployment_id uuid)
 LANGUAGE sql
 SECURITY DEFINER

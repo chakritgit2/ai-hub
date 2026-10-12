@@ -4,8 +4,10 @@
 
 ALTER TABLE console.tools ENABLE ROW LEVEL SECURITY;
 ALTER TABLE console.tools FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS company_isolation ON console.tools;
 CREATE POLICY company_isolation ON console.tools
   USING (company_id = NULLIF(current_setting('app.company_id', true), '')::uuid);
+DROP POLICY IF EXISTS platform_admin_read_all ON console.tools;
 CREATE POLICY platform_admin_read_all ON console.tools
   FOR SELECT TO console_platform USING (true);
 
