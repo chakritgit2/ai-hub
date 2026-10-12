@@ -85,9 +85,38 @@ async def test_cross_company_tool_is_404(internal_client, make_tool):
 
 
 @requires_postgres
-async def test_builtin_tool_is_not_supported(internal_client, make_tool):
+async def test_builtin_tool_without_secret_is_ok_false(internal_client, make_tool):
+    """Testing a builtin (Tavily/Exa) tool never makes a real provider call (that would
+    cost the company's own API quota/credits) - it only reports whether a secret is
+    configured."""
     client, company_id = internal_client
-    tool_id = make_tool(company_id, kind="builtin")
+    tool_id = make_tool(company_id, kind="builtin", config={"provider": "tavily"})
+
+    resp = await client.post(f"/internal/v1/tools/{tool_id}/test")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "no API key secret configured" in body["detail"]
+
+
+@requires_postgres
+async def test_builtin_tool_with_secret_is_ok_true(internal_client, make_tool, store_tool_secret):
+    client, company_id = internal_client
+    tool_id = make_tool(company_id, kind="builtin", config={"provider": "tavily"})
+    await store_tool_secret(company_id, tool_id, "tvly-real-key")
+
+    resp = await client.post(f"/internal/v1/tools/{tool_id}/test")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+
+
+@requires_postgres
+async def test_python_tool_is_not_supported(internal_client, make_tool):
+    client, company_id = internal_client
+    tool_id = make_tool(company_id, kind="python")
 
     resp = await client.post(f"/internal/v1/tools/{tool_id}/test")
 

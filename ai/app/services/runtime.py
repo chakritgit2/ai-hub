@@ -24,7 +24,7 @@ from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
 from app.services.agent_spec import GuardrailsSpec
 from app.services.agent_versions import resolve_agent_version
-from app.services.compiler import RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
+from app.services.compiler import BUILTIN_TOOL_TYPES, RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.conversations import get_or_create_conversation
 from app.services.deployments import resolve_deployment
@@ -219,10 +219,20 @@ async def _execute_agent_run(
 
     # Resolved fresh per run, same as knowledge_api_keys above, so a secret can be
     # rotated without recompiling/republishing the agent - but unlike knowledge_api_keys,
-    # a missing entry is NOT an error: a `service`-mode tool is never required to have a
-    # secret configured (fail-open, see SafeHttpApiCall's auth_mode branching).
+    # a missing entry is NOT an error for a `kind: "http"` tool: a `service`-mode tool is
+    # never required to have a secret configured (fail-open, see SafeHttpApiCall's
+    # auth_mode branching). `kind: "builtin"` (Tavily/Exa) tools are the opposite - a
+    # missing API key makes the tool useless, so this fails closed, same hard-error style
+    # as knowledge_api_keys above, rather than letting the real provider's own 401 surface
+    # mid-conversation.
     tool_secrets = {}
     for tool_def in agent_def.get("tools", []):
+        if tool_def["type"] in BUILTIN_TOOL_TYPES:
+            tool_secret = await decrypt_tool_secret(company_id, tool_def["id"])
+            if tool_secret is None:
+                raise ValueError(f"no secret stored for builtin tool {tool_def['name']!r}")
+            tool_secrets[tool_def["id"]] = tool_secret
+            continue
         if tool_def.get("auth_mode") != "service":
             continue
         tool_secret = await decrypt_tool_secret(company_id, tool_def["id"])

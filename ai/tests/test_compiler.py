@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.integrations.safe_http_client import EgressBlockedError
 from app.integrations.safe_openai_connection import SafeOpenAIConnection
 from app.main_runtime import app as runtime_app
-from app.services.compiler import RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
+from app.services.compiler import EXA_TOOL_TYPE, RETRIEVAL_TOOL_TYPE, TAVILY_TOOL_TYPE, build_agent, compile_spec
 
 from .markers import requires_openai_key, requires_postgres
 
@@ -431,13 +431,104 @@ async def test_compile_leaves_service_mode_tools_unauthenticated(make_connection
 
 
 @requires_postgres
-async def test_compile_rejects_builtin_tool_kind_even_for_admin(make_connection, make_tool):
-    """kind: builtin (Tavily/Exa) has no connection/API-key model yet - fails compilation
-    for every role, including admin, rather than being silently accepted and doing nothing
-    at run time."""
+async def test_compile_attaches_a_real_builtin_tavily_tool(make_connection, make_tool):
     company_id = str(uuid.uuid4())
     connection_id = make_connection(company_id)
-    tool_id = make_tool(company_id, kind="builtin")
+    tool_id = make_tool(company_id, kind="builtin", config={"provider": "tavily"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    compiled_tools = result["compiled_definition"]["agent"]["tools"]
+    assert compiled_tools[0]["type"] == TAVILY_TOOL_TYPE
+
+    agent = await build_agent(
+        result["compiled_definition"], "sk-test-key", company_id, tool_secrets={tool_id: "tvly-real-key"}
+    )
+    assert len(agent.tools) == 1
+    assert agent.tools[0].connection.api_key == "tvly-real-key"
+    assert agent.tools[0].company_id == company_id
+
+
+@requires_postgres
+async def test_compile_attaches_a_real_builtin_exa_tool(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="builtin", config={"provider": "exa"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    compiled_tools = result["compiled_definition"]["agent"]["tools"]
+    assert compiled_tools[0]["type"] == EXA_TOOL_TYPE
+
+    agent = await build_agent(
+        result["compiled_definition"], "sk-test-key", company_id, tool_secrets={tool_id: "exa-real-key"}
+    )
+    assert len(agent.tools) == 1
+    assert agent.tools[0].connection.api_key == "exa-real-key"
+    assert agent.tools[0].company_id == company_id
+
+
+@requires_postgres
+async def test_compile_attaches_builtin_tool_with_a_placeholder_key_without_tool_secrets(make_connection, make_tool):
+    """compile_spec's own self-proof call never passes tool_secrets - same
+    never-resolved-at-compile-time rule as http tools - so building without it must not
+    crash; it's build_agent's caller (app.services.runtime) that's responsible for
+    failing closed before ever reaching here for a real run."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="builtin", config={"provider": "tavily"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
+    assert agent.tools[0].connection.api_key
+
+
+@requires_postgres
+async def test_compile_rejects_builtin_tool_with_invalid_provider(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="builtin", config={"provider": "bing"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "admin", company_id)
+
+    assert result["ok"] is False
+    assert "provider" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_rejects_builtin_tool_with_delegated_auth_mode(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(
+        company_id,
+        kind="builtin",
+        auth_mode="delegated",
+        audience="https://partner.example.com",
+        config={"provider": "tavily"},
+    )
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "admin", company_id)
+
+    assert result["ok"] is False
+    assert "auth_mode" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_rejects_python_tool_kind_even_for_admin(make_connection, make_tool):
+    """kind: python has no execution story at all - fails compilation for every role,
+    including admin, rather than being silently accepted and doing nothing at run time."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="python")
     spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
 
     result = await compile_spec(spec, "admin", company_id)

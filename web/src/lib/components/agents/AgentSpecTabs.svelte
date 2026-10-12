@@ -19,15 +19,22 @@
 	// offering it here. Update this allowlist if the compiler gains another provider.
 	const USABLE_CONNECTION_TYPES = new Set(['dynamiq.connections.OpenAI', 'openai']);
 
-	// Only kind: "http" tools can actually be built into a real node today
-	// (ai/app/services/compiler.py's _resolve_tools) - builtin/python references fail
-	// compilation outright for every role, so there's no point offering them here.
-	// _resolve_tools also rejects an http tool with no config.url, so that's checked too
-	// (isToolUsable below), not just the kind.
-	const USABLE_TOOL_KINDS = new Set(['http']);
+	// kind: "http" and kind: "builtin" (Tavily/Exa web search) tools can actually be built
+	// into a real node today (ai/app/services/compiler.py's _resolve_tools) - kind:
+	// "python" references fail compilation outright for every role, so there's no point
+	// offering it here. _resolve_tools also rejects an http tool with no config.url and a
+	// builtin tool with no config.provider, so those are checked too (isToolUsable below),
+	// not just the kind.
+	const USABLE_TOOL_KINDS = new Set(['http', 'builtin']);
 
 	function isToolUsable(tool: Tool): boolean {
-		return USABLE_TOOL_KINDS.has(tool.kind) && tool.enabled && !!tool.config?.url;
+		if (!USABLE_TOOL_KINDS.has(tool.kind) || !tool.enabled) {
+			return false;
+		}
+		if (tool.kind === 'http') {
+			return !!tool.config?.url;
+		}
+		return !!tool.config?.provider;
 	}
 
 	// A skill is attachable iff it has a published version (ai/app/services/compiler.py's
@@ -611,8 +618,9 @@
 									<p class="text-xs text-neutral-500">
 										kind: <code>{tool.kind}</code>
 										{#if !tool.enabled}· disabled{/if}
-										{#if tool.kind !== 'http'}· not supported by the compiler yet{/if}
+										{#if !USABLE_TOOL_KINDS.has(tool.kind)}· not supported by the compiler yet{/if}
 										{#if tool.kind === 'http' && !tool.config?.url}· missing a URL{/if}
+										{#if tool.kind === 'builtin' && !tool.config?.provider}· missing a provider{/if}
 									</p>
 								</label>
 							</li>

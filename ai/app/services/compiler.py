@@ -117,6 +117,10 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
 
 _HTTP_TOOL_TYPE = "dynamiq.nodes.tools.HttpApiCall"
 RETRIEVAL_TOOL_TYPE = "dynamiq.nodes.retrievers.retriever.VectorStoreRetriever"
+TAVILY_TOOL_TYPE = "dynamiq.nodes.tools.tavily.TavilyTool"
+EXA_TOOL_TYPE = "dynamiq.nodes.tools.exa_search.ExaTool"
+BUILTIN_TOOL_TYPES = frozenset({TAVILY_TOOL_TYPE, EXA_TOOL_TYPE})
+_BUILTIN_PROVIDER_TYPES = {"tavily": TAVILY_TOOL_TYPE, "exa": EXA_TOOL_TYPE}
 _KNOWLEDGE_TOP_K = 5  # matches app.services.kb_search's own default; no per-agent override yet
 
 
@@ -125,12 +129,15 @@ async def _resolve_tools(doc: AgentSpecDoc, company_id: str) -> tuple[list[ToolR
     errors rather than stopping at the first (PRD §7.7: every tool referenced by an agent
     spec must belong to the agent's company).
 
-    Only `kind: "http"` tools can actually be built into a real node this round —
-    `kind: builtin` needs its own connection/API-key model; `kind: python` has no
-    execution story at all — so any other kind fails compilation outright, for every role
-    including admin, rather than being silently accepted and then doing nothing at run
-    time. `kind: "http"` tools now have real secret storage for both `auth_mode: service`
-    (`runtime.tool_secrets`) and `auth_mode: delegated` (per-run minted JWTs).
+    `kind: "http"` and `kind: "builtin"` (Tavily/Exa web search, PRD §6.5) tools can be
+    built into a real node this round — `kind: "python"` has no execution story at all, so
+    it fails compilation outright, for every role including admin, rather than being
+    silently accepted and then doing nothing at run time. `kind: "http"` tools have real
+    secret storage for both `auth_mode: service` (`runtime.tool_secrets`) and `auth_mode:
+    delegated` (per-run minted JWTs); `kind: "builtin"` tools only ever use `auth_mode:
+    service` (no end-user identity to delegate to a third-party search API) and are
+    fail-closed on a missing secret at run time (see `app.services.runtime`), unlike
+    `kind: "http"` service-mode tools where a missing secret is a normal, fail-open case.
     """
     resolved: list[ToolRow] = []
     errors: list[dict] = []
@@ -146,16 +153,35 @@ async def _resolve_tools(doc: AgentSpecDoc, company_id: str) -> tuple[list[ToolR
             # referencing it.
             errors.append({"path": f"tools[{index}].tool_id", "message": "tool is disabled"})
             continue
-        if tool.kind != "http":
+        if tool.kind == "http":
+            if not tool.config.get("url"):
+                errors.append({"path": f"tools[{index}].tool_id", "message": "tool config has no url"})
+                continue
+            if tool.auth_mode == "delegated" and not tool.audience:
+                errors.append(
+                    {
+                        "path": f"tools[{index}].tool_id",
+                        "message": "delegated tool requires an audience (JWT aud) to be configured",
+                    }
+                )
+                continue
+        elif tool.kind == "builtin":
+            if tool.config.get("provider") not in _BUILTIN_PROVIDER_TYPES:
+                errors.append(
+                    {
+                        "path": f"tools[{index}].tool_id",
+                        "message": "builtin tool config.provider must be one of "
+                        f"{sorted(_BUILTIN_PROVIDER_TYPES)}",
+                    }
+                )
+                continue
+            if tool.auth_mode != "service":
+                errors.append(
+                    {"path": f"tools[{index}].tool_id", "message": "builtin tools only support auth_mode: service"}
+                )
+                continue
+        else:
             errors.append({"path": f"tools[{index}].tool_id", "message": f"tool kind {tool.kind!r} not yet supported"})
-            continue
-        if not tool.config.get("url"):
-            errors.append({"path": f"tools[{index}].tool_id", "message": "tool config has no url"})
-            continue
-        if tool.auth_mode == "delegated" and not tool.audience:
-            errors.append(
-                {"path": f"tools[{index}].tool_id", "message": "delegated tool requires an audience (JWT aud) to be configured"}
-            )
             continue
         resolved.append(tool)
     return resolved, errors
@@ -216,6 +242,12 @@ async def _resolve_knowledge(
     return resolved, errors
 
 
+def _tool_type(tool: ToolRow) -> str:
+    if tool.kind == "builtin":
+        return _BUILTIN_PROVIDER_TYPES[tool.config["provider"]]
+    return _HTTP_TOOL_TYPE
+
+
 def _build_compiled_definition(
     doc: AgentSpecDoc,
     connection: ConnectionRow,
@@ -231,7 +263,7 @@ def _build_compiled_definition(
             "max_loops": DEFAULT_MAX_LOOPS,
             "tools": [
                 {
-                    "type": _HTTP_TOOL_TYPE,
+                    "type": _tool_type(tool),
                     "id": tool.id,
                     "name": tool.name,
                     "config": tool.config,
@@ -310,6 +342,24 @@ def _build_http_tool(
     )
 
 
+def _build_builtin_tool(tool_def: dict, company_id: str, secret: str | None = None):
+    """Builds a `SafeTavilyTool`/`SafeExaTool` (PRD §6.5) - same never-a-real-call-at-
+    compile-time rule as `_build_http_tool`'s `secret`: `None` at `compile_spec`'s own
+    self-proof call (substituted with the same placeholder as the LLM/embedder keys, just
+    to prove the node is constructible), always a real decrypted `runtime.tool_secrets`
+    value at real run time - `app.services.runtime` fails closed before ever calling
+    `build_agent` if a builtin tool has no stored secret, unlike `kind: "http"` service-mode
+    tools where a missing secret is a normal, fail-open case."""
+    from dynamiq.connections import Exa, Tavily
+
+    from app.integrations.safe_builtin_tools import SafeExaTool, SafeTavilyTool
+
+    api_key = secret or _COMPILE_TIME_PLACEHOLDER_API_KEY
+    if tool_def["type"] == TAVILY_TOOL_TYPE:
+        return SafeTavilyTool(name=tool_def["name"], connection=Tavily(api_key=api_key), company_id=company_id)
+    return SafeExaTool(name=tool_def["name"], connection=Exa(api_key=api_key), company_id=company_id)
+
+
 async def _build_knowledge_tool(tool_def: dict, company_id: str, api_key: str):
     """Constructs a real `VectorStoreRetriever` for one `doc.knowledge` entry.
 
@@ -353,15 +403,18 @@ async def _build_tools(
 ) -> list:
     """Constructs real Dynamiq tool/retrieval node instances from
     `compiled_definition["agent"]["tools"]`. `_resolve_tools`/`_resolve_knowledge` already
-    guarantee only `_HTTP_TOOL_TYPE`/`RETRIEVAL_TOOL_TYPE` entries ever reach here - the
-    explicit check below is a defensive backstop (matches this codebase's general
-    defense-in-depth style), not the primary gate.
+    guarantee only `_HTTP_TOOL_TYPE`/`BUILTIN_TOOL_TYPES`/`RETRIEVAL_TOOL_TYPE` entries
+    ever reach here - the explicit check below is a defensive backstop (matches this
+    codebase's general defense-in-depth style), not the primary gate.
     """
     tools = []
     for tool_def in tool_defs:
         if tool_def["type"] == _HTTP_TOOL_TYPE:
             secret = (tool_secrets or {}).get(tool_def["id"])
             tools.append(_build_http_tool(tool_def, company_id, identity, secret))
+        elif tool_def["type"] in BUILTIN_TOOL_TYPES:
+            secret = (tool_secrets or {}).get(tool_def["id"])
+            tools.append(_build_builtin_tool(tool_def, company_id, secret))
         elif tool_def["type"] == RETRIEVAL_TOOL_TYPE:
             tools.append(await _build_knowledge_tool(tool_def, company_id, knowledge_api_keys[tool_def["id"]]))
         else:

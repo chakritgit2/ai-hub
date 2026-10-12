@@ -455,10 +455,12 @@ async def testTool(id: str, claims: InternalAuth) -> Response:
     """Proves a `kind: http` tool's configured URL is reachable past the egress allowlist
     (PRD §6.5/§7.4) — for `auth_mode: "service"` tools, attaches whatever secret is stored
     in `runtime.tool_secrets` (fail-open: no stored secret just means no Authorization
-    header, same as before this existed, not a test failure). `kind: builtin`/
-    `kind: python` tools have no reachability story yet (builtin needs its own connection
-    wiring; python has no execution path at all) and get an honest `ok: false` instead of a
-    fake pass. Same "bad input is still 200 ok:false" pattern as `testConnection`.
+    header, same as before this existed, not a test failure). `kind: builtin` (Tavily/Exa)
+    tools just report whether a secret is configured - a real search costs the company's
+    own API quota/credits, so "Test" deliberately doesn't make a real provider call here
+    (unlike `testConnection`'s cheap `models.list()` call). `kind: python` tools have no
+    execution path at all and get an honest `ok: false` instead of a fake pass. Same "bad
+    input is still 200 ok:false" pattern as `testConnection`.
     """
     company_id = claims["company_id"]
     if not _is_uuid(id):
@@ -467,6 +469,12 @@ async def testTool(id: str, claims: InternalAuth) -> Response:
     tool = await resolve_tool(company_id, id)
     if tool is None:
         raise HTTPException(status_code=404, detail="tool_not_found")
+
+    if tool.kind == "builtin":
+        secret = await decrypt_tool_secret(company_id, id)
+        if secret is None:
+            return TestResult(ok=False, detail="no API key secret configured for this tool")
+        return TestResult(ok=True, detail="API key secret is configured (no real search call made)")
 
     if tool.kind != "http":
         return TestResult(ok=False, detail=f"test not supported for kind={tool.kind!r}")

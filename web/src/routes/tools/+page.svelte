@@ -19,7 +19,8 @@
 		audience: '',
 		url: '',
 		method: 'GET',
-		description: ''
+		description: '',
+		provider: 'tavily' as 'tavily' | 'exa'
 	});
 	let formError = $state<string | null>(null);
 	let submitting = $state(false);
@@ -63,7 +64,8 @@
 			audience: '',
 			url: '',
 			method: 'GET',
-			description: ''
+			description: '',
+			provider: 'tavily'
 		};
 	}
 
@@ -71,16 +73,19 @@
 		submitting = true;
 		formError = null;
 		try {
+			const authMode = form.kind === 'builtin' ? 'service' : form.auth_mode;
 			await createTool({
 				name: form.name,
 				kind: form.kind,
 				access_level: form.access_level,
-				auth_mode: form.auth_mode,
-				audience: form.auth_mode === 'delegated' && form.audience ? form.audience : null,
+				auth_mode: authMode,
+				audience: authMode === 'delegated' && form.audience ? form.audience : null,
 				config:
 					form.kind === 'http'
 						? { url: form.url, method: form.method, description: form.description }
-						: {}
+						: form.kind === 'builtin'
+							? { provider: form.provider }
+							: {}
 			});
 			showForm = false;
 			resetForm();
@@ -190,18 +195,20 @@
 				<option value="write">Write (requires human approval to execute)</option>
 			</select>
 		</label>
-		<label class="block">
-			<span class="text-sm font-medium text-neutral-700">Auth mode</span>
-			<select
-				bind:value={form.auth_mode}
-				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
-					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-			>
-				<option value="service">Service (static token)</option>
-				<option value="delegated">Delegated (end-user identity)</option>
-			</select>
-		</label>
-		{#if form.auth_mode === 'delegated'}
+		{#if form.kind !== 'builtin'}
+			<label class="block">
+				<span class="text-sm font-medium text-neutral-700">Auth mode</span>
+				<select
+					bind:value={form.auth_mode}
+					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				>
+					<option value="service">Service (static token)</option>
+					<option value="delegated">Delegated (end-user identity)</option>
+				</select>
+			</label>
+		{/if}
+		{#if form.kind !== 'builtin' && form.auth_mode === 'delegated'}
 			<label class="block">
 				<span class="text-sm font-medium text-neutral-700">Audience</span>
 				<input
@@ -244,6 +251,22 @@
 					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 				/>
+			</label>
+		{/if}
+		{#if form.kind === 'builtin'}
+			<label class="block">
+				<span class="text-sm font-medium text-neutral-700">Provider</span>
+				<select
+					bind:value={form.provider}
+					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				>
+					<option value="tavily">Tavily</option>
+					<option value="exa">Exa</option>
+				</select>
+				<span class="mt-1 block text-xs text-neutral-400">
+					Set the provider's API key via "Set secret" after saving.
+				</span>
 			</label>
 		{/if}
 		<div class="flex gap-2 sm:col-span-2">
@@ -295,7 +318,7 @@
 					<th class="px-4 py-2">Access</th>
 					<th class="px-4 py-2">Auth mode</th>
 					<th class="px-4 py-2">Secret</th>
-					<th class="px-4 py-2">URL</th>
+					<th class="px-4 py-2">URL / Provider</th>
 					<th class="px-4 py-2">Enabled</th>
 					<th class="px-4 py-2"></th>
 				</tr>
@@ -308,15 +331,19 @@
 						<td class="px-4 py-2 text-neutral-600">{tool.access_level}</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.auth_mode}</td>
 						<td class="px-4 py-2 font-mono text-xs text-neutral-500">
-							{tool.kind === 'http' && tool.auth_mode === 'service'
+							{(tool.kind === 'http' || tool.kind === 'builtin') && tool.auth_mode === 'service'
 								? (tool.masked_hint ?? '••••••••')
 								: '—'}
 						</td>
-						<td class="px-4 py-2 text-neutral-600">{(tool.config.url as string) ?? '—'}</td>
+						<td class="px-4 py-2 text-neutral-600">
+							{tool.kind === 'builtin'
+								? `Provider: ${(tool.config.provider as string) ?? '—'}`
+								: ((tool.config.url as string) ?? '—')}
+						</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.enabled ? 'Yes' : 'No'}</td>
 						<td class="px-4 py-2 text-right">
 							<div class="flex items-center justify-end gap-2">
-								{#if tool.kind === 'http' && tool.auth_mode === 'service'}
+								{#if (tool.kind === 'http' || tool.kind === 'builtin') && tool.auth_mode === 'service'}
 									<button
 										type="button"
 										class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
@@ -325,7 +352,7 @@
 										Set secret
 									</button>
 								{/if}
-								{#if tool.kind === 'http'}
+								{#if tool.kind === 'http' || tool.kind === 'builtin'}
 									{#if testResults[tool.id] === 'testing'}
 										<span class="text-xs text-neutral-400">Testing…</span>
 									{:else if testResults[tool.id]}

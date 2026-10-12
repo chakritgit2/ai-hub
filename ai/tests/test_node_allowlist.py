@@ -17,6 +17,13 @@ def test_viewer_is_treated_like_a_non_admin_role():
     assert allowed_node_types("viewer") == allowed_node_types("developer")
 
 
+def test_builtin_web_search_types_are_always_allowed():
+    for role in ("viewer", "developer", "admin"):
+        allowed = allowed_node_types(role)
+        assert "dynamiq.nodes.tools.tavily.TavilyTool" in allowed
+        assert "dynamiq.nodes.tools.exa_search.ExaTool" in allowed
+
+
 def test_find_disallowed_types_walks_nested_dicts_and_lists():
     tree = {
         "agent": {

@@ -7,14 +7,14 @@ There's no closed enum of valid "type" strings anywhere in dynamiq itself —
 checked against the literal dotted-path strings this console ever writes into
 a `compiled_definition`.
 
-`kind: "http"` tools are the one tool kind the compiler can actually build a real node for
-today (`app.services.compiler._build_tools`) — `kind: "builtin"`/`kind: "python"` tool
-references fail compilation outright, for every role including admin, before a `"type"`
-entry for them is ever written (see `app.services.compiler._resolve_tools`), so
-`ADMIN_ONLY_NODE_TYPES` still can't actually be hit via the compiler's normal path yet. The
-mechanism is real and tested directly (see `tests/test_node_allowlist.py`), ready for
-code-execution tool kinds to start populating `type` entries without this function needing
-to change.
+`kind: "http"` and `kind: "builtin"` (Tavily/Exa web search, PRD §6.5) are the tool kinds
+the compiler can actually build a real node for today
+(`app.services.compiler._build_tools`) — `kind: "python"` tool references fail
+compilation outright, for every role including admin, before a `"type"` entry for them is
+ever written (see `app.services.compiler._resolve_tools`), so `ADMIN_ONLY_NODE_TYPES`
+still can't actually be hit via the compiler's normal path yet. The mechanism is real and
+tested directly (see `tests/test_node_allowlist.py`), ready for code-execution tool kinds
+to start populating `type` entries without this function needing to change.
 """
 
 # Verified importable from the installed dynamiq==0.65.0.
@@ -24,6 +24,12 @@ ALWAYS_ALLOWED_NODE_TYPES: frozenset[str] = frozenset(
         "dynamiq.connections.OpenAI",
         "dynamiq.nodes.llms.OpenAI",
         "dynamiq.nodes.tools.HttpApiCall",
+        # Built-in web search (PRD §6.5) - read-only, not a code-execution concern, so
+        # it's always-allowed like HttpApiCall, not admin-only. Actually constructed as
+        # app.integrations.safe_builtin_tools.SafeTavilyTool/SafeExaTool (egress-checked
+        # subclasses), same relationship as HttpApiCall -> SafeHttpApiCall below.
+        "dynamiq.nodes.tools.tavily.TavilyTool",
+        "dynamiq.nodes.tools.exa_search.ExaTool",
         # Knowledge base retrieval (PRD §6.6) - read-only, not a code-execution concern,
         # so it's always-allowed like HttpApiCall, not admin-only.
         "dynamiq.nodes.retrievers.retriever.VectorStoreRetriever",

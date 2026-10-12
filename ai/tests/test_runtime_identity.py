@@ -6,6 +6,7 @@ going through a fake Dynamiq Agent, since `identity` is consumed by `build_agent
 `_build_tools` to construct tools, never passed to `Agent()` itself."""
 from types import SimpleNamespace
 
+import pytest
 from dynamiq.runnables.base import RunnableStatus
 
 from app.services import runtime as runtime_module
@@ -120,3 +121,35 @@ async def test_execute_agent_run_fails_open_when_no_tool_secret_stored(
     await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
 
     assert captured["tool_secrets"] == {}
+
+
+@requires_postgres
+async def test_execute_agent_run_resolves_tool_secrets_for_builtin_tool(
+    monkeypatch, company_ids, resolvable_agent_version, make_tool, store_tool_secret
+) -> None:
+    """A builtin (Tavily/Exa) tool's API key is resolved fresh per run, same mechanism as
+    a service-mode http tool's secret."""
+    captured = _capture_tool_secrets(monkeypatch)
+    company_id = company_ids()
+    tool_id = make_tool(company_id, kind="builtin", config={"provider": "tavily"})
+    await store_tool_secret(company_id, tool_id, "tvly-real-key")
+    version_id = await resolvable_agent_version(company_id, tools=[{"tool_id": tool_id}])
+
+    await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
+
+    assert captured["tool_secrets"] == {tool_id: "tvly-real-key"}
+
+
+@requires_postgres
+async def test_execute_agent_run_fails_closed_when_no_secret_stored_for_builtin_tool(
+    company_ids, resolvable_agent_version, make_tool
+) -> None:
+    """Unlike a service-mode http tool (fail-open), a builtin search tool with no API key
+    configured is useless - the run must refuse up front rather than let Tavily/Exa's own
+    401 surface mid-conversation."""
+    company_id = company_ids()
+    tool_id = make_tool(company_id, kind="builtin", config={"provider": "tavily"})
+    version_id = await resolvable_agent_version(company_id, tools=[{"tool_id": tool_id}])
+
+    with pytest.raises(ValueError, match="no secret stored for builtin tool"):
+        await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)

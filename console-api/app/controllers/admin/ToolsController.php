@@ -18,14 +18,19 @@ use Throwable;
  * CRUD + a standalone connectivity test + secret storage for `auth_mode: "service"`
  * tools. `kind: http` tools are wired into the agent spec/compiler for real
  * (`app/services/compiler.py`'s `_build_http_tool`/`_build_tools` build a real
- * `SafeHttpApiCall` node, egress-allowlist-checked via `SafeHttpClient`); `kind:
- * builtin`/`kind: python` still have no execution path (own backlog item each).
+ * `SafeHttpApiCall` node, egress-allowlist-checked via `SafeHttpClient`); `kind: builtin`
+ * (Tavily/Exa web search) tools are likewise wired for real
+ * (`_build_builtin_tool`/`SafeTavilyTool`/`SafeExaTool`), always `auth_mode: "service"`
+ * (see `assertBuiltinToolValid`) and fail-closed at run time if no secret is stored
+ * (`app.services.runtime`). `kind: python` still has no execution path (own backlog
+ * item, needs its own sandboxing design).
  */
 class ToolsController extends ControllerBase
 {
     private const KINDS = ['http', 'builtin', 'python'];
     private const ACCESS_LEVELS = ['read', 'write'];
     private const AUTH_MODES = ['service', 'delegated'];
+    private const BUILTIN_PROVIDERS = ['tavily', 'exa'];
 
     public function listTools(): Response
     {
@@ -82,6 +87,9 @@ class ToolsController extends ControllerBase
             return $error;
         }
         if (($error = $this->assertToolUrlAllowed($fields['kind'], $fields['config'])) !== null) {
+            return $error;
+        }
+        if (($error = $this->assertBuiltinToolValid($fields['kind'], $fields['auth_mode'], $fields['config'])) !== null) {
             return $error;
         }
 
@@ -154,6 +162,14 @@ class ToolsController extends ControllerBase
             if (($error = $this->assertToolUrlAllowed($effectiveKind, $fields['config'])) !== null) {
                 return $error;
             }
+        }
+        // Unlike assertToolUrlAllowed, this is a pure in-memory check (no DB round-trip),
+        // so there's no cost reason to skip it just because kind/auth_mode/config weren't
+        // part of this particular update - always re-check the effective state.
+        $effectiveAuthMode = $fields['auth_mode'] ?? $existing['auth_mode'];
+        $effectiveConfig = $fields['config'] ?? json_decode((string) $existing['config'], true);
+        if (($error = $this->assertBuiltinToolValid($effectiveKind, $effectiveAuthMode, $effectiveConfig)) !== null) {
+            return $error;
         }
 
         try {
@@ -445,6 +461,35 @@ class ToolsController extends ControllerBase
 
         if (!EgressAllowlistMatcher::hostAllowed($rows, $host, $port)) {
             return $this->jsonResponse(['error' => 'egress_host_not_allowed', 'host' => $host], 422);
+        }
+
+        return null;
+    }
+
+    /**
+     * Save-time validation for `kind: builtin` (Tavily/Exa web search, PRD §6.5) tools —
+     * a no-op for every other kind. `config.provider` must name a known provider (there's
+     * no user-supplied URL/connection to check here, unlike `kind: http`). `auth_mode`
+     * must be `"service"` — there's no end-user identity to delegate to a third-party
+     * search API, and `app.services.runtime`'s fail-closed secret resolution for builtin
+     * tools assumes `auth_mode: "service"` is the only case it ever sees.
+     *
+     * @param array<string, mixed> $config
+     */
+    private function assertBuiltinToolValid(string $kind, string $authMode, array $config): ?Response
+    {
+        if ($kind !== 'builtin') {
+            return null;
+        }
+        $provider = $config['provider'] ?? null;
+        if (!is_string($provider) || !in_array($provider, self::BUILTIN_PROVIDERS, true)) {
+            return $this->jsonResponse(
+                ['error' => 'config_provider_invalid', 'allowed' => self::BUILTIN_PROVIDERS],
+                400
+            );
+        }
+        if ($authMode !== 'service') {
+            return $this->jsonResponse(['error' => 'builtin_tools_require_service_auth_mode'], 400);
         }
 
         return null;

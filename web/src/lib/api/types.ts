@@ -36,8 +36,8 @@ export interface ConnectionSecretInput {
 	secret: string;
 }
 
-// CRUD + a standalone connectivity test + secret storage (PRD §6.5). `kind: http` tools
-// are wired into the agent spec/compiler for real.
+// CRUD + a standalone connectivity test + secret storage (PRD §6.5). `kind: http` and
+// `kind: builtin` tools are wired into the agent spec/compiler for real.
 export interface Tool {
 	id: string;
 	company_id: string;
@@ -46,7 +46,8 @@ export interface Tool {
 	access_level: 'read' | 'write';
 	auth_mode: 'service' | 'delegated';
 	audience?: string | null;
-	// kind-specific: for http, url/method/headers/description/input_schema.
+	// kind-specific: for http, url/method/headers/description/input_schema; for builtin,
+	// { provider: 'tavily' | 'exa' } (always auth_mode: service).
 	config: Record<string, unknown>;
 	// Set only after PUT /tools/{id}/secret (auth_mode: service).
 	masked_hint?: string | null;
