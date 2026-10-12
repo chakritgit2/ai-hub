@@ -238,6 +238,10 @@ export function deleteTool(id: string): Promise<void> {
 	return apiFetch<void>(`/tools/${id}`, { method: 'DELETE' });
 }
 
+export function putToolSecret(id: string, input: ConnectionSecretInput): Promise<void> {
+	return apiFetch<void>(`/tools/${id}/secret`, { method: 'PUT', body: input });
+}
+
 export function testTool(id: string): Promise<{ ok: boolean; detail: string }> {
 	return apiFetch(`/tools/${id}/test`, { method: 'POST' });
 }

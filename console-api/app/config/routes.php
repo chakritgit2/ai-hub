@@ -84,6 +84,7 @@ return function (Router $router): void {
     $admin('POST', '/tools', 'Tools', 'createTool');
     $admin('PATCH', '/tools/{id:[^/]+}', 'Tools', 'updateTool');
     $admin('DELETE', '/tools/{id:[^/]+}', 'Tools', 'deleteTool');
+    $admin('PUT', '/tools/{id:[^/]+}/secret', 'Tools', 'putToolSecret');
     $admin('POST', '/tools/{id:[^/]+}/test', 'Tools', 'testTool');
 
     // --- /datasets (x-phase: 3) -----------------------------------------------

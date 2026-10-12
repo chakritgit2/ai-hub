@@ -51,6 +51,18 @@ connection_secrets_table = sa.Table(
     schema="runtime",
 )
 
+tool_secrets_table = sa.Table(
+    "tool_secrets",
+    _metadata,
+    sa.Column("tool_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("ciphertext", sa.LargeBinary(), nullable=False),
+    sa.Column("nonce", sa.LargeBinary(), nullable=False),
+    sa.Column("dek_version", sa.Integer(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    schema="runtime",
+)
+
 runs_table = sa.Table(
     "runs",
     _metadata,

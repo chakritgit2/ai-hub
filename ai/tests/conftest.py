@@ -426,6 +426,7 @@ def make_agent_version():
         connection_id: str,
         guardrails: dict | None = None,
         model: str = "gpt-4o-mini",
+        tools: list[dict] | None = None,
     ) -> str:
         agent_id = str(uuid.uuid4())
         version_id = str(uuid.uuid4())
@@ -441,6 +442,8 @@ def make_agent_version():
         }
         if guardrails is not None:
             spec["guardrails"] = guardrails
+        if tools is not None:
+            spec["tools"] = tools
 
         with _connect() as conn:
             # SET LOCAL doesn't accept a bound parameter — company_id here is always our
@@ -485,6 +488,29 @@ async def store_connection_secret():
         await upsert_connection_secret(
             company_id=company_id,
             connection_id=connection_id,
+            ciphertext=ciphertext,
+            nonce=nonce,
+            dek_version=dek.dek_version,
+        )
+
+    return _store
+
+
+@pytest.fixture
+async def store_tool_secret():
+    """Encrypts and stores a real tool secret via the same services the real
+    putToolSecret endpoint uses (app.services.company_keys/tool_secrets) - the
+    `auth_mode: "service"` counterpart to `store_connection_secret`."""
+    from app.core.crypto import encrypt_with_dek
+    from app.services.company_keys import get_or_create_company_dek
+    from app.services.tool_secrets import upsert_tool_secret
+
+    async def _store(company_id: str, tool_id: str, secret: str) -> None:
+        dek = await get_or_create_company_dek(company_id)
+        ciphertext, nonce = encrypt_with_dek(secret.encode(), dek.dek)
+        await upsert_tool_secret(
+            company_id=company_id,
+            tool_id=tool_id,
             ciphertext=ciphertext,
             nonce=nonce,
             dek_version=dek.dek_version,
@@ -625,9 +651,10 @@ def resolvable_agent_version(make_connection, make_agent_version, store_connecti
         secret: str = "sk-test-garbage-key-0000000000000000",
         guardrails: dict | None = None,
         model: str = "gpt-4o-mini",
+        tools: list[dict] | None = None,
     ) -> str:
         connection_id = make_connection(company_id)
         await store_connection_secret(company_id, connection_id, secret)
-        return make_agent_version(company_id, connection_id, guardrails=guardrails, model=model)
+        return make_agent_version(company_id, connection_id, guardrails=guardrails, model=model, tools=tools)
 
     return _make

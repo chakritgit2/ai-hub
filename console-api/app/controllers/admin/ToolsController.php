@@ -15,13 +15,11 @@ use Throwable;
 /**
  * /tools — company-scoped tool definitions (PRD §6.5, §8.1 `tools` table).
  *
- * This is CRUD + a standalone connectivity test only — a tool definition here is not yet
- * wired into the agent spec/compiler, so no agent can actually call one during a run.
- * `compiled_definition.agent.tools` stays hardcoded to `[]` in app/services/compiler.py until
- * that follow-up lands (see the plan this was built from for why: Dynamiq's own tool nodes
- * give no SafeHttpClient injection point on the path actually used at runtime, and
- * runtime.py's `_execute_agent_run` has no per-tool-call hook yet for approval/delegated
- * tokens either — both need their own dedicated design pass).
+ * CRUD + a standalone connectivity test + secret storage for `auth_mode: "service"`
+ * tools. `kind: http` tools are wired into the agent spec/compiler for real
+ * (`app/services/compiler.py`'s `_build_http_tool`/`_build_tools` build a real
+ * `SafeHttpApiCall` node, egress-allowlist-checked via `SafeHttpClient`); `kind:
+ * builtin`/`kind: python` still have no execution path (own backlog item each).
  */
 class ToolsController extends ControllerBase
 {
@@ -41,7 +39,7 @@ class ToolsController extends ControllerBase
         $rows = $this->runInCompanyTransaction(
             static fn ($db) => $db->fetchAll(
                 'SELECT id, company_id, name, kind, access_level, auth_mode, audience, config,
-                        enabled, created_at, updated_at
+                        masked_hint, enabled, created_at, updated_at
                  FROM console.tools ORDER BY created_at DESC',
                 Enum::FETCH_ASSOC
             )
@@ -94,7 +92,7 @@ class ToolsController extends ControllerBase
                         (company_id, name, kind, access_level, auth_mode, audience, config, enabled)
                      VALUES (:company_id, :name, :kind, :access_level, :auth_mode, :audience, :config::jsonb, :enabled)
                      RETURNING id, company_id, name, kind, access_level, auth_mode, audience, config,
-                               enabled, created_at, updated_at',
+                               masked_hint, enabled, created_at, updated_at',
                     Enum::FETCH_ASSOC,
                     [
                         'company_id' => $this->getCompanyId(),
@@ -186,7 +184,7 @@ class ToolsController extends ControllerBase
 
                 return $db->fetchOne(
                     'SELECT id, company_id, name, kind, access_level, auth_mode, audience, config,
-                            enabled, created_at, updated_at
+                            masked_hint, enabled, created_at, updated_at
                      FROM console.tools WHERE id = :id',
                     Enum::FETCH_ASSOC,
                     ['id' => $id]
@@ -264,6 +262,60 @@ class ToolsController extends ControllerBase
         }
 
         return $this->jsonResponse($result);
+    }
+
+    /**
+     * Validates length, forwards to ai-runtime (outside any DB transaction — never hold
+     * one open across an HTTP call), then records only a masked hint on success — the
+     * `auth_mode: "service"` counterpart to ConnectionsController::putConnectionSecret().
+     * The plaintext secret never touches console-api's own storage. Callable for any
+     * kind/auth_mode (not just `http`/`service`) — the web UI only surfaces the control
+     * when it's meaningful, same as how a `python` tool's config is still editable here
+     * even though nothing executes it yet.
+     */
+    public function putToolSecret(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
+        $existing = $this->findTool($id);
+        if ($existing === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        if (($error = $this->requireWriteRoleForKind($existing['kind'])) !== null) {
+            return $error;
+        }
+
+        $body = $this->request->getJsonRawBody(true) ?? [];
+        $secret = $body['secret'] ?? null;
+        if (!is_string($secret) || strlen($secret) < 8) {
+            return $this->jsonResponse(['error' => 'secret_too_short'], 400);
+        }
+
+        /** @var RuntimeClient $runtimeClient */
+        $runtimeClient = $this->getDI()->getShared('runtimeClient');
+
+        try {
+            $runtimeClient->putToolSecret($id, $secret);
+        } catch (RuntimeException $exception) {
+            return $this->jsonResponse(
+                ['error' => 'secret_store_failed', 'message' => $exception->getMessage()],
+                502
+            );
+        }
+
+        $maskedHint = '••••' . substr($secret, -4);
+        $this->runInCompanyTransaction(
+            static fn ($db) => $db->execute(
+                'UPDATE console.tools SET masked_hint = :masked_hint, updated_at = now() WHERE id = :id',
+                ['masked_hint' => $maskedHint, 'id' => $id]
+            )
+        );
+
+        return $this->noContentResponse();
     }
 
     /**
@@ -418,7 +470,7 @@ class ToolsController extends ControllerBase
         $row = $this->runInCompanyTransaction(
             static fn ($db) => $db->fetchOne(
                 'SELECT id, company_id, name, kind, access_level, auth_mode, audience, config,
-                        enabled, created_at, updated_at
+                        masked_hint, enabled, created_at, updated_at
                  FROM console.tools WHERE id = :id',
                 Enum::FETCH_ASSOC,
                 ['id' => $id]
@@ -443,6 +495,7 @@ class ToolsController extends ControllerBase
             'auth_mode' => $row['auth_mode'],
             'audience' => $row['audience'],
             'config' => json_decode((string) $row['config'], true),
+            'masked_hint' => $row['masked_hint'],
             'enabled' => (bool) $row['enabled'],
             'created_at' => $row['created_at'],
             'updated_at' => $row['updated_at'],

@@ -33,6 +33,17 @@ def _capture_identity(monkeypatch) -> dict:
     return captured
 
 
+def _capture_tool_secrets(monkeypatch) -> dict:
+    captured: dict = {}
+
+    async def _fake_build_agent(compiled_definition, api_key, company_id, **kwargs):
+        captured["tool_secrets"] = kwargs.get("tool_secrets")
+        return _FakeAgent()
+
+    monkeypatch.setattr(runtime_module, "build_agent", _fake_build_agent)
+    return captured
+
+
 @requires_postgres
 async def test_run_deployment_agent_threads_claims_into_identity_context(
     monkeypatch, company_ids, resolvable_agent_version, make_deployment
@@ -75,3 +86,37 @@ async def test_run_playground_agent_marks_playground_claim_and_falls_back_sub(
     assert identity.claims == {"playground": True}
     assert identity.act == f"agent_version:{version_id}"
     assert identity.run_id
+
+
+@requires_postgres
+async def test_execute_agent_run_resolves_tool_secrets_per_run(
+    monkeypatch, company_ids, resolvable_agent_version, make_tool, store_tool_secret
+) -> None:
+    """A service-mode tool's secret is resolved fresh per run (never baked into
+    compiled_definition), mirroring knowledge_api_keys' resolution loop."""
+    captured = _capture_tool_secrets(monkeypatch)
+    company_id = company_ids()
+    tool_id = make_tool(company_id, kind="http", config={"url": "https://api.example.com/orders"})
+    await store_tool_secret(company_id, tool_id, "sk-service-secret")
+    version_id = await resolvable_agent_version(company_id, tools=[{"tool_id": tool_id}])
+
+    await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
+
+    assert captured["tool_secrets"] == {tool_id: "sk-service-secret"}
+
+
+@requires_postgres
+async def test_execute_agent_run_fails_open_when_no_tool_secret_stored(
+    monkeypatch, company_ids, resolvable_agent_version, make_tool
+) -> None:
+    """A service-mode tool with no secret ever stored must not raise and must not appear
+    in tool_secrets at all - fail-open, contrasted with knowledge_api_keys' fail-closed
+    "no secret stored for connection" ValueError."""
+    captured = _capture_tool_secrets(monkeypatch)
+    company_id = company_ids()
+    tool_id = make_tool(company_id, kind="http", config={"url": "https://api.example.com/orders"})
+    version_id = await resolvable_agent_version(company_id, tools=[{"tool_id": tool_id}])
+
+    await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
+
+    assert captured["tool_secrets"] == {}

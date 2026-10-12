@@ -378,6 +378,39 @@ async def test_compile_attaches_auth_mode_and_audience_to_http_tool_def(make_con
 
 
 @requires_postgres
+async def test_build_agent_threads_tool_secret_into_service_mode_http_tool(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="http", config={"url": "https://api.example.com/orders"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+    assert result["ok"] is True, result["errors"]
+
+    agent = await build_agent(
+        result["compiled_definition"], "sk-test-key", company_id, tool_secrets={tool_id: "sk-service-secret"}
+    )
+    assert agent.tools[0].secret == "sk-service-secret"
+
+
+@requires_postgres
+async def test_build_agent_leaves_secret_unset_without_tool_secrets(make_connection, make_tool):
+    """compile_spec's own self-proof call never passes tool_secrets at all - same
+    never-resolved-at-compile-time rule as identity/knowledge_api_keys - so building
+    without it must not crash and must leave the tool unauthenticated, not raise."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="http", config={"url": "https://api.example.com/orders"})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+    assert result["ok"] is True, result["errors"]
+
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
+    assert agent.tools[0].secret is None
+
+
+@requires_postgres
 async def test_compile_leaves_service_mode_tools_unauthenticated(make_connection, make_tool):
     """Regression guard for the scope boundary: a default auth_mode='service' tool must
     compile/build exactly as before - no Authorization header behavior change."""

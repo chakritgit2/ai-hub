@@ -125,11 +125,12 @@ async def _resolve_tools(doc: AgentSpecDoc, company_id: str) -> tuple[list[ToolR
     errors rather than stopping at the first (PRD §7.7: every tool referenced by an agent
     spec must belong to the agent's company).
 
-    Only `kind: "http"` tools can actually be built into a real node this round — no
-    tool-secret storage exists yet (`kind: builtin` needs its own connection/API-key model;
-    `kind: python` has no execution story at all) — so any other kind fails compilation
-    outright, for every role including admin, rather than being silently accepted and then
-    doing nothing at run time.
+    Only `kind: "http"` tools can actually be built into a real node this round —
+    `kind: builtin` needs its own connection/API-key model; `kind: python` has no
+    execution story at all — so any other kind fails compilation outright, for every role
+    including admin, rather than being silently accepted and then doing nothing at run
+    time. `kind: "http"` tools now have real secret storage for both `auth_mode: service`
+    (`runtime.tool_secrets`) and `auth_mode: delegated` (per-run minted JWTs).
     """
     resolved: list[ToolRow] = []
     errors: list[dict] = []
@@ -270,14 +271,23 @@ def _build_compiled_definition(
     }
 
 
-def _build_http_tool(tool_def: dict, company_id: str, identity: DelegatedIdentityContext | None = None):
+def _build_http_tool(
+    tool_def: dict,
+    company_id: str,
+    identity: DelegatedIdentityContext | None = None,
+    secret: str | None = None,
+):
     """Uses `SafeHttpApiCall`, not Dynamiq's own `HttpApiCall`, so every real request this
     tool makes is checked against the company's egress allowlist - see that class's
     docstring for why the bare Dynamiq node can't be used as-is here.
 
     `identity` is the current run's delegated-identity context (PRD §7.5) - only ever
     consumed when `tool_def["auth_mode"] == "delegated"`; `None` at `compile_spec`'s own
-    self-proof call, which never executes a real request anyway."""
+    self-proof call, which never executes a real request anyway. `secret` is the current
+    run's decrypted `runtime.tool_secrets` value for this tool, consumed only when
+    `tool_def["auth_mode"] == "service"` - also `None` at the self-proof call, and
+    routinely `None` even at real run time since a service-mode tool isn't required to
+    have a secret configured at all (fail-open, unlike delegated's fail-closed identity)."""
     from dynamiq.connections.connections import Http
 
     from app.integrations.safe_http_tool import SafeHttpApiCall
@@ -296,6 +306,7 @@ def _build_http_tool(tool_def: dict, company_id: str, identity: DelegatedIdentit
         auth_mode=tool_def.get("auth_mode", "service"),
         audience=tool_def.get("audience"),
         identity=identity,
+        secret=secret,
     )
 
 
@@ -338,6 +349,7 @@ async def _build_tools(
     company_id: str,
     knowledge_api_keys: dict[str, str],
     identity: DelegatedIdentityContext | None = None,
+    tool_secrets: dict[str, str] | None = None,
 ) -> list:
     """Constructs real Dynamiq tool/retrieval node instances from
     `compiled_definition["agent"]["tools"]`. `_resolve_tools`/`_resolve_knowledge` already
@@ -348,7 +360,8 @@ async def _build_tools(
     tools = []
     for tool_def in tool_defs:
         if tool_def["type"] == _HTTP_TOOL_TYPE:
-            tools.append(_build_http_tool(tool_def, company_id, identity))
+            secret = (tool_secrets or {}).get(tool_def["id"])
+            tools.append(_build_http_tool(tool_def, company_id, identity, secret))
         elif tool_def["type"] == RETRIEVAL_TOOL_TYPE:
             tools.append(await _build_knowledge_tool(tool_def, company_id, knowledge_api_keys[tool_def["id"]]))
         else:
@@ -365,6 +378,7 @@ async def build_agent(
     egress_allowlist: list[EgressAllowlistEntry] | None = None,
     knowledge_api_keys: dict[str, str] | None = None,
     identity: DelegatedIdentityContext | None = None,
+    tool_secrets: dict[str, str] | None = None,
 ):
     """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
     (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
@@ -390,6 +404,12 @@ async def build_agent(
     every `auth_mode: delegated` HTTP tool this agent has, so it can mint a per-call
     identity JWT. `None` at `compile_spec`'s self-proof call (no real request is ever made
     there) and whenever the agent has no delegated tools.
+
+    `tool_secrets` maps each `auth_mode: service` HTTP tool's id to its decrypted
+    `runtime.tool_secrets` value - same never-resolved-at-compile-time rule as `identity`
+    and `knowledge_api_keys` (so a secret can be rotated without recompiling/republishing
+    the agent), but unlike those two, a missing entry is a normal, fail-open outcome, not
+    an error - plenty of `service`-mode tools have no secret configured at all.
     """
     from dynamiq.nodes.agents import Agent
     from dynamiq.skills.config import SkillsConfig
@@ -422,7 +442,9 @@ async def build_agent(
         llm=llm,
         role=agent_def["role"],
         max_loops=agent_def["max_loops"],
-        tools=await _build_tools(agent_def.get("tools", []), company_id, knowledge_api_keys or {}, identity),
+        tools=await _build_tools(
+            agent_def.get("tools", []), company_id, knowledge_api_keys or {}, identity, tool_secrets
+        ),
         memory=memory,
         skills=SkillsConfig(enabled=True, source=skill_registry) if skill_registry is not None else SkillsConfig(),
     )

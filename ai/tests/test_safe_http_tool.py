@@ -9,7 +9,9 @@ from app.services.gateway_auth import _load_or_create_key
 from app.services.identity import DelegatedIdentityContext
 
 
-def _make_tool(auth_mode: str = "service", audience: str | None = None, identity=None) -> SafeHttpApiCall:
+def _make_tool(
+    auth_mode: str = "service", audience: str | None = None, identity=None, secret: str | None = None
+) -> SafeHttpApiCall:
     connection = Http(url="https://api.example.com/orders", method="GET", headers={})
     return SafeHttpApiCall(
         name="test-tool",
@@ -19,6 +21,7 @@ def _make_tool(auth_mode: str = "service", audience: str | None = None, identity
         auth_mode=auth_mode,
         audience=audience,
         identity=identity,
+        secret=secret,
     )
 
 
@@ -66,3 +69,19 @@ def test_service_mode_tool_has_no_authorization_header_attached() -> None:
     kwargs = tool._safe_request_kwargs(HttpApiCallInputSchema())
 
     assert "Authorization" not in kwargs["headers"]
+
+
+def test_service_mode_tool_with_secret_attaches_bearer_header() -> None:
+    tool = _make_tool(auth_mode="service", secret="sk-service-secret")
+
+    kwargs = tool._safe_request_kwargs(HttpApiCallInputSchema())
+
+    assert kwargs["headers"]["Authorization"] == "Bearer sk-service-secret"
+
+
+def test_service_mode_secret_overrides_a_model_supplied_authorization_header() -> None:
+    tool = _make_tool(auth_mode="service", secret="sk-service-secret")
+
+    kwargs = tool._safe_request_kwargs(HttpApiCallInputSchema(headers={"Authorization": "Bearer attacker-supplied"}))
+
+    assert kwargs["headers"]["Authorization"] == "Bearer sk-service-secret"

@@ -33,6 +33,7 @@ from app.services.guardrails import log_guardrail_events, run_checks
 from app.services.identity import DelegatedIdentityContext
 from app.services.quotas import QuotaExceededError, check_rate_limit, reconcile_quota, reserve_quota
 from app.services.runs import RunUsage, log_run
+from app.services.tool_secrets import decrypt_tool_secret
 
 
 class _UsageCollector(BaseCallbackHandler):
@@ -216,6 +217,18 @@ async def _execute_agent_run(
             raise ValueError(f"no secret stored for connection {embedder_connection_id!r}")
         knowledge_api_keys[tool_def["id"]] = kb_secret
 
+    # Resolved fresh per run, same as knowledge_api_keys above, so a secret can be
+    # rotated without recompiling/republishing the agent - but unlike knowledge_api_keys,
+    # a missing entry is NOT an error: a `service`-mode tool is never required to have a
+    # secret configured (fail-open, see SafeHttpApiCall's auth_mode branching).
+    tool_secrets = {}
+    for tool_def in agent_def.get("tools", []):
+        if tool_def.get("auth_mode") != "service":
+            continue
+        tool_secret = await decrypt_tool_secret(company_id, tool_def["id"])
+        if tool_secret is not None:
+            tool_secrets[tool_def["id"]] = tool_secret
+
     agent = await build_agent(
         compiled_definition,
         secret,
@@ -225,6 +238,7 @@ async def _execute_agent_run(
         egress_allowlist=egress_allowlist,
         knowledge_api_keys=knowledge_api_keys,
         identity=identity_context,
+        tool_secrets=tool_secrets,
     )
 
     usage_collector = _UsageCollector()

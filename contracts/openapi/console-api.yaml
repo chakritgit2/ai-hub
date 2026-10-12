@@ -91,8 +91,8 @@ components:
     Tool:
       type: object
       description: >-
-        CRUD + standalone connectivity test only (PRD §6.5) — not yet wired into the agent
-        spec/compiler, so no agent can call one during a run.
+        CRUD + standalone connectivity test + secret storage (PRD §6.5). `kind: http`
+        tools are wired into the agent spec/compiler for real.
       properties:
         id: { type: string }
         company_id: { type: string }
@@ -105,6 +105,7 @@ components:
           type: object
           additionalProperties: true
           description: 'kind-specific: for http, url/method/headers/description/input_schema.'
+        masked_hint: { type: string, nullable: true, description: 'Set only after PUT /tools/{id}/secret (auth_mode: service).' }
         enabled: { type: boolean }
     SkillVersion:
       type: object
@@ -687,6 +688,21 @@ paths:
     delete:
       operationId: deleteTool
       responses: { "204": { description: Deleted } }
+  /tools/{id}/secret:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    put:
+      operationId: putToolSecret
+      summary: >-
+        Forwarded internally to PUT /internal/v1/tools/{id}/secret; never persisted on
+        the PHP side. The `auth_mode: "service"` counterpart to putConnectionSecret.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionSecretInput' }
+      responses:
+        "204": { description: Stored }
   /tools/{id}/test:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
@@ -695,7 +711,8 @@ paths:
       operationId: testTool
       summary: >-
         Proves a `kind: http` tool's configured URL is reachable past the egress allowlist
-        (PRD §6.5/§7.4) — not yet an authenticated call, see ai-internal.yaml's testTool.
+        (PRD §6.5/§7.4) — attaches the stored `auth_mode: service` secret if one exists,
+        see ai-internal.yaml's testTool.
       responses:
         "200":
           description: OK

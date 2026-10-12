@@ -37,6 +37,7 @@ class SafeHttpApiCall(HttpApiCall):
     auth_mode: str = "service"
     audience: str | None = None
     identity: DelegatedIdentityContext | None = None
+    secret: str | None = None
 
     def _safe_request_kwargs(self, input_data: HttpApiCallInputSchema) -> dict:
         request_kwargs = self._build_request_kwargs(input_data)
@@ -70,6 +71,12 @@ class SafeHttpApiCall(HttpApiCall):
                 identity.act,
                 identity.sub,
             )
+        elif self.auth_mode == "service" and self.secret is not None:
+            # Fail open, not fail closed: unlike a missing delegated identity, a
+            # service-mode tool with no secret configured is a normal, pre-existing
+            # state (plenty of real tools need no credential at all) - nothing to attach,
+            # no error. Same anti-prompt-injection ordering as the delegated branch.
+            request_kwargs.setdefault("headers", {})["Authorization"] = f"Bearer {self.secret}"
         return request_kwargs
 
     async def _run_safe_request(self, request_kwargs: dict):

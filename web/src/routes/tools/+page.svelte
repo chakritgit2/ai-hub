@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listTools, createTool, deleteTool, testTool } from '$lib/api/console';
+	import { listTools, createTool, deleteTool, putToolSecret, testTool } from '$lib/api/console';
 	import type { Tool } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId } from '$lib/stores/company';
@@ -24,6 +24,11 @@
 	let formError = $state<string | null>(null);
 	let submitting = $state(false);
 	let testResults = $state<Record<string, { ok: boolean; detail: string } | 'testing'>>({});
+
+	let secretFormId = $state<string | null>(null);
+	let secretValue = $state('');
+	let secretError = $state<string | null>(null);
+	let savingSecret = $state(false);
 
 	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
 
@@ -90,6 +95,27 @@
 	async function remove(tool: Tool) {
 		await deleteTool(tool.id);
 		await load();
+	}
+
+	function openSecretForm(tool: Tool) {
+		secretFormId = tool.id;
+		secretValue = '';
+		secretError = null;
+	}
+
+	async function submitSecret(toolId: string) {
+		savingSecret = true;
+		secretError = null;
+		try {
+			await putToolSecret(toolId, { secret: secretValue });
+			secretFormId = null;
+			secretValue = '';
+			await load();
+		} catch (e) {
+			secretError = e instanceof Error ? e.message : 'Failed to save the secret.';
+		} finally {
+			savingSecret = false;
+		}
 	}
 
 	async function runTest(tool: Tool) {
@@ -268,6 +294,7 @@
 					<th class="px-4 py-2">Kind</th>
 					<th class="px-4 py-2">Access</th>
 					<th class="px-4 py-2">Auth mode</th>
+					<th class="px-4 py-2">Secret</th>
 					<th class="px-4 py-2">URL</th>
 					<th class="px-4 py-2">Enabled</th>
 					<th class="px-4 py-2"></th>
@@ -280,10 +307,24 @@
 						<td class="px-4 py-2 font-mono text-xs text-neutral-600">{tool.kind}</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.access_level}</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.auth_mode}</td>
+						<td class="px-4 py-2 font-mono text-xs text-neutral-500">
+							{tool.kind === 'http' && tool.auth_mode === 'service'
+								? (tool.masked_hint ?? '••••••••')
+								: '—'}
+						</td>
 						<td class="px-4 py-2 text-neutral-600">{(tool.config.url as string) ?? '—'}</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.enabled ? 'Yes' : 'No'}</td>
 						<td class="px-4 py-2 text-right">
 							<div class="flex items-center justify-end gap-2">
+								{#if tool.kind === 'http' && tool.auth_mode === 'service'}
+									<button
+										type="button"
+										class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
+										onclick={() => openSecretForm(tool)}
+									>
+										Set secret
+									</button>
+								{/if}
 								{#if tool.kind === 'http'}
 									{#if testResults[tool.id] === 'testing'}
 										<span class="text-xs text-neutral-400">Testing…</span>
@@ -314,6 +355,45 @@
 									Delete
 								</button>
 							</div>
+							{#if secretFormId === tool.id}
+								<form
+									class="mt-2 flex flex-col gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 text-left"
+									onsubmit={(e) => {
+										e.preventDefault();
+										submitSecret(tool.id);
+									}}
+								>
+									{#if secretError}
+										<p class="text-xs text-danger">{secretError}</p>
+									{/if}
+									<input
+										type="password"
+										bind:value={secretValue}
+										required
+										minlength="8"
+										placeholder="New secret / API key (min. 8 characters)"
+										autocomplete="off"
+										class="w-full rounded-md border border-neutral-300 px-2 py-1 font-mono text-xs
+											focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+									/>
+									<div class="flex gap-2">
+										<button
+											type="submit"
+											disabled={savingSecret}
+											class="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-600"
+										>
+											{savingSecret ? 'Saving…' : 'Save'}
+										</button>
+										<button
+											type="button"
+											class="rounded-md border border-neutral-300 px-3 py-1 text-xs text-neutral-700 hover:bg-white"
+											onclick={() => (secretFormId = null)}
+										>
+											Cancel
+										</button>
+									</div>
+								</form>
+							{/if}
 						</td>
 					</tr>
 				{/each}

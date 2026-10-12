@@ -107,6 +107,36 @@ final class RuntimeClientTest extends TestCase
         self::assertSame('sk-super-secret', $body['secret']);
     }
 
+    public function testPutToolSecretSendsSignedTokenAndSecretBody(): void
+    {
+        /** @var Request|null $capturedRequest */
+        $capturedRequest = null;
+        $history = static function ($request) use (&$capturedRequest): void {
+            $capturedRequest = $request;
+        };
+
+        $mock = new MockHandler([new Response(204)]);
+        $stack = HandlerStack::create($mock);
+        $stack->push(\GuzzleHttp\Middleware::tap($history));
+        $http = new Client(['handler' => $stack, 'base_uri' => 'http://ai-runtime.invalid/internal/v1/']);
+
+        $client = $this->makeRuntimeClient($http, 'company-1');
+
+        $client->putToolSecret('22222222-2222-2222-2222-222222222222', 'sk-tool-secret');
+
+        self::assertNotNull($capturedRequest);
+        self::assertSame('PUT', $capturedRequest->getMethod());
+        self::assertSame(
+            '/internal/v1/tools/22222222-2222-2222-2222-222222222222/secret',
+            $capturedRequest->getUri()->getPath()
+        );
+        self::assertSame('company-1', $capturedRequest->getHeaderLine('X-Company-Id'));
+        self::assertStringStartsWith('Bearer ', $capturedRequest->getHeaderLine('Authorization'));
+
+        $body = json_decode((string) $capturedRequest->getBody(), true);
+        self::assertSame('sk-tool-secret', $body['secret']);
+    }
+
     public function testTestConnectionSendsSignedTokenAndReturnsDecodedResult(): void
     {
         /** @var Request|null $capturedRequest */

@@ -36,8 +36,8 @@ export interface ConnectionSecretInput {
 	secret: string;
 }
 
-// CRUD + a standalone connectivity test only (PRD §6.5) — not yet wired into the agent
-// spec/compiler, so no agent can call one during a run.
+// CRUD + a standalone connectivity test + secret storage (PRD §6.5). `kind: http` tools
+// are wired into the agent spec/compiler for real.
 export interface Tool {
 	id: string;
 	company_id: string;
@@ -48,6 +48,8 @@ export interface Tool {
 	audience?: string | null;
 	// kind-specific: for http, url/method/headers/description/input_schema.
 	config: Record<string, unknown>;
+	// Set only after PUT /tools/{id}/secret (auth_mode: service).
+	masked_hint?: string | null;
 	enabled: boolean;
 }
 

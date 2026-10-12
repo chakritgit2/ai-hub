@@ -58,6 +58,7 @@ from app.services.knowledge_bases import (
     upsert_kb_document,
 )
 from app.services.runtime import run_playground_agent
+from app.services.tool_secrets import decrypt_tool_secret, upsert_tool_secret
 from app.services.tools import resolve_tool
 
 logger = logging.getLogger(__name__)
@@ -385,11 +386,40 @@ async def testConnection(id: str, claims: InternalAuth) -> Response:
     return TestResult(ok=True)
 
 
+@app.put("/internal/v1/tools/{id}/secret", status_code=204)
+async def putToolSecret(id: str, body: ConnectionSecretInput, claims: InternalAuth) -> Response:
+    """Envelope-encrypts `body.secret` with the company's own DEK and upserts it into
+    `runtime.tool_secrets` - the `auth_mode: "service"` counterpart to
+    `putConnectionSecret` above, same encryption scheme, same "cross-company id is 404"
+    contract. Reuses `ConnectionSecretInput` rather than a near-identical duplicate type,
+    since the shape (a single `secret` string, min length 8) is the same for both.
+    """
+    company_id = claims["company_id"]
+    if not _is_uuid(id) or await resolve_tool(company_id, id) is None:
+        raise HTTPException(status_code=404, detail="tool_not_found")
+
+    try:
+        company_dek = await get_or_create_company_dek(company_id)
+        ciphertext, nonce = encrypt_with_dek(body.secret.encode(), company_dek.dek)
+        await upsert_tool_secret(
+            company_id=company_id,
+            tool_id=id,
+            ciphertext=ciphertext,
+            nonce=nonce,
+            dek_version=company_dek.dek_version,
+        )
+    except Exception as exc:  # surface as a clear upstream error, not a 500 crash
+        logger.exception("storing tool secret failed")
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+    return Response(status_code=204)
+
+
 @app.post("/internal/v1/tools/{id}/test", response_model=TestResult)
 async def testTool(id: str, claims: InternalAuth) -> Response:
     """Proves a `kind: http` tool's configured URL is reachable past the egress allowlist
-    (PRD §6.5/§7.4) — not an authenticated call: this slice has no tool-secret storage (unlike
-    connections' `connection_secrets`), so no Authorization header is attached. `kind: builtin`/
+    (PRD §6.5/§7.4) — for `auth_mode: "service"` tools, attaches whatever secret is stored
+    in `runtime.tool_secrets` (fail-open: no stored secret just means no Authorization
+    header, same as before this existed, not a test failure). `kind: builtin`/
     `kind: python` tools have no reachability story yet (builtin needs its own connection
     wiring; python has no execution path at all) and get an honest `ok: false` instead of a
     fake pass. Same "bad input is still 200 ok:false" pattern as `testConnection`.
@@ -421,10 +451,14 @@ async def testTool(id: str, claims: InternalAuth) -> Response:
     except EgressBlockedError as exc:
         return TestResult(ok=False, detail=f"egress_blocked: {exc.reason}")
 
+    headers = dict(tool.config.get("headers") or {})
+    if tool.auth_mode == "service":
+        secret = await decrypt_tool_secret(company_id, id)
+        if secret is not None:
+            headers["Authorization"] = f"Bearer {secret}"
+
     try:
-        response = await client.request(
-            tool.config.get("method", "GET"), url, headers=tool.config.get("headers") or {}
-        )
+        response = await client.request(tool.config.get("method", "GET"), url, headers=headers)
     except EgressBlockedError as exc:
         return TestResult(ok=False, detail=f"egress_blocked: {exc.reason}")
     except SafeHttpClientError as exc:

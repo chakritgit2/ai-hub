@@ -83,6 +83,17 @@ class RuntimeClient
     }
 
     /**
+     * PUT /internal/v1/tools/{id}/secret — envelope-encrypts the secret with the
+     * company's own DEK and stores it, used by ToolsController::putToolSecret() for
+     * `auth_mode: "service"` tools. console-api itself never persists the plaintext
+     * secret — the `auth_mode: "service"` counterpart to putConnectionSecret() above.
+     */
+    public function putToolSecret(string $toolId, string $secret): void
+    {
+        $this->request('PUT', "tools/{$toolId}/secret", ['secret' => $secret]);
+    }
+
+    /**
      * GET /internal/v1/kb/{id}/documents — the KB's document list/status, used by
      * KbController::listKnowledgeBaseDocuments() to back the detail page's document panel.
      *
