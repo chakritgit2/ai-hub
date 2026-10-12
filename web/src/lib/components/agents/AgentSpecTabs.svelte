@@ -8,6 +8,8 @@
 		GuardrailCheckType,
 		GuardrailsSpec,
 		KnowledgeBase,
+		MemorySaveMode,
+		MemorySpec,
 		ModelSpec,
 		Skill,
 		Tool
@@ -213,7 +215,7 @@
 		{ id: 'tools', label: 'Tools', enabled: true },
 		{ id: 'knowledge', label: 'Knowledge', enabled: true },
 		{ id: 'skills', label: 'Skills', enabled: true },
-		{ id: 'memory', label: 'Memory', enabled: false, note: 'PRD §6.2' },
+		{ id: 'memory', label: 'Memory', enabled: true },
 		{ id: 'guardrails', label: 'Guardrails', enabled: true },
 		{ id: 'advanced', label: 'Advanced', enabled: true }
 	];
@@ -227,6 +229,7 @@
 		selectedSkillNames = $bindable(),
 		selectedKnowledgeBaseIds = $bindable(),
 		guardrails = $bindable(),
+		memory = $bindable(),
 		readonly = false,
 		compiledDefinition = null,
 		isAdmin = false
@@ -237,6 +240,7 @@
 		selectedSkillNames: string[];
 		selectedKnowledgeBaseIds: string[];
 		guardrails: GuardrailsSpec;
+		memory: MemoryFormState;
 		readonly?: boolean;
 		compiledDefinition?: Record<string, unknown> | null;
 		isAdmin?: boolean;
@@ -285,6 +289,35 @@
 			model: model.model.trim(),
 			...(!isUnset(model.temperature) ? { temperature: Number(model.temperature) } : {}),
 			...(!isUnset(model.max_tokens) ? { max_tokens: Number(model.max_tokens) } : {})
+		};
+	}
+
+	export type MemoryFormState = {
+		enabled: boolean;
+		message_limit: string | number | null;
+		save_mode: MemorySaveMode;
+	};
+
+	/** Mirrors ai/app/services/agent_spec.py's MemorySpec validation (message_limit must be a
+	 * positive int) - same "return the error message, or the built value" shape as
+	 * buildModelSpec/buildGuardrailsSpec. Validation is skipped while memory is disabled, since
+	 * the message_limit input is only rendered (and so only fixable) while `memory.enabled` is
+	 * true - a stale invalid value left over from before the user unchecked it must not block
+	 * saving a spec that has memory off. That's validation only, not a reset: the value itself
+	 * is still carried through unchanged (same as save_mode below) so re-enabling memory later
+	 * doesn't silently lose a previously-configured limit. */
+	export function buildMemorySpec(): MemorySpec | string {
+		if (
+			memory.enabled &&
+			!isUnset(memory.message_limit) &&
+			(!Number.isInteger(Number(memory.message_limit)) || Number(memory.message_limit) <= 0)
+		) {
+			return 'Memory: message limit must be a whole number greater than 0.';
+		}
+		return {
+			enabled: memory.enabled,
+			message_limit: isUnset(memory.message_limit) ? null : Number(memory.message_limit),
+			save_mode: memory.save_mode
 		};
 	}
 
@@ -717,6 +750,48 @@
 					Manage skills on the <a href="/skills" class="text-primary underline">Skills</a> page.
 				</p>
 			</div>
+		{:else if activeTab === 'memory'}
+			<form class="space-y-5" onsubmit={(e) => e.preventDefault()} inert={readonly}>
+				<label class="flex items-center gap-2">
+					<input type="checkbox" bind:checked={memory.enabled} class="rounded border-neutral-300" />
+					<span class="text-sm font-medium text-neutral-700">Enable conversation memory</span>
+				</label>
+
+				{#if memory.enabled}
+					<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+						<label class="block">
+							<span class="text-sm font-medium text-neutral-700">Message limit (optional)</span>
+							<input
+								type="number"
+								step="1"
+								min="1"
+								bind:value={memory.message_limit}
+								placeholder="Default"
+								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							/>
+						</label>
+						<label class="block">
+							<span class="text-sm font-medium text-neutral-700">Save mode</span>
+							<select
+								bind:value={memory.save_mode}
+								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							>
+								<option value="full">Full — includes tool calls and reasoning</option>
+								<option value="input_output">Input/output only — user message and final reply</option>
+							</select>
+						</label>
+					</div>
+				{/if}
+
+				<p class="text-xs text-neutral-500">
+					Conversation memory (PRD §6.2) recalls earlier turns of the same conversation for this
+					agent. Leave message limit blank to use Dynamiq's own default. Input/output-only save
+					mode keeps less context per turn but is cheaper and skips intermediate tool-call/reasoning
+					detail.
+				</p>
+			</form>
 		{:else if activeTab === 'guardrails'}
 			<div class="space-y-6" inert={readonly}>
 				<div>

@@ -13,7 +13,13 @@
 	import type { Agent, AgentVersion } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import AgentSpecTabs from '$lib/components/agents/AgentSpecTabs.svelte';
-	import { formStateFromVersion, blankIdentity, blankModelSpec, blankGuardrails } from '$lib/components/agents/specDefaults';
+	import {
+		formStateFromVersion,
+		blankIdentity,
+		blankModelSpec,
+		blankGuardrails,
+		blankMemorySpec
+	} from '$lib/components/agents/specDefaults';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
 	import type { PageData } from './$types';
@@ -44,6 +50,7 @@
 	let selectedSkillNames = $state<string[]>([]);
 	let selectedKnowledgeBaseIds = $state<string[]>([]);
 	let guardrails = $state(blankForm.guardrails);
+	let memory = $state(blankForm.memory);
 
 	function loadFrom(newAgent: Agent | null, newVersions: AgentVersion[]) {
 		agent = newAgent;
@@ -56,6 +63,7 @@
 		selectedSkillNames = form.selectedSkillNames;
 		selectedKnowledgeBaseIds = form.selectedKnowledgeBaseIds;
 		guardrails = form.guardrails;
+		memory = form.memory;
 		versionId = latest && !latest.is_published ? latest.id : null;
 		// Clear banners left over from whatever the page was previously showing (a prior
 		// save/publish result, or - since Clone navigates within this same route/component
@@ -106,6 +114,10 @@
 		if (!guardrailsResult || typeof guardrailsResult === 'string') {
 			return { error: guardrailsResult ?? 'Guardrails: something went wrong building the spec.' };
 		}
+		const memoryResult = tabsRef?.buildMemorySpec();
+		if (!memoryResult || typeof memoryResult === 'string') {
+			return { error: memoryResult ?? 'Memory: something went wrong building the spec.' };
+		}
 
 		return {
 			spec: {
@@ -114,7 +126,8 @@
 				tools: selectedToolIds.map((tool_id) => ({ tool_id })),
 				skills: selectedSkillNames,
 				knowledge: selectedKnowledgeBaseIds.map((kb_id) => ({ kb_id })),
-				guardrails: guardrailsResult
+				guardrails: guardrailsResult,
+				memory: memoryResult
 			}
 		};
 	}
@@ -221,7 +234,8 @@
 				tools: [],
 				skills: [],
 				knowledge: [],
-				guardrails: blankGuardrails()
+				guardrails: blankGuardrails(),
+				memory: blankMemorySpec()
 			};
 			const version = await createAgentVersion(agent.id, { spec: sourceSpec });
 			const newVersions = [version, ...versions];
@@ -423,6 +437,7 @@
 			bind:selectedSkillNames
 			bind:selectedKnowledgeBaseIds
 			bind:guardrails
+			bind:memory
 			{readonly}
 			{isAdmin}
 			compiledDefinition={latestVersion?.compiled_definition ?? null}

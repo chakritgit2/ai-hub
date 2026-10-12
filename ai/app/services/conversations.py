@@ -26,6 +26,7 @@ from app.core.hashing import hash_external_user_id
 from app.db.tables import conversations_table
 
 if TYPE_CHECKING:
+    from dynamiq.memory.backends.postgresql import PostgreSQL as PostgresMemoryBackend
     from dynamiq.memory.memory import Memory
 
 
@@ -49,13 +50,12 @@ class _MemoryDBConnection(PostgreSQLConnection):
         return conn
 
 
-_memory: "Memory | None" = None  # process-wide singleton, see get_memory()
-_memory_lock = threading.Lock()
+_backend: "PostgresMemoryBackend | None" = None  # process-wide singleton, see _get_backend()
+_backend_lock = threading.Lock()
 
 
-def _build_memory() -> "Memory":
+def _build_backend() -> "PostgresMemoryBackend":
     from dynamiq.memory.backends.postgresql import PostgreSQL as PostgresMemoryBackend
-    from dynamiq.memory.memory import Memory
 
     settings = get_settings()
     connection = _MemoryDBConnection(
@@ -65,7 +65,7 @@ def _build_memory() -> "Memory":
         user=settings.MEMORY_DB_USER,
         password=settings.MEMORY_DB_PASSWORD,
     )
-    backend = PostgresMemoryBackend(
+    return PostgresMemoryBackend(
         connection=connection,
         # Unqualified - resolves inside `runtime` via _MemoryDBConnection's search_path.
         table_name="agent_memory",
@@ -73,10 +73,9 @@ def _build_memory() -> "Memory":
         # created on first use - see that migration's docstring for why.
         create_if_not_exist=False,
     )
-    return Memory(backend=backend)
 
 
-def get_memory() -> "Memory":
+def _get_backend() -> "PostgresMemoryBackend":
     """Process-wide singleton.
 
     `PostgreSQL.model_post_init()` opens one blocking psycopg connection
@@ -91,12 +90,29 @@ def get_memory() -> "Memory":
     `asyncio.to_thread`, and the lock keeps concurrent first calls from
     opening two connections.
     """
-    global _memory
-    if _memory is None:
-        with _memory_lock:
-            if _memory is None:
-                _memory = _build_memory()
-    return _memory
+    global _backend
+    if _backend is None:
+        with _backend_lock:
+            if _backend is None:
+                _backend = _build_backend()
+    return _backend
+
+
+def get_memory(message_limit: int | None = None, save_mode: str = "full") -> "Memory":
+    """Builds a `Memory` wrapper around the shared backend connection (`_get_backend()`).
+
+    Unlike the backend, `Memory` itself holds no connection of its own - it's a plain
+    pydantic object - so a fresh one is built per call with the calling agent's own
+    `message_limit`/`save_mode` (PRD §6.2's Memory tab) rather than reusing a single
+    hardcoded-default instance. Called with no arguments, behavior is unchanged from
+    before per-agent configuration existed.
+    """
+    from dynamiq.memory.memory import Memory, MemorySaveMode
+
+    kwargs: dict = {"backend": _get_backend(), "save_mode": MemorySaveMode(save_mode)}
+    if message_limit is not None:
+        kwargs["message_limit"] = message_limit
+    return Memory(**kwargs)
 
 
 async def get_or_create_conversation(
@@ -105,12 +121,18 @@ async def get_or_create_conversation(
     external_user_id: str,
     conversation_id: str | None,
     source: str = "playground",
+    message_limit: int | None = None,
+    save_mode: str = "full",
 ) -> tuple[str, "Memory", str]:
     """Resolve a conversation and its Dynamiq memory scoping key.
 
     Returns `(conversation_id, memory, user_id)`. Callers pass
     `memory=memory` into `Agent(...)` and `user_id=user_id,
     session_id=conversation_id` into `agent.run(input_data={...})`.
+
+    `message_limit`/`save_mode` come from the calling agent's own `MemorySpec`
+    (PRD §6.2) and are forwarded as-is to `get_memory()` - this function doesn't
+    interpret them, just threads them through.
 
     - `external_user_id` is hashed (`app/core/hashing.py`) and combined with
       `company_id` into `user_id` - never stored or used raw, and never able
@@ -161,5 +183,5 @@ async def get_or_create_conversation(
                 )
             )
 
-    memory = await asyncio.to_thread(get_memory)
+    memory = await asyncio.to_thread(get_memory, message_limit, save_mode)
     return str(resolved_id), memory, user_id

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.services.agent_spec import AgentIdentitySpec, AgentSpecDoc, ModelSpec, render_identity_prompt
+from app.services.agent_spec import AgentIdentitySpec, AgentSpecDoc, MemorySpec, ModelSpec, render_identity_prompt
 
 VALID_IDENTITY = {
     "name": "vending-support",
@@ -70,3 +70,25 @@ def test_render_identity_prompt_includes_decline_and_handoff_instructions():
 def test_model_spec_rejects_non_positive_max_tokens():
     with pytest.raises(ValidationError):
         ModelSpec.model_validate({**VALID_MODEL, "max_tokens": 0})
+
+
+def test_memory_spec_defaults_match_todays_always_on_behavior():
+    memory = MemorySpec()
+    assert memory.enabled is True
+    assert memory.message_limit is None
+    assert memory.save_mode == "full"
+
+
+def test_agent_spec_doc_defaults_memory_when_omitted():
+    doc = AgentSpecDoc.model_validate({"identity": VALID_IDENTITY, "model": VALID_MODEL})
+    assert doc.memory == MemorySpec()
+
+
+def test_memory_spec_rejects_non_positive_message_limit():
+    with pytest.raises(ValidationError):
+        MemorySpec.model_validate({"message_limit": 0})
+
+
+def test_memory_spec_rejects_unknown_save_mode():
+    with pytest.raises(ValidationError):
+        MemorySpec.model_validate({"save_mode": "summarized"})

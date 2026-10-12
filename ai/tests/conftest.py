@@ -427,6 +427,7 @@ def make_agent_version():
         guardrails: dict | None = None,
         model: str = "gpt-4o-mini",
         tools: list[dict] | None = None,
+        memory: dict | None = None,
     ) -> str:
         agent_id = str(uuid.uuid4())
         version_id = str(uuid.uuid4())
@@ -444,6 +445,8 @@ def make_agent_version():
             spec["guardrails"] = guardrails
         if tools is not None:
             spec["tools"] = tools
+        if memory is not None:
+            spec["memory"] = memory
 
         with _connect() as conn:
             # SET LOCAL doesn't accept a bound parameter — company_id here is always our
@@ -652,9 +655,12 @@ def resolvable_agent_version(make_connection, make_agent_version, store_connecti
         guardrails: dict | None = None,
         model: str = "gpt-4o-mini",
         tools: list[dict] | None = None,
+        memory: dict | None = None,
     ) -> str:
         connection_id = make_connection(company_id)
         await store_connection_secret(company_id, connection_id, secret)
-        return make_agent_version(company_id, connection_id, guardrails=guardrails, model=model, tools=tools)
+        return make_agent_version(
+            company_id, connection_id, guardrails=guardrails, model=model, tools=tools, memory=memory
+        )
 
     return _make

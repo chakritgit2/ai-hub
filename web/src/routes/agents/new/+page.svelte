@@ -4,7 +4,7 @@
 	import { ApiError } from '$lib/api/client';
 	import { headerContent } from '$lib/stores/header';
 	import AgentSpecTabs from '$lib/components/agents/AgentSpecTabs.svelte';
-	import { blankIdentity, blankModelFormState, blankGuardrails } from '$lib/components/agents/specDefaults';
+	import { blankIdentity, blankModelFormState, blankGuardrails, blankMemory } from '$lib/components/agents/specDefaults';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
 
@@ -15,6 +15,7 @@
 	let selectedSkillNames = $state<string[]>([]);
 	let selectedKnowledgeBaseIds = $state<string[]>([]);
 	let guardrails = $state(blankGuardrails());
+	let memory = $state(blankMemory());
 
 	let tabsRef: ReturnType<typeof AgentSpecTabs> | undefined;
 
@@ -51,6 +52,11 @@
 			return { error: guardrailsResult ?? 'Guardrails: something went wrong building the spec.' };
 		}
 
+		const memoryResult = tabsRef?.buildMemorySpec();
+		if (!memoryResult || typeof memoryResult === 'string') {
+			return { error: memoryResult ?? 'Memory: something went wrong building the spec.' };
+		}
+
 		return {
 			spec: {
 				identity,
@@ -58,7 +64,8 @@
 				tools: selectedToolIds.map((tool_id) => ({ tool_id })),
 				skills: selectedSkillNames,
 				knowledge: selectedKnowledgeBaseIds.map((kb_id) => ({ kb_id })),
-				guardrails: guardrailsResult
+				guardrails: guardrailsResult,
+				memory: memoryResult
 			}
 		};
 	}
@@ -193,6 +200,7 @@
 	bind:selectedSkillNames
 	bind:selectedKnowledgeBaseIds
 	bind:guardrails
+	bind:memory
 	{isAdmin}
 	compiledDefinition={null}
 />

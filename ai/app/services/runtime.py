@@ -22,7 +22,7 @@ from dynamiq.runnables.base import RunnableConfig, RunnableStatus
 
 from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
-from app.services.agent_spec import GuardrailsSpec
+from app.services.agent_spec import GuardrailsSpec, MemorySpec
 from app.services.agent_versions import resolve_agent_version
 from app.services.compiler import BUILTIN_TOOL_TYPES, RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
 from app.services.connection_secrets import decrypt_connection_secret
@@ -183,9 +183,20 @@ async def _execute_agent_run(
     # Stays None unless memory is actually wired, so a client that sent a
     # conversation_id without the scoping inputs isn't told it was continued.
     resolved_conversation_id = None
-    if external_user_id and company_id:
+    # .get("memory", {}) covers a compiled_definition from before this feature existed (should
+    # never happen in practice - see _resolve_and_compile's "always recompiled live" note - but
+    # matches compiled_definition.get("skills") above's same defensive style); MemorySpec's own
+    # field defaults then apply, same single-source-of-truth pattern run_playground_agent uses
+    # for guardrails (`GuardrailsSpec.model_validate(compiled_definition["guardrails"])` below).
+    memory_spec = MemorySpec.model_validate(compiled_definition.get("memory", {}))
+    if memory_spec.enabled and external_user_id and company_id:
         resolved_conversation_id, memory, user_id = await get_or_create_conversation(
-            company_id, deployment_id, external_user_id, conversation_id
+            company_id,
+            deployment_id,
+            external_user_id,
+            conversation_id,
+            message_limit=memory_spec.message_limit,
+            save_mode=memory_spec.save_mode,
         )
 
     skill_registry = None

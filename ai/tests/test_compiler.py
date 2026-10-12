@@ -205,6 +205,40 @@ async def test_compile_includes_guardrails_in_compiled_definition(make_connectio
     assert guardrails["output"][0]["check_type"] == "valid_json"
 
 
+@requires_postgres
+async def test_compile_defaults_memory_when_omitted(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+
+    result = await compile_spec(_valid_spec(connection_id), "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    assert result["compiled_definition"]["memory"] == {
+        "enabled": True,
+        "message_limit": None,
+        "save_mode": "full",
+    }
+
+
+@requires_postgres
+async def test_compile_includes_memory_in_compiled_definition(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    spec = {
+        **_valid_spec(connection_id),
+        "memory": {"enabled": False, "message_limit": 20, "save_mode": "input_output"},
+    }
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    assert result["compiled_definition"]["memory"] == {
+        "enabled": False,
+        "message_limit": 20,
+        "save_mode": "input_output",
+    }
+
+
 async def test_compile_rejects_mask_action_on_max_length_check():
     spec = {
         **_valid_spec(str(uuid.uuid4())),

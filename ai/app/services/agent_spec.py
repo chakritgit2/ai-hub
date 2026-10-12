@@ -1,14 +1,15 @@
 """Agent spec schema — slice 1: Identity + Model (PRD §6.1/§6.1a); slice 2: Guardrails
 (PRD §6.4); slice 3: Tools + Skills references (PRD §6.5/§6.6a); slice 4: Knowledge
-references (PRD §6.6) - resolution/cross-company validation/node construction lives in
-`app.services.compiler`, not here; this module only validates the *shape* a reference must
-have (a well-formed tool id, a skill name, a well-formed KB id).
+references (PRD §6.6); slice 5: Memory (PRD §6.2) - resolution/cross-company
+validation/node construction lives in `app.services.compiler`, not here; this module only
+validates the *shape* a reference must have (a well-formed tool id, a skill name, a
+well-formed KB id).
 
-Memory/Advanced tabs exist in the web editor already (every tab's data is sent in the spec
-regardless of which ones have a real backing table), but still have no schema behind them —
+Advanced tab exists in the web editor already (every tab's data is sent in the spec
+regardless of which ones have a real backing table), but still has no schema behind it —
 `AgentSpecDoc` silently ignores anything else it doesn't recognize
 (`model_config = ConfigDict(extra="ignore")`), rather than rejecting a spec just because of
-an empty `memory: {}`.
+an unrecognized key.
 
 `AgentIdentitySpec`'s fields mirror `web/src/lib/api/types.ts`'s
 `AgentIdentity` exactly — this is the one spec shape the editor already
@@ -134,6 +135,20 @@ class ToolRefSpec(BaseModel):
         return value
 
 
+MemorySaveMode = Literal["full", "input_output"]
+
+
+class MemorySpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    # Defaults match what every agent already does today (app.services.runtime wires
+    # Dynamiq's memory unconditionally with its own defaults) - an agent that never
+    # touches this tab sees no behavior change.
+    enabled: bool = True
+    message_limit: int | None = Field(default=None, gt=0)
+    save_mode: MemorySaveMode = "full"
+
+
 class KnowledgeRefSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -159,6 +174,7 @@ class AgentSpecDoc(BaseModel):
     # name (PRD §6.6a: "SkillsTool (list -> get)"), not id.
     skills: list[str] = Field(default_factory=list)
     knowledge: list[KnowledgeRefSpec] = Field(default_factory=list)
+    memory: MemorySpec = Field(default_factory=MemorySpec)
 
 
 def render_identity_prompt(identity: AgentIdentitySpec) -> str:

@@ -73,6 +73,7 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
     compiled_definition = _build_compiled_definition(doc, connection, tools, knowledge)
     compiled_definition["guardrails"] = doc.guardrails.model_dump()
     compiled_definition["skills"] = doc.skills
+    compiled_definition["memory"] = doc.memory.model_dump()
 
     disallowed = find_disallowed_types(compiled_definition, role)
     if disallowed:

@@ -7,6 +7,7 @@ most likely means `alembic upgrade head` hasn't been run yet.
 """
 import uuid
 
+from dynamiq.memory.memory import MemorySaveMode
 from dynamiq.prompts import MessageRole
 
 from app.core.db import get_company_session
@@ -95,3 +96,23 @@ async def test_cross_company_memory_does_not_mix(company_ids) -> None:
     contents_a = [m.content for m in memory.search(filters={"user_id": user_id_a, "session_id": conv_a})]
     assert "company A message" in contents_a
     assert "company B message" not in contents_a
+
+
+@requires_postgres
+async def test_message_limit_and_save_mode_overrides_reach_memory(company_ids) -> None:
+    """PRD §6.2 Memory tab: per-agent overrides thread through to the Memory wrapper
+    without needing a new backend connection (see conversations.get_memory)."""
+    company_id = company_ids()
+    _, memory, _ = await get_or_create_conversation(
+        company_id, None, "user-overrides", None, message_limit=5, save_mode="input_output"
+    )
+    assert memory.message_limit == 5
+    assert memory.save_mode == MemorySaveMode.INPUT_OUTPUT
+
+
+@requires_postgres
+async def test_default_message_limit_and_save_mode_match_dynamiq_defaults(company_ids) -> None:
+    company_id = company_ids()
+    _, memory, _ = await get_or_create_conversation(company_id, None, "user-defaults", None)
+    assert memory.message_limit == memory.DEFAULT_LIMIT
+    assert memory.save_mode == MemorySaveMode.FULL

@@ -20,6 +20,7 @@
 	let selectedSkillNames = $state(form.selectedSkillNames);
 	let selectedKnowledgeBaseIds = $state(form.selectedKnowledgeBaseIds);
 	let guardrails = $state(form.guardrails);
+	let memory = $state(form.memory);
 
 	// `versions[0]` is the agent's current latest (already sorted version_no DESC by the
 	// backend) - if it's an unpublished draft other than the one being viewed here, restoring
@@ -126,6 +127,7 @@
 		bind:selectedSkillNames
 		bind:selectedKnowledgeBaseIds
 		bind:guardrails
+		bind:memory
 		readonly
 		{isAdmin}
 		compiledDefinition={data.version?.compiled_definition ?? null}

@@ -186,6 +186,15 @@ export interface GuardrailsSpec {
 	output: GuardrailCheckSpec[];
 }
 
+// Mirrors ai/app/services/agent_spec.py's MemorySpec exactly (PRD §6.2).
+export type MemorySaveMode = 'full' | 'input_output';
+
+export interface MemorySpec {
+	enabled: boolean;
+	message_limit?: number | null;
+	save_mode?: MemorySaveMode;
+}
+
 export interface AgentVersion {
 	id: string;
 	company_id: string;
@@ -198,6 +207,7 @@ export interface AgentVersion {
 		skills?: string[];
 		knowledge?: { kb_id: string }[];
 		guardrails?: GuardrailsSpec;
+		memory?: MemorySpec;
 	};
 	spec_version: string;
 	compiled_definition?: Record<string, unknown> | null;
