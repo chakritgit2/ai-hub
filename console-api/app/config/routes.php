@@ -87,9 +87,14 @@ return function (Router $router): void {
     $admin('PUT', '/tools/{id:[^/]+}/secret', 'Tools', 'putToolSecret');
     $admin('POST', '/tools/{id:[^/]+}/test', 'Tools', 'testTool');
 
-    // --- /datasets (x-phase: 3) -----------------------------------------------
+    // --- /datasets (PRD §6.7/§8.2) ---------------------------------------------
     $admin('GET', '/datasets', 'Datasets', 'listDatasets');
     $admin('POST', '/datasets', 'Datasets', 'createDataset');
+    $admin('GET', '/datasets/{id:[^/]+}', 'Datasets', 'getDataset');
+    $admin('PATCH', '/datasets/{id:[^/]+}', 'Datasets', 'updateDataset');
+    $admin('DELETE', '/datasets/{id:[^/]+}', 'Datasets', 'deleteDataset');
+    $admin('GET', '/datasets/{id:[^/]+}/items', 'Datasets', 'listDatasetItems');
+    $admin('POST', '/datasets/{id:[^/]+}/import', 'Datasets', 'importDatasetItems');
 
     // --- /evals (x-phase: 3) --------------------------------------------------
     // /evals/compare must be registered before /evals/{id} so the static

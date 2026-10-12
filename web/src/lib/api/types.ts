@@ -126,6 +126,33 @@ export interface KbSearchResult {
 	results: KbSearchResultItem[];
 }
 
+// Evaluation datasets (PRD §6.7). No ai-runtime counterpart - pure console-api CRUD.
+export interface Dataset {
+	id: string;
+	company_id: string;
+	name: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface DatasetInput {
+	name?: string;
+}
+
+export interface DatasetItem {
+	id: string;
+	question: string;
+	expected_answer: string | null;
+	context: string | null;
+	tags: string[];
+	created_at: string;
+}
+
+export interface DatasetImportResult {
+	inserted: number;
+	errors: { row: number; error: string }[];
+}
+
 export interface Agent {
 	id: string;
 	company_id: string;

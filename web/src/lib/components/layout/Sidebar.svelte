@@ -19,6 +19,7 @@
 		{ label: 'Tools', href: '/tools' },
 		{ label: 'Skills', href: '/skills' },
 		{ label: 'Knowledge Bases', href: '/knowledge-bases' },
+		{ label: 'Datasets', href: '/datasets' },
 		{ label: 'Runs & Logs', href: '/runs' },
 		{ label: 'Deployments', href: '/deployments' },
 		{ label: 'API Keys', href: '/api-keys' },

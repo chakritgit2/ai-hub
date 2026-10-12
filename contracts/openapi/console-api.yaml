@@ -200,6 +200,39 @@ components:
         results:
           type: array
           items: { $ref: '#/components/schemas/KbSearchResultItem' }
+    Dataset:
+      type: object
+      description: 'A company-owned, reusable Evaluation test set (PRD §6.7).'
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    DatasetInput:
+      type: object
+      properties:
+        name: { type: string }
+    DatasetItem:
+      type: object
+      properties:
+        id: { type: string }
+        question: { type: string }
+        expected_answer: { type: string, nullable: true }
+        context: { type: string, nullable: true }
+        tags: { type: array, items: { type: string } }
+        created_at: { type: string, format: date-time }
+    DatasetImportResult:
+      type: object
+      properties:
+        inserted: { type: integer }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              row: { type: integer }
+              error: { type: string }
     Agent:
       type: object
       properties:
@@ -727,15 +760,53 @@ paths:
   /datasets:
     get:
       operationId: listDatasets
-      x-phase: 3
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Dataset' } } } } } }
     post:
       operationId: createDataset
-      x-phase: 3
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/DatasetInput' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Dataset' } } } } }
+  /datasets/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getDataset
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Dataset' } } } } }
+    patch:
+      operationId: updateDataset
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/DatasetInput' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Dataset' } } } } }
+    delete:
+      operationId: deleteDataset
+      responses: { "204": { description: Deleted } }
+  /datasets/{id}/items:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: listDatasetItems
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/DatasetItem' } } } } } }
+  /datasets/{id}/import:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: importDatasetItems
+      summary: >-
+        Uploads a CSV or JSON file of {question, expected_answer?, context?, tags?}
+        rows and inserts the valid ones as dataset_items. Synchronous (no ai-runtime
+        involved) - unlike KB import, this never returns 202.
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/DatasetImportResult' } } } }
 
   /evals:
     get:

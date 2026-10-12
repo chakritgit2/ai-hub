@@ -13,6 +13,10 @@ import type {
 	Connection,
 	ConnectionSecretInput,
 	DashboardSummary,
+	Dataset,
+	DatasetImportResult,
+	DatasetInput,
+	DatasetItem,
 	Deployment,
 	KbDocument,
 	KbImportResultItem,
@@ -246,16 +250,6 @@ export function testTool(id: string): Promise<{ ok: boolean; detail: string }> {
 	return apiFetch(`/tools/${id}/test`, { method: 'POST' });
 }
 
-// ---- /datasets (phase 3) --------------------------------------------------
-
-export function listDatasets(): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>('/datasets');
-}
-
-export function createDataset(input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>('/datasets', { method: 'POST', body: input });
-}
-
 // ---- /evals (phase 3) -----------------------------------------------------
 
 export function listEvalRuns(): Promise<Placeholder[]> {
@@ -323,6 +317,36 @@ export function searchKnowledgeBase(
 	input: { query: string; top_k?: number }
 ): Promise<KbSearchResult> {
 	return apiFetch<KbSearchResult>(`/kb/${id}/search`, { method: 'POST', body: input });
+}
+
+// ---- /datasets (PRD §6.7 - Evaluation, no ai-runtime involved) -------------
+
+export function listDatasets(): Promise<Dataset[]> {
+	return apiFetch<Dataset[]>('/datasets');
+}
+
+export function getDataset(id: string): Promise<Dataset> {
+	return apiFetch<Dataset>(`/datasets/${id}`);
+}
+
+export function createDataset(input: DatasetInput): Promise<Dataset> {
+	return apiFetch<Dataset>('/datasets', { method: 'POST', body: input });
+}
+
+export function updateDataset(id: string, input: DatasetInput): Promise<Dataset> {
+	return apiFetch<Dataset>(`/datasets/${id}`, { method: 'PATCH', body: input });
+}
+
+export function deleteDataset(id: string): Promise<void> {
+	return apiFetch<void>(`/datasets/${id}`, { method: 'DELETE' });
+}
+
+export function listDatasetItems(id: string): Promise<DatasetItem[]> {
+	return apiFetch<DatasetItem[]>(`/datasets/${id}/items`);
+}
+
+export function importDatasetItems(id: string, form: FormData): Promise<DatasetImportResult> {
+	return apiFetch<DatasetImportResult>(`/datasets/${id}/import`, { method: 'POST', rawBody: form });
 }
 
 // ---- /skills --------------------------------------------------------------
