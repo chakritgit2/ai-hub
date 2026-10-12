@@ -14,6 +14,8 @@
 	import { headerContent } from '$lib/stores/header';
 	import AgentSpecTabs from '$lib/components/agents/AgentSpecTabs.svelte';
 	import { formStateFromVersion, blankIdentity, blankModelSpec, blankGuardrails } from '$lib/components/agents/specDefaults';
+	import { currentUser, roleForCompany } from '$lib/stores/auth';
+	import { companyId } from '$lib/stores/company';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -33,6 +35,7 @@
 	let versionId = $state<string | null>(null);
 	let readonly = $derived(versionId === null || agent?.status === 'archived');
 	let latestVersion = $derived(versions[0] ?? null);
+	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
 
 	const blankForm = formStateFromVersion(null);
 	let identity = $state(blankForm.identity);
@@ -421,6 +424,8 @@
 			bind:selectedKnowledgeBaseIds
 			bind:guardrails
 			{readonly}
+			{isAdmin}
+			compiledDefinition={latestVersion?.compiled_definition ?? null}
 		/>
 	{/key}
 {/if}

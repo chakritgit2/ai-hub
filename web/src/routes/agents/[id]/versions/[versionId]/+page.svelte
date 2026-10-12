@@ -4,9 +4,12 @@
 	import { headerContent } from '$lib/stores/header';
 	import AgentSpecTabs from '$lib/components/agents/AgentSpecTabs.svelte';
 	import { formStateFromVersion } from '$lib/components/agents/specDefaults';
+	import { currentUser, roleForCompany } from '$lib/stores/auth';
+	import { companyId } from '$lib/stores/company';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
 
 	// Read-only view, so these never change after the initial seed from `data.version` - no
 	// reactivity concern the way agents/[id]/+page.svelte has to manage for its live editor.
@@ -124,5 +127,7 @@
 		bind:selectedKnowledgeBaseIds
 		bind:guardrails
 		readonly
+		{isAdmin}
+		compiledDefinition={data.version?.compiled_definition ?? null}
 	/>
 {/if}

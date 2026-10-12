@@ -208,7 +208,7 @@
 		{ id: 'skills', label: 'Skills', enabled: true },
 		{ id: 'memory', label: 'Memory', enabled: false, note: 'PRD §6.2' },
 		{ id: 'guardrails', label: 'Guardrails', enabled: true },
-		{ id: 'advanced', label: 'Advanced', enabled: false, note: 'Read-only compiled_definition, admin-only raw JSON — PRD §6.1' }
+		{ id: 'advanced', label: 'Advanced', enabled: true }
 	];
 
 	let activeTab = $state<TabId>('identity');
@@ -220,7 +220,9 @@
 		selectedSkillNames = $bindable(),
 		selectedKnowledgeBaseIds = $bindable(),
 		guardrails = $bindable(),
-		readonly = false
+		readonly = false,
+		compiledDefinition = null,
+		isAdmin = false
 	}: {
 		identity: AgentIdentity;
 		model: ModelFormState;
@@ -229,6 +231,8 @@
 		selectedKnowledgeBaseIds: string[];
 		guardrails: GuardrailsSpec;
 		readonly?: boolean;
+		compiledDefinition?: Record<string, unknown> | null;
+		isAdmin?: boolean;
 	} = $props();
 
 	// Presentation-only comma-separated buffers for the two array fields on `identity`.
@@ -724,6 +728,33 @@
 					nothing identifiable to redact (<code>max_length</code>, <code>valid_json</code>,
 					<code>valid_choices</code>).
 				</p>
+			</div>
+		{:else if activeTab === 'advanced'}
+			<div class="space-y-3">
+				{#if !isAdmin}
+					<div class="rounded-md border border-dashed border-neutral-300 p-8 text-center">
+						<p class="text-sm font-medium text-neutral-600">Admin-only</p>
+						<p class="mt-1 text-sm text-neutral-400">Ask a company admin to view the compiled definition.</p>
+					</div>
+				{:else if !compiledDefinition}
+					<div class="rounded-md border border-dashed border-neutral-300 p-8 text-center">
+						<p class="text-sm font-medium text-neutral-600">Not compiled yet</p>
+						<p class="mt-1 text-sm text-neutral-400">
+							compiled_definition is generated when a version is published (PRD §6.1) - this
+							version hasn't been published yet.
+						</p>
+					</div>
+				{:else}
+					<p class="text-xs text-neutral-500">
+						A snapshot taken at publish time - may not reflect the live compiled definition if
+						the compiler or a referenced connection/tool/skill has changed since.
+					</p>
+					<pre class="overflow-auto rounded-md bg-neutral-900 p-4 text-xs text-neutral-100">{JSON.stringify(
+							compiledDefinition,
+							null,
+							2
+						)}</pre>
+				{/if}
 			</div>
 		{:else}
 			{@const tab = tabs.find((t) => t.id === activeTab)}

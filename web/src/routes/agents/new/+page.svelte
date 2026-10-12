@@ -5,7 +5,10 @@
 	import { headerContent } from '$lib/stores/header';
 	import AgentSpecTabs from '$lib/components/agents/AgentSpecTabs.svelte';
 	import { blankIdentity, blankModelFormState, blankGuardrails } from '$lib/components/agents/specDefaults';
+	import { currentUser, roleForCompany } from '$lib/stores/auth';
+	import { companyId } from '$lib/stores/company';
 
+	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
 	let identity = $state(blankIdentity());
 	let model = $state(blankModelFormState());
 	let selectedToolIds = $state<string[]>([]);
@@ -190,4 +193,6 @@
 	bind:selectedSkillNames
 	bind:selectedKnowledgeBaseIds
 	bind:guardrails
+	{isAdmin}
+	compiledDefinition={null}
 />

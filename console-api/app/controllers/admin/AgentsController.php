@@ -709,6 +709,15 @@ class AgentsController extends ControllerBase
      */
     private function formatAgentVersion(array $row): array
     {
+        // compiled_definition is the Advanced tab's admin-only raw JSON (PRD §6.1) - it
+        // embeds resolved connection/tool/knowledge-base details (api_base, tool config/
+        // audience, etc), not just the user-authored spec, so a non-admin company member
+        // must never receive it even though they can read everything else about this
+        // version. Redacted here, the one place every caller (listAgentVersions/
+        // createAgentVersion/getAgentVersion) already funnels through, rather than at the
+        // frontend alone - the web UI's isAdmin gating only controls whether it's
+        // *rendered*, not whether the API hands it out.
+        $isAdmin = $this->getRoleForCurrentCompany() === 'admin';
         return [
             'id' => $row['id'],
             'company_id' => $row['company_id'],
@@ -716,7 +725,7 @@ class AgentsController extends ControllerBase
             'version_no' => (int) $row['version_no'],
             'spec' => json_decode((string) $row['spec'], true),
             'spec_version' => $row['spec_version'],
-            'compiled_definition' => $row['compiled_definition'] !== null
+            'compiled_definition' => ($isAdmin && $row['compiled_definition'] !== null)
                 ? json_decode((string) $row['compiled_definition'], true)
                 : null,
             'compiler_version' => $row['compiler_version'],
