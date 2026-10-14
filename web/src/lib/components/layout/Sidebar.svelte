@@ -20,6 +20,7 @@
 		{ label: 'Skills', href: '/skills' },
 		{ label: 'Knowledge Bases', href: '/knowledge-bases' },
 		{ label: 'Datasets', href: '/datasets' },
+		{ label: 'Evaluation', href: '/evaluation' },
 		{ label: 'Runs & Logs', href: '/runs' },
 		{ label: 'Deployments', href: '/deployments' },
 		{ label: 'API Keys', href: '/api-keys' },
@@ -27,10 +28,7 @@
 	];
 
 	// PRD §6.9 phase 3+ — nav entries only, disabled, no routes exist yet.
-	const laterPhaseItems: NavItem[] = [
-		{ label: 'Evaluation', href: '/evaluation', phase: 3 },
-		{ label: 'Workflows', href: '/workflows', phase: 4 }
-	];
+	const laterPhaseItems: NavItem[] = [{ label: 'Workflows', href: '/workflows', phase: 4 }];
 
 	function isActive(href: string): boolean {
 		return $page.url.pathname === href || $page.url.pathname.startsWith(`${href}/`);

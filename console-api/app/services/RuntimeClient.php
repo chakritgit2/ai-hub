@@ -184,7 +184,7 @@ class RuntimeClient
      * 404/422 as real, distinguishable outcomes (dataset/agent-version not found, or the
      * agent version failed to compile) rather than opaque transport failures - so it goes
      * through requestWithStatus() instead of request(), and throws
-     * EvalEstimateInvalidException (carrying the real status/detail) for those two codes
+     * EvalRequestInvalidException (carrying the real status/detail) for those two codes
      * specifically, letting the caller forward them instead of a flattened 502.
      *
      * @param array<int, string> $metrics
@@ -209,7 +209,7 @@ class RuntimeClient
             return $decoded;
         }
         if ($statusCode === 404 || $statusCode === 422) {
-            throw new EvalEstimateInvalidException($statusCode, (string) ($decoded['detail'] ?? 'invalid'));
+            throw new EvalRequestInvalidException($statusCode, (string) ($decoded['detail'] ?? 'invalid'));
         }
 
         throw new RuntimeException("RuntimeClient: POST evals/estimate failed with status {$statusCode}");
@@ -218,12 +218,12 @@ class RuntimeClient
     /**
      * POST /internal/v1/evals — creates a `runtime.eval_runs` row and enqueues real
      * execution onto ai-worker's ARQ queue (PRD §6.7), used by
-     * EvalsController::createEvalRun(). Unlike estimateEvalCost(), this uses the plain
-     * request() (not requestWithStatus()) - 404 (missing dataset/agent_version) and 422
-     * (uncompilable agent version / unsupported metric) are already pre-checked by
-     * EvalsController before this call (rowExistsInCompany + its own metric-name check),
-     * same "pre-validate cheaply, treat the forward as opaque" reasoning
-     * enqueueKbDocumentIndexing() already uses.
+     * EvalsController::createEvalRun(). Also goes through requestWithStatus() (not the
+     * plain request()) - console-api only pre-checks that the dataset_id/agent_version_id
+     * *rows exist* and that `metrics` contains no unsupported names; it does NOT
+     * replicate ai-runtime's compile check or its judge_model-required-for-an-LLM-metric
+     * check, so a 422 from either of those is a real, reachable outcome here, same as
+     * estimateEvalCost(), not just a pre-validated-away edge case.
      *
      * @param array<int, string> $metrics
      * @return array<string, mixed>
@@ -236,7 +236,7 @@ class RuntimeClient
         string $role,
         ?float $estCostUsd
     ): array {
-        return $this->request('POST', 'evals', [
+        [$statusCode, $decoded] = $this->requestWithStatus('POST', 'evals', [
             'agent_version_id' => $agentVersionId,
             'dataset_id' => $datasetId,
             'metrics' => $metrics,
@@ -244,6 +244,15 @@ class RuntimeClient
             'role' => $role,
             'est_cost_usd' => $estCostUsd,
         ]);
+
+        if ($statusCode === 201) {
+            return $decoded;
+        }
+        if ($statusCode === 404 || $statusCode === 422) {
+            throw new EvalRequestInvalidException($statusCode, (string) ($decoded['detail'] ?? 'invalid'));
+        }
+
+        throw new RuntimeException("RuntimeClient: POST evals failed with status {$statusCode}");
     }
 
     /**

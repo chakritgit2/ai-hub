@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace ConsoleApi\Controllers\Admin;
 
 use ConsoleApi\Controllers\ControllerBase;
-use ConsoleApi\Services\EvalEstimateInvalidException;
+use ConsoleApi\Services\EvalRequestInvalidException;
 use ConsoleApi\Services\RuntimeClient;
 use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
@@ -77,7 +77,10 @@ class EvalsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
-        if (($error = $this->requireMembership()) !== null) {
+        // Not requireMembership() - this triggers a real, billable agent run per
+        // dataset item (PRD §7.2: viewer is read-only everywhere), same write-role gate
+        // every mutating DatasetsController method already uses.
+        if (($error = $this->requireWriteRole()) !== null) {
             return $error;
         }
 
@@ -140,6 +143,11 @@ class EvalsController extends ControllerBase
                 (string) $this->getRoleForCurrentCompany(),
                 $estCostUsd !== null ? (float) $estCostUsd : null
             );
+        } catch (EvalRequestInvalidException $exception) {
+            // ai-runtime's own checks caught something console-api doesn't pre-validate
+            // (judge_model required for an LLM-based metric, or a TOCTOU-deleted
+            // dataset/agent_version) - forward the real status/detail, not a flattened 502.
+            return $this->jsonResponse(['error' => 'create_eval_run_invalid', 'message' => $exception->getMessage()], $exception->getStatusCode());
         } catch (RuntimeException $exception) {
             return $this->jsonResponse(
                 ['error' => 'create_eval_run_failed', 'message' => $exception->getMessage()],
@@ -308,7 +316,7 @@ class EvalsController extends ControllerBase
                 $judgeModel,
                 (string) $this->getRoleForCurrentCompany()
             );
-        } catch (EvalEstimateInvalidException $exception) {
+        } catch (EvalRequestInvalidException $exception) {
             // ai-runtime's own resolve_dataset/resolve_and_compile re-checked both ids and
             // disagreed with the pre-checks above (TOCTOU: deleted in between) or found the
             // agent version doesn't currently compile - forward its real status/detail

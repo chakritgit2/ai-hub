@@ -74,20 +74,23 @@ async def _fresh_redis():
 async def company_ids():
     """Hands out fresh company ids and, after the test, deletes every
     runtime.conversations / runtime.agent_memory / logs.guardrail_events / logs.runs /
-    runtime.connection_secrets / runtime.company_keys / runtime.kb_documents row created
-    under them - the full set of runtime.*/logs.* tables any Playground-resolution test
-    (resolvable_agent_version, run_playground_agent) or KB test can write to for a given
-    company.
+    logs.eval_results / runtime.eval_runs / runtime.connection_secrets /
+    runtime.company_keys / runtime.kb_documents row created under them - the full set of
+    runtime.*/logs.* tables any Playground-resolution test (resolvable_agent_version,
+    run_playground_agent), KB test, or eval test can write to for a given company.
 
     Only touches the DB during teardown, and only if an id was handed out,
-    so tests that never use it don't need Postgres. guardrail_events is deleted before
-    runs - its run_id is a foreign key into runs.
+    so tests that never use it don't need Postgres. guardrail_events/eval_results are
+    deleted before runs - their run_id references a runs row (not DB-enforced, but keeps
+    the same logical child-before-parent order the real FK below (runs_table) establishes).
     """
     from app.core.db import get_company_session
     from app.db.tables import (
         company_keys_table,
         connection_secrets_table,
         conversations_table,
+        eval_results_table,
+        eval_runs_table,
         guardrail_events_table,
         kb_documents_table,
         runs_table,
@@ -119,7 +122,13 @@ async def company_ids():
             await session.execute(
                 guardrail_events_table.delete().where(guardrail_events_table.c.company_id == company_uuid)
             )
+            await session.execute(
+                eval_results_table.delete().where(eval_results_table.c.company_id == company_uuid)
+            )
             await session.execute(runs_table.delete().where(runs_table.c.company_id == company_uuid))
+            await session.execute(
+                eval_runs_table.delete().where(eval_runs_table.c.company_id == company_uuid)
+            )
             await session.execute(
                 connection_secrets_table.delete().where(connection_secrets_table.c.company_id == company_uuid)
             )

@@ -18,6 +18,11 @@ import type {
 	DatasetInput,
 	DatasetItem,
 	Deployment,
+	CreateEvalRunInput,
+	EvalCostEstimate,
+	EvalCostEstimateInput,
+	EvalResult,
+	EvalRun,
 	KbDocument,
 	KbImportResultItem,
 	KbSearchResult,
@@ -250,18 +255,30 @@ export function testTool(id: string): Promise<{ ok: boolean; detail: string }> {
 	return apiFetch(`/tools/${id}/test`, { method: 'POST' });
 }
 
-// ---- /evals (phase 3) -----------------------------------------------------
+// ---- /evals (PRD §6.7) ------------------------------------------------------
+// listEvalRuns/getEvalRun/getEvalRunResults hit console-api's own direct reads of
+// runtime.eval_runs/logs.eval_results (no ai-runtime round trip); createEvalRun and
+// estimateEvalCost forward to ai-runtime. compareEvalRuns stays a Placeholder - still
+// the one /evals operation genuinely gated x-phase: 3.
 
-export function listEvalRuns(): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>('/evals');
+export function listEvalRuns(): Promise<EvalRun[]> {
+	return apiFetch<EvalRun[]>('/evals');
 }
 
-export function createEvalRun(input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>('/evals', { method: 'POST', body: input });
+export function createEvalRun(input: CreateEvalRunInput): Promise<EvalRun> {
+	return apiFetch<EvalRun>('/evals', { method: 'POST', body: input });
 }
 
-export function getEvalRun(id: string): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/evals/${id}`);
+export function estimateEvalCost(input: EvalCostEstimateInput): Promise<EvalCostEstimate> {
+	return apiFetch<EvalCostEstimate>('/evals/estimate', { method: 'POST', body: input });
+}
+
+export function getEvalRun(id: string): Promise<EvalRun> {
+	return apiFetch<EvalRun>(`/evals/${id}`);
+}
+
+export function getEvalRunResults(id: string): Promise<EvalResult[]> {
+	return apiFetch<EvalResult[]>(`/evals/${id}/results`);
 }
 
 export function compareEvalRuns(a: string, b: string): Promise<Placeholder> {

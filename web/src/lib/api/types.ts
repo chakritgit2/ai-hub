@@ -153,6 +153,96 @@ export interface DatasetImportResult {
 	errors: { row: number; error: string }[];
 }
 
+// Evaluation runs (PRD §6.7/§8.1). The single source of truth for the metrics checkbox
+// list - llm_evaluator/python_evaluator aren't executable yet (no rubric schema, no
+// sandboxing design - see ai/app/services/eval_runner.py's module docstring) and are
+// rendered disabled rather than omitted, so the gap is visible instead of silent.
+export const EVAL_METRICS = [
+	{ name: 'faithfulness', label: 'Faithfulness', executable: true },
+	{ name: 'context_recall', label: 'Context Recall', executable: true },
+	{ name: 'context_precision', label: 'Context Precision', executable: true },
+	{ name: 'answer_correctness', label: 'Answer Correctness', executable: true },
+	{ name: 'factual_correctness', label: 'Factual Correctness', executable: true },
+	{ name: 'bleu', label: 'BLEU', executable: true },
+	{ name: 'rouge', label: 'ROUGE', executable: true },
+	{ name: 'exact_match', label: 'Exact Match', executable: true },
+	{ name: 'string_presence', label: 'String Presence', executable: true },
+	{ name: 'string_similarity', label: 'String Similarity', executable: true },
+	{ name: 'llm_evaluator', label: 'Custom Rubric (LLM Evaluator)', executable: false },
+	{ name: 'python_evaluator', label: 'Python Evaluator', executable: false }
+] as const;
+
+export interface EvalCostEstimateInput {
+	agent_version_id: string;
+	dataset_id: string;
+	metrics: string[];
+	judge_model?: string;
+}
+
+export interface EvalCostEstimate {
+	item_count: number;
+	agent_model: string;
+	judge_model: string;
+	metrics: { metric: string; llm_calls_per_item: number }[];
+	estimated_tokens: {
+		agent_input: number;
+		agent_output: number;
+		judge_input: number;
+		judge_output: number;
+	};
+	estimated_cost_usd: {
+		agent: number | null;
+		judge: number | null;
+		total: number | null;
+	};
+	warnings: string[];
+}
+
+export interface CreateEvalRunInput {
+	agent_version_id: string;
+	dataset_id: string;
+	metrics: string[];
+	judge_model?: string | null;
+	est_cost_usd?: number | null;
+}
+
+export interface EvalRunSummary {
+	item_count: number;
+	success_count: number;
+	failure_count: number;
+	mean_scores: Record<string, number>;
+	total_cost_usd: number | null;
+	skipped_metrics: string[];
+	metric_errors: Record<string, string>;
+}
+
+export interface EvalRun {
+	id: string;
+	company_id: string;
+	agent_version_id: string;
+	dataset_id: string;
+	role: string;
+	metrics: string[];
+	judge_model: string | null;
+	status: 'queued' | 'running' | 'completed' | 'failed';
+	est_cost_usd: number | null;
+	summary: EvalRunSummary | null;
+	error: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface EvalResult {
+	id: string;
+	eval_run_id: string;
+	dataset_item_id: string;
+	run_id: string | null;
+	scores: Record<string, number> | null;
+	reasons: Record<string, string | null> | null;
+	error: string | null;
+	created_at: string;
+}
+
 export interface Agent {
 	id: string;
 	company_id: string;
