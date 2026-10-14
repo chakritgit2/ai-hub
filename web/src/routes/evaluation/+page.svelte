@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { listEvalRuns } from '$lib/api/console';
 	import type { EvalRun } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
@@ -8,6 +9,28 @@
 	let evalRuns = $state<EvalRun[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+
+	// Compare (PRD §6.7) always takes exactly two runs - checking a third silently drops
+	// the oldest selection rather than showing a validation error, same low-ceremony
+	// spirit as the rest of this page.
+	const MAX_COMPARE_SELECTION = 2;
+	let selectedIds = $state<string[]>([]);
+
+	function toggleSelected(id: string, checked: boolean) {
+		if (checked) {
+			selectedIds = [...selectedIds.filter((existing) => existing !== id), id].slice(-MAX_COMPARE_SELECTION);
+		} else {
+			selectedIds = selectedIds.filter((existing) => existing !== id);
+		}
+	}
+
+	function compareSelected() {
+		if (selectedIds.length !== MAX_COMPARE_SELECTION) {
+			return;
+		}
+		const [a, b] = selectedIds;
+		goto(`/evaluation/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+	}
 
 	async function load() {
 		loading = true;
@@ -28,7 +51,7 @@
 	});
 
 	$effect(() => {
-		headerContent.set({ menu: 'Evaluation', title: 'Evaluation', actions: newEvalRunAction });
+		headerContent.set({ menu: 'Evaluation', title: 'Evaluation', actions: headerActions });
 	});
 
 	const statusStyles: Record<string, string> = {
@@ -50,13 +73,24 @@
 	}
 </script>
 
-{#snippet newEvalRunAction()}
-	<a
-		href="/evaluation/new"
-		class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
-	>
-		+ New eval run
-	</a>
+{#snippet headerActions()}
+	<div class="flex gap-2">
+		<button
+			type="button"
+			disabled={selectedIds.length !== MAX_COMPARE_SELECTION}
+			onclick={compareSelected}
+			class="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50
+				disabled:cursor-not-allowed disabled:opacity-50"
+		>
+			Compare selected
+		</button>
+		<a
+			href="/evaluation/new"
+			class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+		>
+			+ New eval run
+		</a>
+	</div>
 {/snippet}
 
 {#if loading}
@@ -85,6 +119,7 @@
 		<table class="min-w-full divide-y divide-neutral-200 text-sm">
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
 				<tr>
+					<th class="px-4 py-2"></th>
 					<th class="px-4 py-2">Created</th>
 					<th class="px-4 py-2">Status</th>
 					<th class="px-4 py-2">Metrics</th>
@@ -95,6 +130,14 @@
 			<tbody class="divide-y divide-neutral-100">
 				{#each evalRuns as run (run.id)}
 					<tr>
+						<td class="px-4 py-2">
+							<input
+								type="checkbox"
+								aria-label="Select {run.id} for comparison"
+								checked={selectedIds.includes(run.id)}
+								onchange={(e) => toggleSelected(run.id, (e.currentTarget as HTMLInputElement).checked)}
+							/>
+						</td>
 						<td class="px-4 py-2 text-neutral-600">{new Date(run.created_at).toLocaleString()}</td>
 						<td class="px-4 py-2">
 							<span

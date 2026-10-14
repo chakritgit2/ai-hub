@@ -96,16 +96,24 @@ return function (Router $router): void {
     $admin('GET', '/datasets/{id:[^/]+}/items', 'Datasets', 'listDatasetItems');
     $admin('POST', '/datasets/{id:[^/]+}/import', 'Datasets', 'importDatasetItems');
 
-    // --- /evals (x-phase: 3, estimateEvalCost/createEvalRun/listEvalRuns/getEvalRun/
-    // getEvalRunResults real; compareEvalRuns still a stub) ----------------------
-    // /evals/compare and /evals/estimate must be registered before /evals/{id} so the
-    // static segment wins the match (Phalcon's router matches in registration order).
+    // --- /evals (estimateEvalCost/createEvalRun/listEvalRuns/getEvalRun/
+    // getEvalRunResults/compareEvalRuns all real now) ---------------------------
+    // Registration order alone does NOT make the literal '/evals/compare' win over
+    // '/evals/{id:[^/]+}' - confirmed live (a standalone Phalcon\Mvc\Router::handle()
+    // script) that Phalcon 5.9's router resolved GET /evals/compare to
+    // getEvalRun(id: 'compare') regardless of which was registered first, a real,
+    // previously-undetected dead route (compareEvalRuns was a stub until this was
+    // implemented, so nobody had tried it live before). Fixed at the source instead of
+    // depending on route-registration order: {id} here is constrained to a hex/dash
+    // shape that a real UUID has but a literal word like "compare" never does (it
+    // contains letters outside a-f), so there is no longer any ambiguity for the
+    // router to resolve either way.
     $admin('GET', '/evals/compare', 'Evals', 'compareEvalRuns');
     $admin('POST', '/evals/estimate', 'Evals', 'estimateEvalCost');
     $admin('GET', '/evals', 'Evals', 'listEvalRuns');
     $admin('POST', '/evals', 'Evals', 'createEvalRun');
-    $admin('GET', '/evals/{id:[^/]+}', 'Evals', 'getEvalRun');
-    $admin('GET', '/evals/{id:[^/]+}/results', 'Evals', 'getEvalRunResults');
+    $admin('GET', '/evals/{id:[0-9a-fA-F-]+}', 'Evals', 'getEvalRun');
+    $admin('GET', '/evals/{id:[0-9a-fA-F-]+}/results', 'Evals', 'getEvalRunResults');
 
     // --- /approvals (x-phase: 2) ----------------------------------------------
     $admin('GET', '/approvals', 'Approvals', 'listApprovals');

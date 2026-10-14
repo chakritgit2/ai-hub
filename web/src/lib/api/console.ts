@@ -23,6 +23,7 @@ import type {
 	EvalCostEstimateInput,
 	EvalResult,
 	EvalRun,
+	EvalRunComparison,
 	KbDocument,
 	KbImportResultItem,
 	KbSearchResult,
@@ -256,10 +257,9 @@ export function testTool(id: string): Promise<{ ok: boolean; detail: string }> {
 }
 
 // ---- /evals (PRD §6.7) ------------------------------------------------------
-// listEvalRuns/getEvalRun/getEvalRunResults hit console-api's own direct reads of
-// runtime.eval_runs/logs.eval_results (no ai-runtime round trip); createEvalRun and
-// estimateEvalCost forward to ai-runtime. compareEvalRuns stays a Placeholder - still
-// the one /evals operation genuinely gated x-phase: 3.
+// listEvalRuns/getEvalRun/getEvalRunResults/compareEvalRuns hit console-api's own
+// direct reads of runtime.eval_runs/logs.eval_results (no ai-runtime round trip);
+// createEvalRun and estimateEvalCost forward to ai-runtime.
 
 export function listEvalRuns(): Promise<EvalRun[]> {
 	return apiFetch<EvalRun[]>('/evals');
@@ -281,8 +281,8 @@ export function getEvalRunResults(id: string): Promise<EvalResult[]> {
 	return apiFetch<EvalResult[]>(`/evals/${id}/results`);
 }
 
-export function compareEvalRuns(a: string, b: string): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/evals/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+export function compareEvalRuns(a: string, b: string): Promise<EvalRunComparison> {
+	return apiFetch<EvalRunComparison>(`/evals/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
 }
 
 // ---- /approvals (phase 2) --------------------------------------------------

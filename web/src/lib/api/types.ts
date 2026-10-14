@@ -243,6 +243,19 @@ export interface EvalResult {
 	created_at: string;
 }
 
+export interface EvalRunComparisonMetric {
+	metric: string;
+	a_mean: number | null;
+	b_mean: number | null;
+	delta: number | null;
+}
+
+export interface EvalRunComparison {
+	run_a: EvalRun;
+	run_b: EvalRun;
+	metrics: EvalRunComparisonMetric[];
+}
+
 export interface Agent {
 	id: string;
 	company_id: string;

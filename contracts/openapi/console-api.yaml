@@ -341,6 +341,25 @@ components:
           additionalProperties: { type: string, nullable: true }
         error: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
+    EvalRunComparison:
+      type: object
+      description: 'Side-by-side comparison of two eval runs'' already-computed summary.mean_scores (PRD §6.7 "Compare two runs") - no re-scoring, just a diff of what each run already recorded.'
+      properties:
+        run_a: { $ref: '#/components/schemas/EvalRun' }
+        run_b: { $ref: '#/components/schemas/EvalRun' }
+        metrics:
+          type: array
+          items:
+            type: object
+            properties:
+              metric: { type: string }
+              a_mean: { type: number, format: float, nullable: true }
+              b_mean: { type: number, format: float, nullable: true }
+              delta:
+                type: number
+                format: float
+                nullable: true
+                description: 'b_mean - a_mean, only when both are known.'
     Agent:
       type: object
       properties:
@@ -971,12 +990,15 @@ paths:
   /evals/compare:
     get:
       operationId: compareEvalRuns
-      x-phase: 3
+      summary: 'Compares two eval runs'' summary.mean_scores side by side (PRD §6.7) - reads runtime.eval_runs directly, no ai-runtime call.'
       parameters:
         - { $ref: '#/components/parameters/XCompanyId' }
         - { name: a, in: query, required: true, schema: { type: string } }
         - { name: b, in: query, required: true, schema: { type: string } }
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EvalRunComparison' } } } }
+        "400": { description: 'a or b missing/not a UUID' }
+        "404": { description: 'a or b not found for this company' }
 
   /approvals:
     get:

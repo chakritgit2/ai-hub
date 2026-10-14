@@ -12,17 +12,17 @@ use Phalcon\Http\Response;
 use RuntimeException;
 
 /**
- * /evals — x-phase: 3 in the OpenAPI contract (PRD §8.1 `eval_runs`/`eval_results` tables).
+ * /evals — PRD §6.7/§8.1 (`eval_runs`/`eval_results` tables).
  *
  * `estimateEvalCost`/`createEvalRun` forward to ai-runtime (the former just computes a
  * number, the latter needs ai-runtime to enqueue the real ARQ job - see
  * `ai/app/services/eval_runner.py`/`main_runtime.py`). `listEvalRuns`/`getEvalRun`/
- * `getEvalRunResults` read `runtime.eval_runs`/`logs.eval_results` **directly** instead -
- * same pattern `RunsController` already established for `logs.runs`/`runtime.
- * conversations`: those tables' own `company_isolation` RLS policies have no `TO` clause,
- * so they already apply to any role with a table-level SELECT grant, and `console_app`
- * has exactly that grant (`db/migrations/post/020_eval_runs_results_console_grants.sql`).
- * `compareEvalRuns` stays unimplemented - deferred to a later slice.
+ * `getEvalRunResults`/`compareEvalRuns` read `runtime.eval_runs`/`logs.eval_results`
+ * **directly** instead - same pattern `RunsController` already established for
+ * `logs.runs`/`runtime.conversations`: those tables' own `company_isolation` RLS
+ * policies have no `TO` clause, so they already apply to any role with a table-level
+ * SELECT grant, and `console_app` has exactly that grant (`db/migrations/post/
+ * 020_eval_runs_results_console_grants.sql`).
  */
 class EvalsController extends ControllerBase
 {
@@ -201,7 +201,55 @@ class EvalsController extends ControllerBase
 
     public function compareEvalRuns(): Response
     {
-        return $this->notImplemented();
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
+
+        $idA = $this->request->getQuery('a');
+        $idB = $this->request->getQuery('b');
+        if (!is_string($idA) || !$this->isUuid($idA) || !is_string($idB) || !$this->isUuid($idB)) {
+            return $this->jsonResponse(['error' => 'a_and_b_must_be_uuids'], 400);
+        }
+
+        $rowA = $this->findEvalRun($idA);
+        if ($rowA === null) {
+            return $this->jsonResponse(['error' => 'a_not_found'], 404);
+        }
+        $rowB = $this->findEvalRun($idB);
+        if ($rowB === null) {
+            return $this->jsonResponse(['error' => 'b_not_found'], 404);
+        }
+
+        $runA = $this->formatEvalRun($rowA);
+        $runB = $this->formatEvalRun($rowB);
+
+        // Diffs each run's already-computed summary.mean_scores (written once by
+        // run_eval on completion) - no re-scoring, no logs.eval_results read. A run
+        // that hasn't reached "completed" yet just contributes no metrics here; its
+        // own `status` (in run_a/run_b) tells the caller why.
+        $meanScoresA = $runA['summary']['mean_scores'] ?? [];
+        $meanScoresB = $runB['summary']['mean_scores'] ?? [];
+        $metricNames = array_unique([...array_keys($meanScoresA), ...array_keys($meanScoresB)]);
+        sort($metricNames);
+
+        $metrics = array_map(static function (string $metric) use ($meanScoresA, $meanScoresB): array {
+            $aMean = $meanScoresA[$metric] ?? null;
+            $bMean = $meanScoresB[$metric] ?? null;
+            return [
+                'metric' => $metric,
+                'a_mean' => $aMean,
+                'b_mean' => $bMean,
+                // Only a real number when BOTH sides are known - same "don't synthesize
+                // a confident number from a partially-unknown pair" rule eval_runner.py's
+                // total_cost_usd handling already established, not "0 if unknown".
+                'delta' => ($aMean !== null && $bMean !== null) ? $bMean - $aMean : null,
+            ];
+        }, $metricNames);
+
+        return $this->jsonResponse(['run_a' => $runA, 'run_b' => $runB, 'metrics' => $metrics]);
     }
 
     /**
