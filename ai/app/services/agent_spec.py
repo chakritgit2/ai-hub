@@ -149,6 +149,27 @@ class MemorySpec(BaseModel):
     save_mode: MemorySaveMode = "full"
 
 
+class PublishGateSpec(BaseModel):
+    """PRD §6.7 "Publish gate (e.g. faithfulness ≥ 0.8)" - opt-in per agent version
+    (`enabled` defaults to False, zero behavior change for every agent that never
+    touches this tab). Never merged into `compiled_definition` (see compiler.py) -
+    this is a publish-time-only check (`AgentsController::publishAgentVersion`
+    reads it straight from the agent version's own `spec` column), never consulted
+    by a running agent."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    metric: str | None = None
+    threshold: float | None = None
+
+    @model_validator(mode="after")
+    def _require_metric_and_threshold_when_enabled(self) -> "PublishGateSpec":
+        if self.enabled and (self.metric is None or self.threshold is None):
+            raise ValueError("publish_gate.metric and publish_gate.threshold are required when enabled")
+        return self
+
+
 class KnowledgeRefSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -175,6 +196,7 @@ class AgentSpecDoc(BaseModel):
     skills: list[str] = Field(default_factory=list)
     knowledge: list[KnowledgeRefSpec] = Field(default_factory=list)
     memory: MemorySpec = Field(default_factory=MemorySpec)
+    publish_gate: PublishGateSpec = Field(default_factory=PublishGateSpec)
 
 
 def render_identity_prompt(identity: AgentIdentitySpec) -> str:

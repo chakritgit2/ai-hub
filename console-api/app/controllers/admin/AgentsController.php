@@ -578,6 +578,21 @@ class AgentsController extends ControllerBase
             );
         }
 
+        // Publish gate (PRD §6.7) - opt-in per agent version (`spec.publish_gate.
+        // enabled`, defaults false - every agent that never touches this tab publishes
+        // exactly as before). Pydantic's own PublishGateSpec validator (ai/app/services/
+        // agent_spec.py), already run by compileAgentSpec() above, guarantees an enabled
+        // gate has both `metric` and `threshold` by this point - no need to re-check
+        // their presence/shape here, only whether the actual score clears the bar. No
+        // admin override: the user explicitly chose a hard block, no bypass.
+        $gate = $spec['publish_gate'] ?? null;
+        if (($gate['enabled'] ?? false) === true) {
+            $gateError = $this->checkPublishGate($vid, $gate);
+            if ($gateError !== null) {
+                return $gateError;
+            }
+        }
+
         $userId = $this->getAuthUser()['id'];
 
         $result = $this->runInCompanyTransaction(function ($db) use ($vid, $compileResult, $userId) {
@@ -683,6 +698,65 @@ class AgentsController extends ControllerBase
         );
 
         return empty($row) ? null : $row;
+    }
+
+    /**
+     * Checks `$gate` (the agent version's own `spec.publish_gate`, already confirmed
+     * `enabled` by the caller) against the most recent *completed* eval run for this
+     * agent version - the same `agent_version_id` filter `EvalsController::
+     * listEvalRuns` already supports, narrowed to the latest row. Returns a 400
+     * `Response` describing which of the three ways the gate can fail, or `null` when
+     * the gate is satisfied and publishing may proceed. `metric`/`threshold` are
+     * guaranteed non-null by `PublishGateSpec`'s own validator (already run via
+     * `compileAgentSpec()` before this is ever called), so this only has to resolve
+     * the actual score.
+     *
+     * @param array<string, mixed> $gate
+     */
+    private function checkPublishGate(string $agentVersionId, array $gate): ?Response
+    {
+        $metric = $gate['metric'];
+        $threshold = $gate['threshold'];
+
+        $evalRun = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                "SELECT summary FROM runtime.eval_runs
+                 WHERE agent_version_id = :agent_version_id AND status = 'completed'
+                 ORDER BY created_at DESC LIMIT 1",
+                Enum::FETCH_ASSOC,
+                ['agent_version_id' => $agentVersionId]
+            )
+        );
+        if (empty($evalRun)) {
+            return $this->jsonResponse(
+                ['error' => 'publish_gate_failed', 'reason' => 'no_eval_run', 'metric' => $metric, 'threshold' => $threshold],
+                400
+            );
+        }
+
+        $summary = json_decode((string) $evalRun['summary'], true);
+        $actual = $summary['mean_scores'][$metric] ?? null;
+        if ($actual === null) {
+            return $this->jsonResponse(
+                ['error' => 'publish_gate_failed', 'reason' => 'metric_not_scored', 'metric' => $metric, 'threshold' => $threshold],
+                400
+            );
+        }
+
+        if ($actual < $threshold) {
+            return $this->jsonResponse(
+                [
+                    'error' => 'publish_gate_failed',
+                    'reason' => 'below_threshold',
+                    'metric' => $metric,
+                    'threshold' => $threshold,
+                    'actual' => $actual,
+                ],
+                400
+            );
+        }
+
+        return null;
     }
 
     /**

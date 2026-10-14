@@ -1,7 +1,14 @@
 import pytest
 from pydantic import ValidationError
 
-from app.services.agent_spec import AgentIdentitySpec, AgentSpecDoc, MemorySpec, ModelSpec, render_identity_prompt
+from app.services.agent_spec import (
+    AgentIdentitySpec,
+    AgentSpecDoc,
+    MemorySpec,
+    ModelSpec,
+    PublishGateSpec,
+    render_identity_prompt,
+)
 
 VALID_IDENTITY = {
     "name": "vending-support",
@@ -92,3 +99,41 @@ def test_memory_spec_rejects_non_positive_message_limit():
 def test_memory_spec_rejects_unknown_save_mode():
     with pytest.raises(ValidationError):
         MemorySpec.model_validate({"save_mode": "summarized"})
+
+
+def test_publish_gate_spec_defaults_to_disabled():
+    gate = PublishGateSpec()
+    assert gate.enabled is False
+    assert gate.metric is None
+    assert gate.threshold is None
+
+
+def test_agent_spec_doc_defaults_publish_gate_when_omitted():
+    doc = AgentSpecDoc.model_validate({"identity": VALID_IDENTITY, "model": VALID_MODEL})
+    assert doc.publish_gate == PublishGateSpec()
+
+
+def test_publish_gate_spec_rejects_enabled_without_metric_and_threshold():
+    with pytest.raises(ValidationError):
+        PublishGateSpec.model_validate({"enabled": True})
+
+
+def test_publish_gate_spec_rejects_enabled_with_only_metric():
+    with pytest.raises(ValidationError):
+        PublishGateSpec.model_validate({"enabled": True, "metric": "faithfulness"})
+
+
+def test_publish_gate_spec_accepts_enabled_with_metric_and_threshold():
+    gate = PublishGateSpec.model_validate({"enabled": True, "metric": "faithfulness", "threshold": 0.8})
+    assert gate.enabled is True
+    assert gate.metric == "faithfulness"
+    assert gate.threshold == 0.8
+
+
+def test_publish_gate_spec_allows_disabled_with_stale_metric_and_threshold():
+    """A gate the user just unchecked still carries its old metric/threshold in the
+    spec (AgentSpecTabs.svelte's buildPublishGateSpec() clears them on build, but
+    this model itself must not reject a disabled gate with leftover values, same as
+    enabling it again later should restore them for free)."""
+    gate = PublishGateSpec.model_validate({"enabled": False, "metric": "faithfulness", "threshold": 0.8})
+    assert gate.enabled is False

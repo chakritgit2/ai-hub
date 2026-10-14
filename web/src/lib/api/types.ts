@@ -325,6 +325,15 @@ export interface MemorySpec {
 	save_mode?: MemorySaveMode;
 }
 
+// Mirrors ai/app/services/agent_spec.py's PublishGateSpec (PRD §6.7) - opt-in per
+// agent version, defaults to disabled. metric/threshold are only meaningful (and only
+// required by the backend's own Pydantic validator) while enabled is true.
+export interface PublishGateSpec {
+	enabled: boolean;
+	metric?: string | null;
+	threshold?: number | null;
+}
+
 export interface AgentVersion {
 	id: string;
 	company_id: string;
@@ -338,6 +347,7 @@ export interface AgentVersion {
 		knowledge?: { kb_id: string }[];
 		guardrails?: GuardrailsSpec;
 		memory?: MemorySpec;
+		publish_gate?: PublishGateSpec;
 	};
 	spec_version: string;
 	compiled_definition?: Record<string, unknown> | null;

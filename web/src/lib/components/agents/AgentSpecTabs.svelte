@@ -11,9 +11,11 @@
 		MemorySaveMode,
 		MemorySpec,
 		ModelSpec,
+		PublishGateSpec,
 		Skill,
 		Tool
 	} from '$lib/api/types';
+	import { EVAL_METRICS } from '$lib/api/types';
 
 	// Only connection types the compiler can actually build an LLM for today
 	// (ai/app/integrations/dynamiq_adapter.py's _CONNECTION_BUILDERS/_LLM_TYPES) - anything
@@ -198,7 +200,21 @@
 		max_tokens: string | number | null;
 	};
 
-	type TabId = 'identity' | 'model' | 'tools' | 'knowledge' | 'skills' | 'memory' | 'guardrails' | 'advanced';
+	type TabId =
+		| 'identity'
+		| 'model'
+		| 'tools'
+		| 'knowledge'
+		| 'skills'
+		| 'memory'
+		| 'guardrails'
+		| 'publish_gate'
+		| 'advanced';
+
+	// Only the metrics an eval run can actually score (PRD §6.7 / ai/app/services/
+	// eval_runner.py's UNSUPPORTED_EXECUTION_METRICS) - configuring a gate against
+	// llm_evaluator/python_evaluator would mean it can never be satisfied.
+	const GATE_METRICS = EVAL_METRICS.filter((m) => m.executable);
 
 	interface Tab {
 		id: TabId;
@@ -217,6 +233,7 @@
 		{ id: 'skills', label: 'Skills', enabled: true },
 		{ id: 'memory', label: 'Memory', enabled: true },
 		{ id: 'guardrails', label: 'Guardrails', enabled: true },
+		{ id: 'publish_gate', label: 'Publish Gate', enabled: true },
 		{ id: 'advanced', label: 'Advanced', enabled: true }
 	];
 
@@ -230,6 +247,7 @@
 		selectedKnowledgeBaseIds = $bindable(),
 		guardrails = $bindable(),
 		memory = $bindable(),
+		publishGate = $bindable(),
 		readonly = false,
 		compiledDefinition = null,
 		isAdmin = false
@@ -241,6 +259,7 @@
 		selectedKnowledgeBaseIds: string[];
 		guardrails: GuardrailsSpec;
 		memory: MemoryFormState;
+		publishGate: PublishGateFormState;
 		readonly?: boolean;
 		compiledDefinition?: Record<string, unknown> | null;
 		isAdmin?: boolean;
@@ -319,6 +338,31 @@
 			message_limit: isUnset(memory.message_limit) ? null : Number(memory.message_limit),
 			save_mode: memory.save_mode
 		};
+	}
+
+	export type PublishGateFormState = {
+		enabled: boolean;
+		metric: string;
+		threshold: string | number;
+	};
+
+	/** Mirrors ai/app/services/agent_spec.py's PublishGateSpec validation (metric/
+	 * threshold required while enabled) - same "return the error message, or the built
+	 * value" shape as buildModelSpec/buildMemorySpec. Unlike buildMemorySpec (which
+	 * preserves message_limit through a disable/re-enable cycle), a disabled gate's
+	 * metric/threshold are cleared unconditionally - a gate that's off is never checked
+	 * either way, so there's no behavior to preserve by keeping stale values around. */
+	export function buildPublishGateSpec(): PublishGateSpec | string {
+		if (!publishGate.enabled) {
+			return { enabled: false, metric: null, threshold: null };
+		}
+		if (!publishGate.metric) {
+			return 'Publish gate: please select a metric.';
+		}
+		if (isUnset(publishGate.threshold) || Number.isNaN(Number(publishGate.threshold))) {
+			return 'Publish gate: please enter a numeric threshold.';
+		}
+		return { enabled: true, metric: publishGate.metric, threshold: Number(publishGate.threshold) };
 	}
 
 	let connections = $state<Connection[]>([]);
@@ -790,6 +834,50 @@
 					agent. Leave message limit blank to use Dynamiq's own default. Input/output-only save
 					mode keeps less context per turn but is cheaper and skips intermediate tool-call/reasoning
 					detail.
+				</p>
+			</form>
+		{:else if activeTab === 'publish_gate'}
+			<form class="space-y-5" onsubmit={(e) => e.preventDefault()} inert={readonly}>
+				<label class="flex items-center gap-2">
+					<input type="checkbox" bind:checked={publishGate.enabled} class="rounded border-neutral-300" />
+					<span class="text-sm font-medium text-neutral-700">Require a passing eval before publishing</span>
+				</label>
+
+				{#if publishGate.enabled}
+					<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+						<label class="block">
+							<span class="text-sm font-medium text-neutral-700">Metric</span>
+							<select
+								bind:value={publishGate.metric}
+								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							>
+								<option value="" disabled>Select a metric</option>
+								{#each GATE_METRICS as metric (metric.name)}
+									<option value={metric.name}>{metric.label}</option>
+								{/each}
+							</select>
+						</label>
+						<label class="block">
+							<span class="text-sm font-medium text-neutral-700">Minimum score</span>
+							<input
+								type="number"
+								step="0.01"
+								min="0"
+								bind:value={publishGate.threshold}
+								placeholder="e.g. 0.8"
+								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							/>
+						</label>
+					</div>
+				{/if}
+
+				<p class="text-xs text-neutral-500">
+					Publish gate (PRD §6.7) - when enabled, publishing is blocked unless the most recent
+					completed <a href="/evaluation" class="text-primary underline">eval run</a> for this
+					version scored at least this threshold on the chosen metric. No eval run yet, or the
+					metric wasn't scored in it, also blocks publishing. There is no override.
 				</p>
 			</form>
 		{:else if activeTab === 'guardrails'}

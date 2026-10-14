@@ -18,7 +18,9 @@
 		blankIdentity,
 		blankModelSpec,
 		blankGuardrails,
-		blankMemorySpec
+		blankMemorySpec,
+		blankPublishGateSpec,
+		formatPublishGateError
 	} from '$lib/components/agents/specDefaults';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
@@ -51,6 +53,7 @@
 	let selectedKnowledgeBaseIds = $state<string[]>([]);
 	let guardrails = $state(blankForm.guardrails);
 	let memory = $state(blankForm.memory);
+	let publishGate = $state(blankForm.publishGate);
 
 	function loadFrom(newAgent: Agent | null, newVersions: AgentVersion[]) {
 		agent = newAgent;
@@ -64,12 +67,14 @@
 		selectedKnowledgeBaseIds = form.selectedKnowledgeBaseIds;
 		guardrails = form.guardrails;
 		memory = form.memory;
+		publishGate = form.publishGate;
 		versionId = latest && !latest.is_published ? latest.id : null;
 		// Clear banners left over from whatever the page was previously showing (a prior
 		// save/publish result, or - since Clone navigates within this same route/component
 		// instance rather than remounting - the agent this page used to be displaying).
 		error = null;
 		publishErrors = [];
+		publishGateError = null;
 		savedNotice = false;
 	}
 
@@ -90,6 +95,7 @@
 	let archiving = $state(false);
 	let error = $state<string | null>(null);
 	let publishErrors = $state<{ path: string; message: string }[]>([]);
+	let publishGateError = $state<string | null>(null);
 	let savedNotice = $state(false);
 
 	$effect(() => {
@@ -118,6 +124,10 @@
 		if (!memoryResult || typeof memoryResult === 'string') {
 			return { error: memoryResult ?? 'Memory: something went wrong building the spec.' };
 		}
+		const publishGateResult = tabsRef?.buildPublishGateSpec();
+		if (!publishGateResult || typeof publishGateResult === 'string') {
+			return { error: publishGateResult ?? 'Publish gate: something went wrong building the spec.' };
+		}
 
 		return {
 			spec: {
@@ -127,7 +137,8 @@
 				skills: selectedSkillNames,
 				knowledge: selectedKnowledgeBaseIds.map((kb_id) => ({ kb_id })),
 				guardrails: guardrailsResult,
-				memory: memoryResult
+				memory: memoryResult,
+				publish_gate: publishGateResult
 			}
 		};
 	}
@@ -136,6 +147,7 @@
 		if (!agent || !versionId) return;
 		error = null;
 		publishErrors = [];
+		publishGateError = null;
 		savedNotice = false;
 
 		const built = buildSpec();
@@ -185,6 +197,7 @@
 		if (!agent || !versionId) return;
 		error = null;
 		publishErrors = [];
+		publishGateError = null;
 		savedNotice = false;
 
 		const built = buildSpec();
@@ -207,6 +220,16 @@
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 422 && e.body && typeof e.body === 'object' && 'errors' in e.body) {
 				publishErrors = (e.body as { errors: { path: string; message: string }[] }).errors;
+			} else if (
+				e instanceof ApiError &&
+				e.status === 400 &&
+				e.body &&
+				typeof e.body === 'object' &&
+				(e.body as { error?: string }).error === 'publish_gate_failed'
+			) {
+				publishGateError = formatPublishGateError(
+					e.body as { reason: string; metric?: string; threshold?: number; actual?: number }
+				);
 			} else if (e instanceof ApiError && e.status === 409) {
 				await refreshAfterConflict('This version was already published elsewhere.');
 			} else {
@@ -224,6 +247,7 @@
 		if (!agent) return;
 		error = null;
 		publishErrors = [];
+		publishGateError = null;
 		savedNotice = false;
 		creatingVersion = true;
 		try {
@@ -235,7 +259,8 @@
 				skills: [],
 				knowledge: [],
 				guardrails: blankGuardrails(),
-				memory: blankMemorySpec()
+				memory: blankMemorySpec(),
+				publish_gate: blankPublishGateSpec()
 			};
 			const version = await createAgentVersion(agent.id, { spec: sourceSpec });
 			const newVersions = [version, ...versions];
@@ -384,6 +409,13 @@
 		</div>
 	{/if}
 
+	{#if publishGateError}
+		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+			<p class="font-medium">Publish blocked by the publish gate</p>
+			<p class="mt-1">{publishGateError}</p>
+		</div>
+	{/if}
+
 	{#if savedNotice}
 		<div class="mb-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-primary-700">
 			Changes saved.
@@ -438,6 +470,7 @@
 			bind:selectedKnowledgeBaseIds
 			bind:guardrails
 			bind:memory
+			bind:publishGate
 			{readonly}
 			{isAdmin}
 			compiledDefinition={latestVersion?.compiled_definition ?? null}

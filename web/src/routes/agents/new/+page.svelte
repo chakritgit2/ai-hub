@@ -4,7 +4,14 @@
 	import { ApiError } from '$lib/api/client';
 	import { headerContent } from '$lib/stores/header';
 	import AgentSpecTabs from '$lib/components/agents/AgentSpecTabs.svelte';
-	import { blankIdentity, blankModelFormState, blankGuardrails, blankMemory } from '$lib/components/agents/specDefaults';
+	import {
+		blankIdentity,
+		blankModelFormState,
+		blankGuardrails,
+		blankMemory,
+		blankPublishGate,
+		formatPublishGateError
+	} from '$lib/components/agents/specDefaults';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
 
@@ -16,6 +23,7 @@
 	let selectedKnowledgeBaseIds = $state<string[]>([]);
 	let guardrails = $state(blankGuardrails());
 	let memory = $state(blankMemory());
+	let publishGate = $state(blankPublishGate());
 
 	let tabsRef: ReturnType<typeof AgentSpecTabs> | undefined;
 
@@ -30,6 +38,7 @@
 	let publishing = $state(false);
 	let error = $state<string | null>(null);
 	let publishErrors = $state<{ path: string; message: string }[]>([]);
+	let publishGateError = $state<string | null>(null);
 	let savedNotice = $state(false);
 
 	$effect(() => {
@@ -57,6 +66,11 @@
 			return { error: memoryResult ?? 'Memory: something went wrong building the spec.' };
 		}
 
+		const publishGateResult = tabsRef?.buildPublishGateSpec();
+		if (!publishGateResult || typeof publishGateResult === 'string') {
+			return { error: publishGateResult ?? 'Publish gate: something went wrong building the spec.' };
+		}
+
 		return {
 			spec: {
 				identity,
@@ -65,7 +79,8 @@
 				skills: selectedSkillNames,
 				knowledge: selectedKnowledgeBaseIds.map((kb_id) => ({ kb_id })),
 				guardrails: guardrailsResult,
-				memory: memoryResult
+				memory: memoryResult,
+				publish_gate: publishGateResult
 			}
 		};
 	}
@@ -73,6 +88,7 @@
 	async function saveDraft() {
 		error = null;
 		publishErrors = [];
+		publishGateError = null;
 		savedNotice = false;
 
 		const built = buildSpec();
@@ -110,6 +126,7 @@
 		if (!agentId || !versionId || isPublished) return;
 		error = null;
 		publishErrors = [];
+		publishGateError = null;
 		savedNotice = false;
 
 		const built = buildSpec();
@@ -130,6 +147,16 @@
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 422 && e.body && typeof e.body === 'object' && 'errors' in e.body) {
 				publishErrors = (e.body as { errors: { path: string; message: string }[] }).errors;
+			} else if (
+				e instanceof ApiError &&
+				e.status === 400 &&
+				e.body &&
+				typeof e.body === 'object' &&
+				(e.body as { error?: string }).error === 'publish_gate_failed'
+			) {
+				publishGateError = formatPublishGateError(
+					e.body as { reason: string; metric?: string; threshold?: number; actual?: number }
+				);
 			} else {
 				error = e instanceof Error ? e.message : 'Failed to publish.';
 			}
@@ -180,6 +207,13 @@
 	</div>
 {/if}
 
+{#if publishGateError}
+	<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+		<p class="font-medium">Publish blocked by the publish gate</p>
+		<p class="mt-1">{publishGateError}</p>
+	</div>
+{/if}
+
 {#if savedNotice}
 	<div class="mb-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-primary-700">
 		Draft saved. You can keep editing, or Publish when ready.
@@ -201,6 +235,7 @@
 	bind:selectedKnowledgeBaseIds
 	bind:guardrails
 	bind:memory
+	bind:publishGate
 	{isAdmin}
 	compiledDefinition={null}
 />
