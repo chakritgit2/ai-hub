@@ -51,6 +51,7 @@ from app.services.connection_secrets import (
 )
 from app.services.connections import resolve_connection
 from app.services.egress_allowlist import list_egress_allowlist
+from app.services.eval_runner import estimate_eval_cost
 from app.services.kb_export import export_knowledge_base_zip
 from app.services.kb_search import search_knowledge_base
 from app.services.knowledge_bases import (
@@ -679,10 +680,38 @@ async def deleteKnowledgeBaseData(id: str, claims: InternalAuth) -> Response:
     return Response(status_code=204)
 
 
+class EstimateEvalCostRequest(BaseModel):
+    agent_version_id: str
+    dataset_id: str
+    metrics: list[str]
+    judge_model: str
+    role: str
+
+
 @app.post("/internal/v1/evals/estimate")
-async def estimateEvalCost(body: dict, claims: InternalAuth) -> Response:
-    """Phase 3."""
-    return _not_implemented("estimateEvalCost")
+async def estimateEvalCost(body: EstimateEvalCostRequest, claims: InternalAuth) -> Response:
+    company_id = claims["company_id"]
+    if not _is_uuid(body.dataset_id) or not _is_uuid(body.agent_version_id):
+        raise HTTPException(status_code=404, detail="not_found")
+
+    try:
+        result = await estimate_eval_cost(
+            company_id,
+            body.agent_version_id,
+            body.dataset_id,
+            body.metrics,
+            body.judge_model,
+            body.role,
+        )
+    except LookupError as exc:
+        # estimate_eval_cost raises this for either a missing dataset_id or a missing
+        # agent_version_id - report its actual message rather than a hardcoded one, since
+        # both now share this exception type (see its own docstring for why).
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"agent_version_invalid: {exc}") from exc
+
+    return JSONResponse(content=result)
 
 
 @app.post("/internal/v1/evals")

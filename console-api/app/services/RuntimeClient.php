@@ -173,6 +173,93 @@ class RuntimeClient
     }
 
     /**
+     * POST /internal/v1/evals/estimate — a rough pre-run token/cost estimate (PRD §6.7),
+     * used by EvalsController::estimateEvalCost(). Real token counting + model_pricing
+     * lookup happens entirely on the ai-runtime side (dataset items only exist there via
+     * a cross-schema resolver function, and token counting is a Python/tiktoken
+     * dependency) - console-api only validates both ids belong to this company and
+     * forwards.
+     *
+     * Unlike every other method here, this one's contract (ai-internal.yaml) documents
+     * 404/422 as real, distinguishable outcomes (dataset/agent-version not found, or the
+     * agent version failed to compile) rather than opaque transport failures - so it goes
+     * through requestWithStatus() instead of request(), and throws
+     * EvalEstimateInvalidException (carrying the real status/detail) for those two codes
+     * specifically, letting the caller forward them instead of a flattened 502.
+     *
+     * @param array<int, string> $metrics
+     * @return array<string, mixed>
+     */
+    public function estimateEvalCost(
+        string $agentVersionId,
+        string $datasetId,
+        array $metrics,
+        string $judgeModel,
+        string $role
+    ): array {
+        [$statusCode, $decoded] = $this->requestWithStatus('POST', 'evals/estimate', [
+            'agent_version_id' => $agentVersionId,
+            'dataset_id' => $datasetId,
+            'metrics' => $metrics,
+            'judge_model' => $judgeModel,
+            'role' => $role,
+        ]);
+
+        if ($statusCode === 200) {
+            return $decoded;
+        }
+        if ($statusCode === 404 || $statusCode === 422) {
+            throw new EvalEstimateInvalidException($statusCode, (string) ($decoded['detail'] ?? 'invalid'));
+        }
+
+        throw new RuntimeException("RuntimeClient: POST evals/estimate failed with status {$statusCode}");
+    }
+
+    /**
+     * Same auth/header setup as request(), but never throws on a non-2xx - returns the
+     * raw status code alongside the decoded body so the caller can decide what a given
+     * status means (estimateEvalCost() is the only caller today; every other method still
+     * uses request(), unchanged, which keeps treating any non-2xx as an opaque failure).
+     *
+     * @param array<string, mixed>|array<int, mixed> $body
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function requestWithStatus(string $method, string $path, array $body): array
+    {
+        if (!$this->companyContext->hasCompanyId()) {
+            throw new RuntimeException('RuntimeClient: no company_id bound for this request.');
+        }
+
+        $headers = [
+            'Authorization' => 'Bearer ' . $this->tokenIssuer->issueInternalToken(),
+            'X-Company-Id' => $this->companyContext->getCompanyId(),
+        ];
+
+        $traceparent = TraceparentMiddleware::current();
+        if ($traceparent !== null) {
+            $headers['traceparent'] = $traceparent;
+        }
+
+        try {
+            $response = $this->http->request(
+                $method,
+                $path,
+                ['headers' => $headers, 'json' => $body, 'http_errors' => false]
+            );
+        } catch (GuzzleException $exception) {
+            throw new RuntimeException(
+                "RuntimeClient: {$method} {$path} failed: " . $exception->getMessage(),
+                0,
+                $exception
+            );
+        }
+
+        $decoded = json_decode((string) $response->getBody(), true);
+
+        return [$response->getStatusCode(), is_array($decoded) ? $decoded : []];
+    }
+
+    /**
      * Same auth/header setup as request() but for a binary (non-JSON) response body -
      * exportKnowledgeBase() is the only caller today.
      */

@@ -642,6 +642,92 @@ def make_api_key():
 
 
 @pytest.fixture
+def make_dataset():
+    """Inserts a `console.datasets` row as `console_app` (same write-role convention as
+    make_connection/make_tool) and deletes it (cascading its items) afterward."""
+    settings = get_settings()
+    created: list[tuple[str, str]] = []  # (company_id, dataset_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(company_id: str, name: str = "test-dataset") -> str:
+        dataset_id = str(uuid.uuid4())
+        with _connect() as conn:
+            # SET LOCAL doesn't accept a bound parameter — company_id here is always our
+            # own freshly generated uuid4, never external input.
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.datasets (id, company_id, name) VALUES (%s, %s, %s)",
+                (dataset_id, company_id, name),
+            )
+            conn.commit()
+        created.append((company_id, dataset_id))
+        return dataset_id
+
+    yield _make
+
+    for company_id, dataset_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.datasets WHERE id = %s", (dataset_id,))  # cascades dataset_items
+            conn.commit()
+
+
+@pytest.fixture
+def make_dataset_item():
+    """Inserts a `console.dataset_items` row as `console_app` and deletes it afterward
+    (also cleaned up transitively by make_dataset's cascade-delete, this fixture's own
+    teardown is a no-op in that case - `DELETE ... WHERE id = %s` on an already-gone row)."""
+    settings = get_settings()
+    created: list[tuple[str, str]] = []  # (company_id, item_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(
+        company_id: str,
+        dataset_id: str,
+        question: str = "What is 2+2?",
+        expected_answer: str | None = "4",
+        context: str | None = None,
+        tags: list[str] | None = None,
+    ) -> str:
+        item_id = str(uuid.uuid4())
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.dataset_items "
+                "(id, company_id, dataset_id, question, expected_answer, context, tags) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (item_id, company_id, dataset_id, question, expected_answer, context, json.dumps(tags or [])),
+            )
+            conn.commit()
+        created.append((company_id, item_id))
+        return item_id
+
+    yield _make
+
+    for company_id, item_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.dataset_items WHERE id = %s", (item_id,))
+            conn.commit()
+
+
+@pytest.fixture
 def resolvable_agent_version(make_connection, make_agent_version, store_connection_secret):
     """One-call setup for a fully resolvable Playground run: a real connection, a real
     stored secret, and a real agent version referencing both - returns

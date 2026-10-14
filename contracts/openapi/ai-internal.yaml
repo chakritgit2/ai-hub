@@ -32,6 +32,53 @@ components:
     Placeholder:
       type: object
       additionalProperties: true
+    EstimateEvalCostRequest:
+      type: object
+      required: [agent_version_id, dataset_id, metrics, judge_model, role]
+      properties:
+        agent_version_id: { type: string }
+        dataset_id: { type: string }
+        metrics:
+          type: array
+          items: { type: string }
+          description: >-
+            Canonical names (ai/app/services/eval_runner.py's METRIC_LLM_CALLS_PER_ITEM):
+            faithfulness, context_recall, context_precision, answer_correctness,
+            factual_correctness, bleu, rouge, exact_match, string_presence,
+            string_similarity, llm_evaluator, python_evaluator. An unrecognized name is
+            ignored with a warning, not rejected.
+        judge_model: { type: string, description: 'May be empty if no chosen metric needs an LLM judge.' }
+        role: { type: string, description: 'The caller''s company role - compiles the agent version the same way a real run would.' }
+    EvalCostEstimate:
+      type: object
+      properties:
+        item_count: { type: integer }
+        agent_model: { type: string }
+        judge_model: { type: string }
+        metrics:
+          type: array
+          items:
+            type: object
+            properties:
+              metric: { type: string }
+              llm_calls_per_item: { type: integer }
+        estimated_tokens:
+          type: object
+          properties:
+            agent_input: { type: integer }
+            agent_output: { type: integer }
+            judge_input: { type: integer }
+            judge_output: { type: integer }
+        estimated_cost_usd:
+          type: object
+          properties:
+            agent: { type: number, format: float, nullable: true }
+            judge: { type: number, format: float, nullable: true }
+            total: { type: number, format: float, nullable: true }
+        warnings:
+          type: array
+          items: { type: string }
+          description: 'e.g. an unrecognized metric name, or no console.model_pricing row for a model.'
     KbImportFile:
       type: object
       required: [filename, content]
@@ -285,10 +332,17 @@ paths:
   /evals/estimate:
     post:
       operationId: estimateEvalCost
-      x-phase: 3
+      summary: >-
+        Rough pre-run token/cost estimate (PRD §6.7) - real token counting via tiktoken
+        against the dataset's own item text, priced against console.model_pricing. See
+        ai/app/services/eval_runner.py's module docstring for exactly what's measured vs.
+        a fixed approximation.
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/EstimateEvalCostRequest' } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EvalCostEstimate' } } } }
+        "404": { description: 'dataset_id not found for this company' }
+        "422": { description: 'agent_version_id not found or failed to compile' }
 
   /evals:
     post:

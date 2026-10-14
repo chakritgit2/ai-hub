@@ -62,14 +62,16 @@ class _UsageCollector(BaseCallbackHandler):
         )
 
 
-async def _resolve_and_compile(company_id: str, agent_version_id: str, role: str) -> dict:
+async def resolve_and_compile(company_id: str, agent_version_id: str, role: str) -> dict:
     """Resolves `agent_version_id` within `company_id` and compiles its *current* spec
     live (PRD §4.4-B) - never the `compiled_definition` a Publish may have snapshotted,
     since neither a runtime token's agent_version_id nor a deployment's is required to
     be published (RuntimeTokenController::issueRuntimeToken only checks it exists in the
     caller's company). Raises ValueError (not found / compile failure) - callers let it
     bubble up to the existing "genuine failure -> 502" handling in app.main_runtime/
-    app.main_gateway, no new error shape needed.
+    app.main_gateway, no new error shape needed. Public (no leading underscore) since
+    `app.services.eval_runner` also needs this exact "compile the current agent version
+    live" step.
     """
     version = await resolve_agent_version(company_id, agent_version_id)
     if version is None:
@@ -184,7 +186,7 @@ async def _execute_agent_run(
     # conversation_id without the scoping inputs isn't told it was continued.
     resolved_conversation_id = None
     # .get("memory", {}) covers a compiled_definition from before this feature existed (should
-    # never happen in practice - see _resolve_and_compile's "always recompiled live" note - but
+    # never happen in practice - see resolve_and_compile's "always recompiled live" note - but
     # matches compiled_definition.get("skills") above's same defensive style); MemorySpec's own
     # field defaults then apply, same single-source-of-truth pattern run_playground_agent uses
     # for guardrails (`GuardrailsSpec.model_validate(compiled_definition["guardrails"])` below).
@@ -403,7 +405,7 @@ async def run_playground_agent(
     delegated `sub` when no simulated external user was given, distinct from
     `external_user_id`'s memory-scoping role.
     """
-    compiled_definition = await _resolve_and_compile(company_id, agent_version_id, role)
+    compiled_definition = await resolve_and_compile(company_id, agent_version_id, role)
     guardrails = GuardrailsSpec.model_validate(compiled_definition["guardrails"])
 
     return await _execute_agent_run(
@@ -442,7 +444,7 @@ async def run_deployment_agent(
     if not deployment.enabled:
         raise ValueError(f"deployment_id {deployment_id!r} is disabled")
 
-    compiled_definition = await _resolve_and_compile(company_id, deployment.agent_version_id, role)
+    compiled_definition = await resolve_and_compile(company_id, deployment.agent_version_id, role)
     guardrails = _merge_guardrail_overrides(compiled_definition, deployment.guardrail_overrides)
 
     rate_limit = await check_rate_limit(deployment_id, deployment.rate_limit_per_min)

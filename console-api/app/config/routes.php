@@ -96,10 +96,11 @@ return function (Router $router): void {
     $admin('GET', '/datasets/{id:[^/]+}/items', 'Datasets', 'listDatasetItems');
     $admin('POST', '/datasets/{id:[^/]+}/import', 'Datasets', 'importDatasetItems');
 
-    // --- /evals (x-phase: 3) --------------------------------------------------
-    // /evals/compare must be registered before /evals/{id} so the static
-    // segment wins the match (Phalcon's router matches in registration order).
+    // --- /evals (x-phase: 3, estimateEvalCost real) ----------------------------
+    // /evals/compare and /evals/estimate must be registered before /evals/{id} so the
+    // static segment wins the match (Phalcon's router matches in registration order).
     $admin('GET', '/evals/compare', 'Evals', 'compareEvalRuns');
+    $admin('POST', '/evals/estimate', 'Evals', 'estimateEvalCost');
     $admin('GET', '/evals', 'Evals', 'listEvalRuns');
     $admin('POST', '/evals', 'Evals', 'createEvalRun');
     $admin('GET', '/evals/{id:[^/]+}', 'Evals', 'getEvalRun');

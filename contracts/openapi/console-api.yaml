@@ -233,6 +233,51 @@ components:
             properties:
               row: { type: integer }
               error: { type: string }
+    EvalCostEstimateInput:
+      type: object
+      required: [agent_version_id, dataset_id, metrics]
+      properties:
+        agent_version_id: { type: string }
+        dataset_id: { type: string }
+        metrics:
+          type: array
+          items: { type: string }
+          description: >-
+            Canonical names (ai/app/services/eval_runner.py's METRIC_LLM_CALLS_PER_ITEM):
+            faithfulness, context_recall, context_precision, answer_correctness,
+            factual_correctness, bleu, rouge, exact_match, string_presence,
+            string_similarity, llm_evaluator, python_evaluator. An unrecognized name is
+            ignored with a warning, not rejected.
+        judge_model: { type: string, description: 'May be omitted if no chosen metric needs an LLM judge.' }
+    EvalCostEstimate:
+      type: object
+      properties:
+        item_count: { type: integer }
+        agent_model: { type: string }
+        judge_model: { type: string }
+        metrics:
+          type: array
+          items:
+            type: object
+            properties:
+              metric: { type: string }
+              llm_calls_per_item: { type: integer }
+        estimated_tokens:
+          type: object
+          properties:
+            agent_input: { type: integer }
+            agent_output: { type: integer }
+            judge_input: { type: integer }
+            judge_output: { type: integer }
+        estimated_cost_usd:
+          type: object
+          properties:
+            agent: { type: number, format: float, nullable: true }
+            judge: { type: number, format: float, nullable: true }
+            total: { type: number, format: float, nullable: true }
+        warnings:
+          type: array
+          items: { type: string }
     Agent:
       type: object
       properties:
@@ -820,6 +865,20 @@ paths:
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
       requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
       responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+
+  /evals/estimate:
+    post:
+      operationId: estimateEvalCost
+      summary: >-
+        Rough pre-run token/cost estimate (PRD §6.7) - forwarded to ai-runtime's real
+        POST /internal/v1/evals/estimate (ai-internal.yaml), which does the actual token
+        counting + console.model_pricing lookup.
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/EvalCostEstimateInput' } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EvalCostEstimate' } } } }
+        "404": { description: 'dataset_id or agent_version_id not found for this company' }
+        "422": { description: 'agent_version_id resolved but its current spec failed to compile' }
   /evals/{id}:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
