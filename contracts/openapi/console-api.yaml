@@ -278,6 +278,69 @@ components:
         warnings:
           type: array
           items: { type: string }
+    CreateEvalRunInput:
+      type: object
+      required: [agent_version_id, dataset_id, metrics]
+      properties:
+        agent_version_id: { type: string }
+        dataset_id: { type: string }
+        metrics:
+          type: array
+          items: { type: string }
+          minItems: 1
+          description: >-
+            Same canonical names as EvalCostEstimateInput.metrics. `llm_evaluator`/
+            `python_evaluator` are rejected with 422 - not executable yet
+            (ai/app/services/eval_runner.py's module docstring explains why).
+        judge_model: { type: string, nullable: true }
+        est_cost_usd:
+          type: number
+          format: float
+          nullable: true
+          description: 'Typically the `total` an earlier POST /evals/estimate call returned.'
+    EvalRun:
+      type: object
+      description: 'A single evaluation run (PRD §6.7/§8.1 `runtime.eval_runs`).'
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        agent_version_id: { type: string }
+        dataset_id: { type: string }
+        role: { type: string }
+        metrics:
+          type: array
+          items: { type: string }
+        judge_model: { type: string, nullable: true }
+        status: { type: string, enum: [queued, running, completed, failed] }
+        est_cost_usd: { type: number, format: float, nullable: true }
+        summary:
+          type: object
+          nullable: true
+          description: 'Populated once status is "completed": item_count, success_count, failure_count, mean_scores, total_cost_usd, skipped_metrics, metric_errors.'
+          additionalProperties: true
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    EvalResult:
+      type: object
+      description: 'One dataset item''s outcome within an eval run (PRD §8.1 `logs.eval_results`).'
+      properties:
+        id: { type: string }
+        eval_run_id: { type: string }
+        dataset_item_id: { type: string }
+        run_id: { type: string, nullable: true }
+        scores:
+          type: object
+          nullable: true
+          description: '{metric_name: float}'
+          additionalProperties: { type: number, format: float }
+        reasons:
+          type: object
+          nullable: true
+          description: '{metric_name: string|null} - null for metrics with no judge reasoning (bleu, exact_match, ...).'
+          additionalProperties: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
     Agent:
       type: object
       properties:
@@ -856,15 +919,22 @@ paths:
   /evals:
     get:
       operationId: listEvalRuns
-      x-phase: 3
-      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      summary: 'Reads runtime.eval_runs directly (no ai-runtime call) - same pattern GET /runs already uses for logs.runs.'
+      parameters:
+        - { $ref: '#/components/parameters/XCompanyId' }
+        - { name: agent_version_id, in: query, schema: { type: string } }
+        - { name: dataset_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/EvalRun' } } } } } }
     post:
       operationId: createEvalRun
-      x-phase: 3
+      summary: 'Creates a runtime.eval_runs row and enqueues real execution via POST /internal/v1/evals (ai-internal.yaml).'
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/CreateEvalRunInput' } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/EvalRun' } } } }
+        "404": { description: 'dataset_id or agent_version_id not found for this company' }
+        "422": { description: 'agent_version_id failed to compile, or metrics contains llm_evaluator/python_evaluator (not executable yet)' }
 
   /evals/estimate:
     post:
@@ -885,8 +955,19 @@ paths:
       - { $ref: '#/components/parameters/IdParam' }
     get:
       operationId: getEvalRun
-      x-phase: 3
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EvalRun' } } } }
+        "404": { description: not found }
+  /evals/{id}/results:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getEvalRunResults
+      summary: 'Per-item results for an eval run (PRD §6.7 "per-item results with judge reasoning") - reads logs.eval_results directly.'
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/EvalResult' } } } } }
+        "404": { description: not found }
   /evals/compare:
     get:
       operationId: compareEvalRuns

@@ -96,7 +96,8 @@ return function (Router $router): void {
     $admin('GET', '/datasets/{id:[^/]+}/items', 'Datasets', 'listDatasetItems');
     $admin('POST', '/datasets/{id:[^/]+}/import', 'Datasets', 'importDatasetItems');
 
-    // --- /evals (x-phase: 3, estimateEvalCost real) ----------------------------
+    // --- /evals (x-phase: 3, estimateEvalCost/createEvalRun/listEvalRuns/getEvalRun/
+    // getEvalRunResults real; compareEvalRuns still a stub) ----------------------
     // /evals/compare and /evals/estimate must be registered before /evals/{id} so the
     // static segment wins the match (Phalcon's router matches in registration order).
     $admin('GET', '/evals/compare', 'Evals', 'compareEvalRuns');
@@ -104,6 +105,7 @@ return function (Router $router): void {
     $admin('GET', '/evals', 'Evals', 'listEvalRuns');
     $admin('POST', '/evals', 'Evals', 'createEvalRun');
     $admin('GET', '/evals/{id:[^/]+}', 'Evals', 'getEvalRun');
+    $admin('GET', '/evals/{id:[^/]+}/results', 'Evals', 'getEvalRunResults');
 
     // --- /approvals (x-phase: 2) ----------------------------------------------
     $admin('GET', '/approvals', 'Approvals', 'listApprovals');

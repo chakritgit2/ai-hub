@@ -121,3 +121,37 @@ kb_documents_table = sa.Table(
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     schema="runtime",
 )
+
+eval_runs_table = sa.Table(
+    "eval_runs",
+    _metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("agent_version_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("dataset_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("role", sa.String(length=32), nullable=False),
+    sa.Column("metrics", postgresql.JSONB(), nullable=False),
+    sa.Column("judge_model", sa.String(length=255), nullable=True),
+    sa.Column("status", sa.String(length=32), nullable=False),
+    sa.Column("est_cost_usd", sa.Numeric(), nullable=True),
+    sa.Column("summary", postgresql.JSONB(), nullable=True),
+    sa.Column("error", sa.Text(), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    schema="runtime",
+)
+
+eval_results_table = sa.Table(
+    "eval_results",
+    _metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("eval_run_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("dataset_item_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("run_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("scores", postgresql.JSONB(), nullable=True),
+    sa.Column("reasons", postgresql.JSONB(), nullable=True),
+    sa.Column("error", sa.Text(), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    schema="logs",
+)

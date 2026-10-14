@@ -79,6 +79,36 @@ components:
           type: array
           items: { type: string }
           description: 'e.g. an unrecognized metric name, or no console.model_pricing row for a model.'
+    CreateEvalRunRequest:
+      type: object
+      required: [agent_version_id, dataset_id, metrics, role]
+      properties:
+        agent_version_id: { type: string }
+        dataset_id: { type: string }
+        metrics:
+          type: array
+          items: { type: string }
+          minItems: 1
+          description: >-
+            Same canonical names as EstimateEvalCostRequest.metrics, minus llm_evaluator/
+            python_evaluator - console-api rejects those with 422 before this call ever
+            happens (not executable yet, see eval_runner.py's module docstring).
+        judge_model: { type: string, nullable: true }
+        role: { type: string }
+        est_cost_usd: { type: number, format: float, nullable: true }
+    EvalRun:
+      type: object
+      properties:
+        id: { type: string }
+        agent_version_id: { type: string }
+        dataset_id: { type: string }
+        role: { type: string }
+        metrics:
+          type: array
+          items: { type: string }
+        judge_model: { type: string, nullable: true }
+        status: { type: string, enum: [queued, running, completed, failed] }
+        est_cost_usd: { type: number, format: float, nullable: true }
     KbImportFile:
       type: object
       required: [filename, content]
@@ -347,10 +377,16 @@ paths:
   /evals:
     post:
       operationId: createEvalRun
-      x-phase: 3
+      summary: >-
+        Creates a runtime.eval_runs row (status="queued") and enqueues `run_eval` onto
+        ai-worker's ARQ queue (PRD §6.7) - see ai/app/services/eval_runner.py's module
+        docstring for which metrics actually execute.
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/CreateEvalRunRequest' } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/EvalRun' } } } }
+        "404": { description: 'dataset_id or agent_version_id not found for this company' }
+        "422": { description: 'agent_version_id failed to compile, or metrics contains llm_evaluator/python_evaluator' }
 
   /evals/{id}/cancel:
     parameters:

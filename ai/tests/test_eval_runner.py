@@ -1,17 +1,80 @@
 import uuid
+from types import SimpleNamespace
+from typing import ClassVar
 
 import httpx
 import pytest
+from dynamiq.runnables.base import RunnableStatus
 
+from app.core.db import get_company_session
+from app.db.tables import eval_results_table
 from app.main_runtime import app as runtime_app
 from app.main_runtime import require_internal_auth
+from app.services import eval_runner as eval_runner_module
 from app.services.datasets import list_dataset_items, resolve_dataset
-from app.services.eval_runner import _tokens_for_item, estimate_eval_cost
+from app.services.eval_runner import _tokens_for_item, estimate_eval_cost, run_eval
+from app.services.eval_runs import create_eval_run, get_eval_run
 from app.services.model_pricing import get_model_pricing
 
 from .markers import fake_internal_claims, requires_postgres
 
 pytestmark = [requires_postgres]
+
+
+class _ScoringFakeAgent:
+    """Like test_playground_guardrails.py's _RecordingAgent, but keyed by input text so
+    different dataset items in the same eval run can be made to succeed or fail
+    independently (needed to test per-item failure isolation in run_eval)."""
+
+    calls: ClassVar[list[str]] = []
+    replies: ClassVar[dict[str, str]] = {}
+    failures: ClassVar[set[str]] = set()
+
+    def __init__(self, **kwargs) -> None:
+        self.memory = kwargs.get("memory")
+
+    def run(self, input_data: dict, config=None, **_kwargs) -> SimpleNamespace:
+        question = input_data["input"]
+        type(self).calls.append(question)
+        if config is not None:
+            for callback in config.callbacks:
+                callback.on_node_execute_run(
+                    {},
+                    usage_data={
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "total_tokens": 15,
+                        "total_tokens_cost_usd": 0.001,
+                    },
+                )
+        if question in type(self).failures:
+            raise RuntimeError(f"boom for {question!r}")
+        reply = type(self).replies.get(question, question)
+        return SimpleNamespace(output={"content": reply}, status=RunnableStatus.SUCCESS)
+
+
+@pytest.fixture
+def scoring_fake_agent(monkeypatch):
+    import dynamiq.nodes.agents
+
+    from app.services import compiler
+
+    _ScoringFakeAgent.calls = []
+    _ScoringFakeAgent.replies = {}
+    _ScoringFakeAgent.failures = set()
+    monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _ScoringFakeAgent)
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
+    return _ScoringFakeAgent
+
+
+async def _fetch_eval_results(company_id: str, eval_run_id: str) -> dict[str, dict]:
+    async with get_company_session(company_id) as session:
+        rows = (
+            await session.execute(
+                eval_results_table.select().where(eval_results_table.c.eval_run_id == uuid.UUID(eval_run_id))
+            )
+        ).mappings().all()
+    return {str(row["dataset_item_id"]): dict(row) for row in rows}
 
 
 async def test_resolve_dataset_returns_none_for_missing(company_ids):
@@ -337,3 +400,240 @@ async def test_estimate_eval_cost_endpoint_uncompilable_agent_version_is_422(
         },
     )
     assert resp.status_code == 422
+
+
+async def test_run_eval_happy_path_non_llm_metrics(
+    scoring_fake_agent, company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    item1 = make_dataset_item(company_id, dataset_id, question="Q1", expected_answer="4")
+    item2 = make_dataset_item(company_id, dataset_id, question="Q2", expected_answer="Bangkok")
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    scoring_fake_agent.replies = {"Q1": "4", "Q2": "Bangkok"}  # exact matches
+
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match", "string_presence"], None, None
+    )
+
+    summary = await run_eval(company_id, eval_run.id)
+
+    assert summary["item_count"] == 2
+    assert summary["success_count"] == 2
+    assert summary["failure_count"] == 0
+    assert summary["mean_scores"]["exact_match"] == 1.0
+    assert summary["mean_scores"]["string_presence"] == 1.0
+    assert summary["skipped_metrics"] == []
+    assert summary["metric_errors"] == {}
+
+    updated = await get_eval_run(company_id, eval_run.id)
+    assert updated.status == "completed"
+    assert updated.summary["mean_scores"]["exact_match"] == 1.0
+
+    results = await _fetch_eval_results(company_id, eval_run.id)
+    assert len(results) == 2
+    assert results[item1]["scores"]["exact_match"] == 1.0
+    assert results[item1]["error"] is None
+    assert results[item1]["run_id"] is not None
+    assert results[item2]["scores"]["exact_match"] == 1.0
+
+
+async def test_run_eval_metric_scoring_failure_does_not_abort_the_run(
+    scoring_fake_agent, company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    """Found live while testing this feature: dynamiq's BleuScoreEvaluator crashes
+    (IndexError deep inside sacrebleu) on a single-word answer with no sentence-ending
+    punctuation - its own sentence splitter filters single-word "sentences" out entirely,
+    leaving sacrebleu nothing to score. Realistic for eval datasets (short factual
+    answers like "4"/"Bangkok" are exactly this shape) - one metric's own bug must not
+    fail the whole eval run, same per-item isolation principle applied at the
+    per-metric-batch level."""
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    make_dataset_item(company_id, dataset_id, question="Q1", expected_answer="4")
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    scoring_fake_agent.replies = {"Q1": "4"}
+
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match", "bleu"], None, None
+    )
+
+    summary = await run_eval(company_id, eval_run.id)
+
+    assert summary["mean_scores"]["exact_match"] == 1.0
+    assert "bleu" not in summary["mean_scores"]
+    assert "bleu" in summary["metric_errors"]
+
+    updated = await get_eval_run(company_id, eval_run.id)
+    assert updated.status == "completed"
+
+
+async def test_run_eval_rejects_unsupported_metrics_but_still_runs_the_rest(
+    scoring_fake_agent, company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    """main_runtime.py's POST /internal/v1/evals is the real rejection point for
+    `llm_evaluator`/`python_evaluator` - this exercises run_eval's own defensive
+    backstop directly (bypassing that endpoint), proving a stray unsupported metric name
+    never reaches a dynamiq evaluator and doesn't block the supported metrics."""
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    make_dataset_item(company_id, dataset_id, question="Q1", expected_answer="4")
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    scoring_fake_agent.replies = {"Q1": "4"}
+
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match", "python_evaluator"], None, None
+    )
+
+    summary = await run_eval(company_id, eval_run.id)
+
+    assert summary["mean_scores"]["exact_match"] == 1.0
+    assert summary["skipped_metrics"] == ["python_evaluator"]
+    assert "python_evaluator" not in summary["mean_scores"]
+
+
+async def test_run_eval_skips_metric_for_item_missing_required_field(
+    scoring_fake_agent, company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    item_with_answer = make_dataset_item(company_id, dataset_id, question="Q1", expected_answer="4")
+    item_without_answer = make_dataset_item(company_id, dataset_id, question="Q2", expected_answer=None)
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    scoring_fake_agent.replies = {"Q1": "4", "Q2": "whatever"}
+
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match"], None, None
+    )
+
+    summary = await run_eval(company_id, eval_run.id)
+
+    assert summary["mean_scores"]["exact_match"] == 1.0  # only item_with_answer contributes
+
+    results = await _fetch_eval_results(company_id, eval_run.id)
+    assert results[item_with_answer]["scores"] == {"exact_match": 1.0}
+    assert results[item_without_answer]["scores"] is None
+    assert results[item_without_answer]["error"] is None  # the agent run itself succeeded
+
+
+async def test_run_eval_per_item_failure_does_not_abort_batch(
+    scoring_fake_agent, company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    good_item = make_dataset_item(company_id, dataset_id, question="Q-good", expected_answer="4")
+    bad_item = make_dataset_item(company_id, dataset_id, question="Q-bad", expected_answer="Bangkok")
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    scoring_fake_agent.replies = {"Q-good": "4"}
+    scoring_fake_agent.failures = {"Q-bad"}
+
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match"], None, None
+    )
+
+    summary = await run_eval(company_id, eval_run.id)
+
+    assert summary["success_count"] == 1
+    assert summary["failure_count"] == 1
+
+    updated = await get_eval_run(company_id, eval_run.id)
+    assert updated.status == "completed"  # one bad item must not fail the whole run
+
+    results = await _fetch_eval_results(company_id, eval_run.id)
+    assert results[good_item]["error"] is None
+    assert results[good_item]["scores"] == {"exact_match": 1.0}
+    assert results[bad_item]["error"] is not None
+    assert results[bad_item]["scores"] is None
+
+
+async def test_run_eval_scores_llm_based_metric_via_judge_llm_reusing_agent_connection(
+    scoring_fake_agent, monkeypatch, company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    """Proves the judge-LLM wiring: a requested LLM-based metric builds a judge LLM from
+    the *agent's own* connection (confirmed design choice - no separate judge connection
+    concept in this slice) and records each item's score + reasoning. Fakes
+    FaithfulnessEvaluator itself (like test_playground_guardrails.py fakes dynamiq's
+    Agent) rather than exercising dynamiq's real prompt/LLM parsing."""
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    item1 = make_dataset_item(company_id, dataset_id, question="Q1", expected_answer="4", context="ctx1")
+    item2 = make_dataset_item(company_id, dataset_id, question="Q2", expected_answer="Bangkok", context="ctx2")
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    scoring_fake_agent.replies = {"Q1": "ans1", "Q2": "ans2"}
+
+    captured: dict = {}
+
+    class _FakeResult:
+        def __init__(self, score: float, reasoning: str) -> None:
+            self.score = score
+            self.reasoning = reasoning
+
+    class _FakeOutput:
+        def __init__(self, results: list[_FakeResult]) -> None:
+            self.results = results
+
+    class _FakeFaithfulnessEvaluator:
+        def __init__(self, llm) -> None:
+            captured["llm"] = llm
+
+        def run(self, questions, answers, contexts):
+            captured["questions"] = questions
+            captured["answers"] = answers
+            captured["contexts"] = contexts
+            return _FakeOutput([_FakeResult(0.9, "good"), _FakeResult(0.5, "meh")])
+
+    monkeypatch.setattr(eval_runner_module, "FaithfulnessEvaluator", _FakeFaithfulnessEvaluator)
+    monkeypatch.setattr(eval_runner_module, "build_llm", lambda *_args, **_kwargs: (None, "fake-judge-llm"))
+
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["faithfulness"], "gpt-4o-mini", None
+    )
+
+    summary = await run_eval(company_id, eval_run.id)
+
+    assert captured["llm"] == "fake-judge-llm"
+    assert len(captured["questions"]) == 2
+    assert summary["mean_scores"]["faithfulness"] == pytest.approx(0.7)
+
+    results = await _fetch_eval_results(company_id, eval_run.id)
+    assert results[item1]["reasons"]["faithfulness"] in ("good", "meh")
+    assert results[item2]["reasons"]["faithfulness"] in ("good", "meh")
+
+
+async def test_run_eval_fails_closed_when_llm_metric_requested_without_judge_model(
+    scoring_fake_agent, company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    """Defensive backstop (found via code-review): the real rejection is
+    main_runtime.py's createEvalRun (422 judge_model_required) before an eval_runs row
+    ever exists - this exercises run_eval's own `_build_judge_llm` guard directly, by
+    constructing the row with a falsy judge_model the same way a bug in that upstream
+    check could let through. Must fail the run cleanly (status="failed"), never build a
+    judge LLM with model=None."""
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    make_dataset_item(company_id, dataset_id, question="Q1", expected_answer="4", context="ctx1")
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["faithfulness"], None, None
+    )
+
+    summary = await run_eval(company_id, eval_run.id)
+
+    assert summary["status"] == "failed"
+    assert "judge_model" in summary["error"]
+
+    updated = await get_eval_run(company_id, eval_run.id)
+    assert updated.status == "failed"
+
+
+async def test_run_eval_missing_eval_run_marks_status_failed(company_ids):
+    """run_eval never crashes the ARQ job loop - an eval_run_id that doesn't resolve
+    (e.g. deleted between enqueue and the job actually running) must still return
+    gracefully, same discipline kb_indexer.py::index_kb_document already established."""
+    company_id = company_ids()
+
+    result = await run_eval(company_id, str(uuid.uuid4()))
+
+    assert result["status"] == "failed"
+    assert "not found" in result["error"]

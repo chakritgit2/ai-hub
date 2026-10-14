@@ -26,7 +26,7 @@ _TOKEN_TTL_SECONDS = 60
 @dataclass(frozen=True)
 class DelegatedIdentityContext:
     """Per-run identity to mint delegated tokens from - built once per agent
-    run in `app.services.runtime._execute_agent_run` and threaded into every
+    run in `app.services.runtime.execute_agent_run` and threaded into every
     `SafeHttpApiCall` the run's tools are built with."""
 
     sub: str = ""

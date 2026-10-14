@@ -9,8 +9,11 @@ Dynamiq `Agent` built from a real decrypted connection secret:
   agent version's guardrails and real quota reservation/reconciliation
   (`app.services.quotas`) wrapped around the run.
 
-Both share the same core (`_execute_agent_run`): guardrail checks, memory (PRD §6.2),
-usage tracking, and `logs.runs`/`logs.guardrail_events` writes.
+Both share the same core (`execute_agent_run`): guardrail checks, memory (PRD §6.2),
+usage tracking, and `logs.runs`/`logs.guardrail_events` writes. `execute_agent_run` is
+public (no leading underscore) since `app.services.eval_runner` also calls it directly,
+once per dataset item, same reasoning `resolve_and_compile` below already documents for
+itself.
 """
 import asyncio
 import time
@@ -98,7 +101,7 @@ def _merge_guardrail_overrides(compiled_definition: dict, guardrail_overrides: d
     return GuardrailsSpec.model_validate(merged)
 
 
-async def _execute_agent_run(
+async def execute_agent_run(
     compiled_definition: dict,
     guardrails: GuardrailsSpec,
     *,
@@ -111,6 +114,7 @@ async def _execute_agent_run(
     deployment_id: str | None,
     identity_claims: dict | None = None,
     identity_sub: str | None = None,
+    run_id: str | None = None,
 ) -> dict:
     """Shared core: guardrail checks, memory, build+run the real Agent, usage tracking,
     `logs.runs`/`logs.guardrail_events` writes. Raises on resolution-adjacent failures
@@ -119,11 +123,18 @@ async def _execute_agent_run(
     status="error" is still written before re-raising, for every failure past the point
     a run_id exists.
 
+    `run_id` lets a caller (`app.services.eval_runner`) generate and keep the id *before*
+    calling this, so it still has something to key off of even when this raises before
+    ever returning - the return dict itself carries no `run_id` (only `trace_id`, a
+    separate externally-facing correlation id already returned to every Playground/API
+    caller) to avoid widening that public response shape. Defaults to a fresh uuid4 for
+    every existing caller, unchanged from before this parameter existed.
+
     Returns `{"output": str, "trace_id": str, "latency_ms": int,
     "conversation_id": str | None, "guardrail_events": list, "tokens_in": int | None,
     "tokens_out": int | None, "cost_usd": float | None}`.
     """
-    run_id = str(uuid4())
+    run_id = run_id or str(uuid4())
     trace_id = str(uuid4())
     started = time.monotonic()
 
@@ -408,7 +419,7 @@ async def run_playground_agent(
     compiled_definition = await resolve_and_compile(company_id, agent_version_id, role)
     guardrails = GuardrailsSpec.model_validate(compiled_definition["guardrails"])
 
-    return await _execute_agent_run(
+    return await execute_agent_run(
         compiled_definition,
         guardrails,
         company_id=company_id,
@@ -462,7 +473,7 @@ async def run_deployment_agent(
     result: dict | None = None
     partial_usage: RunUsage | None = None
     try:
-        result = await _execute_agent_run(
+        result = await execute_agent_run(
             compiled_definition,
             guardrails,
             company_id=company_id,
@@ -476,7 +487,7 @@ async def run_deployment_agent(
         )
         return result
     except Exception as exc:
-        # _execute_agent_run attaches whatever real usage it collected before failing
+        # execute_agent_run attaches whatever real usage it collected before failing
         # (e.g. one or more completed LLM calls before a later tool-call error) - fall
         # back to "nothing ran" only when it genuinely never got that far.
         partial_usage = getattr(exc, "partial_usage", None)

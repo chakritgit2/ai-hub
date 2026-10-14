@@ -216,6 +216,37 @@ class RuntimeClient
     }
 
     /**
+     * POST /internal/v1/evals — creates a `runtime.eval_runs` row and enqueues real
+     * execution onto ai-worker's ARQ queue (PRD §6.7), used by
+     * EvalsController::createEvalRun(). Unlike estimateEvalCost(), this uses the plain
+     * request() (not requestWithStatus()) - 404 (missing dataset/agent_version) and 422
+     * (uncompilable agent version / unsupported metric) are already pre-checked by
+     * EvalsController before this call (rowExistsInCompany + its own metric-name check),
+     * same "pre-validate cheaply, treat the forward as opaque" reasoning
+     * enqueueKbDocumentIndexing() already uses.
+     *
+     * @param array<int, string> $metrics
+     * @return array<string, mixed>
+     */
+    public function createEvalRun(
+        string $agentVersionId,
+        string $datasetId,
+        array $metrics,
+        ?string $judgeModel,
+        string $role,
+        ?float $estCostUsd
+    ): array {
+        return $this->request('POST', 'evals', [
+            'agent_version_id' => $agentVersionId,
+            'dataset_id' => $datasetId,
+            'metrics' => $metrics,
+            'judge_model' => $judgeModel,
+            'role' => $role,
+            'est_cost_usd' => $estCostUsd,
+        ]);
+    }
+
+    /**
      * Same auth/header setup as request(), but never throws on a non-2xx - returns the
      * raw status code alongside the decoded body so the caller can decide what a given
      * status means (estimateEvalCost() is the only caller today; every other method still

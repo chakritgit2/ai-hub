@@ -50,8 +50,15 @@ from app.services.connection_secrets import (
     upsert_connection_secret,
 )
 from app.services.connections import resolve_connection
+from app.services.agent_versions import resolve_agent_version
+from app.services.datasets import resolve_dataset
 from app.services.egress_allowlist import list_egress_allowlist
-from app.services.eval_runner import estimate_eval_cost
+from app.services.eval_runner import (
+    METRIC_LLM_CALLS_PER_ITEM,
+    UNSUPPORTED_EXECUTION_METRICS,
+    estimate_eval_cost,
+)
+from app.services.eval_runs import create_eval_run as create_eval_run_row
 from app.services.kb_export import export_knowledge_base_zip
 from app.services.kb_search import search_knowledge_base
 from app.services.knowledge_bases import (
@@ -62,7 +69,7 @@ from app.services.knowledge_bases import (
     resolve_knowledge_base,
     upsert_kb_document,
 )
-from app.services.runtime import run_playground_agent
+from app.services.runtime import resolve_and_compile, run_playground_agent
 from app.services.tool_secrets import decrypt_tool_secret, delete_tool_secret, upsert_tool_secret
 from app.services.tools import resolve_tool
 
@@ -714,10 +721,89 @@ async def estimateEvalCost(body: EstimateEvalCostRequest, claims: InternalAuth) 
     return JSONResponse(content=result)
 
 
-@app.post("/internal/v1/evals")
-async def createEvalRun(body: dict, claims: InternalAuth) -> Response:
-    """Phase 3."""
-    return _not_implemented("createEvalRun")
+class CreateEvalRunRequest(BaseModel):
+    agent_version_id: str
+    dataset_id: str
+    metrics: list[str]
+    judge_model: str | None = None
+    role: str
+    est_cost_usd: float | None = None
+
+
+class EvalRunResponse(BaseModel):
+    id: str
+    agent_version_id: str
+    dataset_id: str
+    role: str
+    metrics: list[str]
+    judge_model: str | None
+    status: str
+    est_cost_usd: float | None
+
+
+@app.post("/internal/v1/evals", response_model=EvalRunResponse, status_code=201)
+async def createEvalRun(body: CreateEvalRunRequest, claims: InternalAuth) -> Response:
+    """Creates a `runtime.eval_runs` row and enqueues `run_eval` onto ai-worker's ARQ
+    queue (PRD §6.7) - mirrors `enqueueKbDocumentIndexing`'s "write the row with
+    status='queued' first, then enqueue" ordering exactly. `metrics` entries in
+    `UNSUPPORTED_EXECUTION_METRICS` (`llm_evaluator`/`python_evaluator`) are rejected here
+    with 422 rather than silently skipped or run - see `eval_runner.py`'s module
+    docstring for why."""
+    company_id = claims["company_id"]
+    if not _is_uuid(body.dataset_id) or not _is_uuid(body.agent_version_id):
+        raise HTTPException(status_code=404, detail="not_found")
+
+    if not body.metrics:
+        raise HTTPException(status_code=422, detail="metrics_required")
+
+    unsupported = sorted(set(body.metrics) & UNSUPPORTED_EXECUTION_METRICS)
+    if unsupported:
+        raise HTTPException(status_code=422, detail=f"metric_not_executable_yet: {unsupported}")
+
+    # A requested metric that needs an LLM judge with no judge_model given would
+    # otherwise reach dynamiq_adapter.build_llm's `config.get("model", "gpt-4o-mini")`
+    # with the key present but None - which returns None, not the fallback, since
+    # dict.get's default only applies when the key is absent entirely. Caught here,
+    # at creation time, rather than failing confusingly mid-run.
+    if any(METRIC_LLM_CALLS_PER_ITEM.get(m, 0) > 0 for m in body.metrics) and not body.judge_model:
+        raise HTTPException(status_code=422, detail="judge_model_required")
+
+    if await resolve_dataset(company_id, body.dataset_id) is None:
+        raise HTTPException(status_code=404, detail="dataset_id not found for this company")
+    if await resolve_agent_version(company_id, body.agent_version_id) is None:
+        raise HTTPException(status_code=404, detail="agent_version_id not found for this company")
+
+    try:
+        await resolve_and_compile(company_id, body.agent_version_id, body.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"agent_version_invalid: {exc}") from exc
+
+    eval_run = await create_eval_run_row(
+        company_id,
+        body.agent_version_id,
+        body.dataset_id,
+        body.role,
+        body.metrics,
+        body.judge_model,
+        body.est_cost_usd,
+    )
+
+    arq_pool = await get_arq_pool()
+    await arq_pool.enqueue_job("run_eval", company_id, eval_run.id)
+
+    return JSONResponse(
+        content=EvalRunResponse(
+            id=eval_run.id,
+            agent_version_id=eval_run.agent_version_id,
+            dataset_id=eval_run.dataset_id,
+            role=eval_run.role,
+            metrics=eval_run.metrics,
+            judge_model=eval_run.judge_model,
+            status=eval_run.status,
+            est_cost_usd=eval_run.est_cost_usd,
+        ).model_dump(),
+        status_code=201,
+    )
 
 
 @app.post("/internal/v1/evals/{id}/cancel")
