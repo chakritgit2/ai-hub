@@ -169,6 +169,12 @@ components:
             properties:
               path: { type: string }
               message: { type: string }
+    CompileWorkflowRequest:
+      type: object
+      required: [spec, role]
+      properties:
+        spec: { type: object, additionalProperties: true, description: Workflow spec JSON (PRD §6.9, phase 4). }
+        role: { type: string, enum: [admin, developer, viewer], description: Publisher role — gates the node-type allowlist. }
     RecompileAllResult:
       type: object
       properties:
@@ -212,6 +218,22 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RecompileAllResult' }
+
+  /workflows/compile:
+    post:
+      operationId: compileWorkflowSpec
+      summary: Validate spec + role-based node-type allowlist, compile to a GraphOrchestrator definition (PRD §6.9, phase 4). No execution - compile/validate only.
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompileWorkflowRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompileResult' }
 
   /connections/{id}/secret:
     parameters:

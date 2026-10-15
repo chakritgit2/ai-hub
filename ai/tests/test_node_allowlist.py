@@ -24,6 +24,14 @@ def test_builtin_web_search_types_are_always_allowed():
         assert "dynamiq.nodes.tools.exa_search.ExaTool" in allowed
 
 
+def test_workflow_graph_types_are_always_allowed():
+    for role in ("viewer", "developer", "admin"):
+        allowed = allowed_node_types(role)
+        assert "dynamiq.nodes.agents.orchestrators.graph.GraphOrchestrator" in allowed
+        assert "dynamiq.nodes.agents.orchestrators.graph_state.GraphState" in allowed
+        assert "dynamiq.nodes.agents.orchestrators.graph_manager.GraphAgentManager" in allowed
+
+
 def test_find_disallowed_types_walks_nested_dicts_and_lists():
     tree = {
         "agent": {

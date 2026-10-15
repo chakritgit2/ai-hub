@@ -10,7 +10,7 @@
 		phase?: 2 | 3 | 4;
 	}
 
-	// PRD §6.9 phase 1/2 — real routes.
+	// PRD §6.9 phase 1/2/4 (slice 1: CRUD + compile/validate only) — real routes.
 	const workspaceItems: NavItem[] = [
 		{ label: 'Dashboard', href: '/dashboard' },
 		{ label: 'Agents', href: '/agents' },
@@ -21,6 +21,7 @@
 		{ label: 'Knowledge Bases', href: '/knowledge-bases' },
 		{ label: 'Datasets', href: '/datasets' },
 		{ label: 'Evaluation', href: '/evaluation' },
+		{ label: 'Workflows', href: '/workflows' },
 		{ label: 'Runs & Logs', href: '/runs' },
 		{ label: 'Deployments', href: '/deployments' },
 		{ label: 'API Keys', href: '/api-keys' },
@@ -28,7 +29,7 @@
 	];
 
 	// PRD §6.9 phase 3+ — nav entries only, disabled, no routes exist yet.
-	const laterPhaseItems: NavItem[] = [{ label: 'Workflows', href: '/workflows', phase: 4 }];
+	const laterPhaseItems: NavItem[] = [];
 
 	function isActive(href: string): boolean {
 		return $page.url.pathname === href || $page.url.pathname.startsWith(`${href}/`);
@@ -66,27 +67,29 @@
 			{/each}
 		</ul>
 
-		<p class="mt-6 px-2 text-xs font-semibold uppercase tracking-wider text-neutral-500">
-			Later phases
-		</p>
-		<ul class="mt-1 space-y-0.5 pb-4">
-			{#each laterPhaseItems as item (item.href)}
-				<li>
-					<span
-						class="flex cursor-not-allowed items-center justify-between rounded-md px-3 py-2 text-sm text-neutral-600"
-						aria-disabled="true"
-						title="Planned for phase {item.phase} — not available yet"
-					>
-						<span>{item.label}</span>
+		{#if laterPhaseItems.length > 0}
+			<p class="mt-6 px-2 text-xs font-semibold uppercase tracking-wider text-neutral-500">
+				Later phases
+			</p>
+			<ul class="mt-1 space-y-0.5 pb-4">
+				{#each laterPhaseItems as item (item.href)}
+					<li>
 						<span
-							class="rounded border border-neutral-700 px-1.5 py-0.5 font-mono text-[10px] leading-none text-neutral-500"
+							class="flex cursor-not-allowed items-center justify-between rounded-md px-3 py-2 text-sm text-neutral-600"
+							aria-disabled="true"
+							title="Planned for phase {item.phase} — not available yet"
 						>
-							P{item.phase}
+							<span>{item.label}</span>
+							<span
+								class="rounded border border-neutral-700 px-1.5 py-0.5 font-mono text-[10px] leading-none text-neutral-500"
+							>
+								P{item.phase}
+							</span>
 						</span>
-					</span>
-				</li>
-			{/each}
-		</ul>
+					</li>
+				{/each}
+			</ul>
+		{/if}
 	</div>
 
 	<div class="border-t border-white/10 px-4 py-3">

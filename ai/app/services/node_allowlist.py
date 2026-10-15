@@ -33,6 +33,12 @@ ALWAYS_ALLOWED_NODE_TYPES: frozenset[str] = frozenset(
         # Knowledge base retrieval (PRD §6.6) - read-only, not a code-execution concern,
         # so it's always-allowed like HttpApiCall, not admin-only.
         "dynamiq.nodes.retrievers.retriever.VectorStoreRetriever",
+        # Workflows (PRD §6.9, phase 4) - multi-agent graph orchestration. Routing/
+        # coordination constructs, not a code-execution concern, so always-allowed like
+        # Agent itself (every state just wraps an already-allowlisted Agent).
+        "dynamiq.nodes.agents.orchestrators.graph.GraphOrchestrator",
+        "dynamiq.nodes.agents.orchestrators.graph_state.GraphState",
+        "dynamiq.nodes.agents.orchestrators.graph_manager.GraphAgentManager",
     }
 )
 

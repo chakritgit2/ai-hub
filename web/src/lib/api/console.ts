@@ -34,7 +34,10 @@ import type {
 	Run,
 	RuntimeTokenResponse,
 	Skill,
-	Tool
+	Tool,
+	Workflow,
+	WorkflowInput,
+	WorkflowVersion
 } from './types';
 
 // ---- /me --------------------------------------------------------------
@@ -441,6 +444,63 @@ export function listCompanyMembers(id: string): Promise<Placeholder[]> {
 	return apiFetch<Placeholder[]>(`/companies/${id}/members`, { skipCompanyHeader: true });
 }
 
+// ---- /workflows (PRD §6.9, phase 4 - slice 1: CRUD + compile/validate, no execution/
+// deployment exposure yet) ---------------------------------------------------
+
+export function listWorkflows(): Promise<Workflow[]> {
+	return apiFetch<Workflow[]>('/workflows');
+}
+
+export function createWorkflow(input: WorkflowInput): Promise<Workflow> {
+	return apiFetch<Workflow>('/workflows', { method: 'POST', body: input });
+}
+
+export function getWorkflow(id: string): Promise<Workflow> {
+	return apiFetch<Workflow>(`/workflows/${id}`);
+}
+
+export function updateWorkflow(id: string, input: WorkflowInput): Promise<Workflow> {
+	return apiFetch<Workflow>(`/workflows/${id}`, { method: 'PATCH', body: input });
+}
+
+export function archiveWorkflow(id: string): Promise<Workflow> {
+	return apiFetch<Workflow>(`/workflows/${id}/archive`, { method: 'POST' });
+}
+
+export function unarchiveWorkflow(id: string): Promise<Workflow> {
+	return apiFetch<Workflow>(`/workflows/${id}/unarchive`, { method: 'POST' });
+}
+
+export function listWorkflowVersions(id: string): Promise<WorkflowVersion[]> {
+	return apiFetch<WorkflowVersion[]>(`/workflows/${id}/versions`);
+}
+
+export function createWorkflowVersion(
+	id: string,
+	input: { spec: Record<string, unknown>; spec_version?: string }
+): Promise<WorkflowVersion> {
+	return apiFetch<WorkflowVersion>(`/workflows/${id}/versions`, { method: 'POST', body: input });
+}
+
+export function getWorkflowVersion(id: string, vid: string): Promise<WorkflowVersion> {
+	return apiFetch<WorkflowVersion>(`/workflows/${id}/versions/${vid}`);
+}
+
+export function updateWorkflowVersion(
+	id: string,
+	vid: string,
+	input: { spec?: Record<string, unknown>; spec_version?: string }
+): Promise<WorkflowVersion> {
+	return apiFetch<WorkflowVersion>(`/workflows/${id}/versions/${vid}`, {
+		method: 'PATCH',
+		body: input
+	});
+}
+
+export function publishWorkflowVersion(id: string, vid: string): Promise<WorkflowVersion> {
+	return apiFetch<WorkflowVersion>(`/workflows/${id}/versions/${vid}/publish`, { method: 'POST' });
+}
+
 export type {
 	Agent,
 	AgentVersion,
@@ -460,5 +520,8 @@ export type {
 	Run,
 	RuntimeTokenResponse,
 	Skill,
-	Tool
+	Tool,
+	Workflow,
+	WorkflowInput,
+	WorkflowVersion
 } from './types';

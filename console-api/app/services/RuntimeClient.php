@@ -51,6 +51,21 @@ class RuntimeClient
     }
 
     /**
+     * POST /internal/v1/workflows/compile — compiles a workflow spec into a runnable
+     * GraphOrchestrator definition, used by WorkflowsController::publishWorkflowVersion()
+     * (PRD §6.9, phase 4). Uses the plain request() helper, not requestWithStatus() -
+     * same reasoning as compileAgentSpec(): a compile failure is always HTTP 200
+     * `ok: false` with an `errors` array, never a distinguishable 404/422.
+     *
+     * @param array<string, mixed> $spec
+     * @return array<string, mixed>
+     */
+    public function compileWorkflowSpec(array $spec, string $role): array
+    {
+        return $this->request('POST', 'workflows/compile', ['spec' => $spec, 'role' => $role]);
+    }
+
+    /**
      * PUT /internal/v1/connections/{id}/secret — envelope-encrypts the secret with the
      * company's own DEK and stores it, used by ConnectionsController::putConnectionSecret()
      * (PRD §7.4/§7.7). console-api itself never persists the plaintext secret.

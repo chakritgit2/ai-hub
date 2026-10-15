@@ -57,6 +57,20 @@ return function (Router $router): void {
     $admin('PATCH', '/agents/{id:[^/]+}/versions/{vid:[^/]+}', 'Agents', 'updateAgentVersion');
     $admin('POST', '/agents/{id:[^/]+}/versions/{vid:[^/]+}/publish', 'Agents', 'publishAgentVersion');
 
+    // --- /workflows (PRD §6.9, phase 4 - slice 1: CRUD + compile/validate, no
+    // execution/deployment exposure yet) ------------------------------------
+    $admin('GET', '/workflows', 'Workflows', 'listWorkflows');
+    $admin('POST', '/workflows', 'Workflows', 'createWorkflow');
+    $admin('GET', '/workflows/{id:[^/]+}', 'Workflows', 'getWorkflow');
+    $admin('PATCH', '/workflows/{id:[^/]+}', 'Workflows', 'updateWorkflow');
+    $admin('POST', '/workflows/{id:[^/]+}/archive', 'Workflows', 'archiveWorkflow');
+    $admin('POST', '/workflows/{id:[^/]+}/unarchive', 'Workflows', 'unarchiveWorkflow');
+    $admin('GET', '/workflows/{id:[^/]+}/versions', 'Workflows', 'listWorkflowVersions');
+    $admin('POST', '/workflows/{id:[^/]+}/versions', 'Workflows', 'createWorkflowVersion');
+    $admin('GET', '/workflows/{id:[^/]+}/versions/{vid:[^/]+}', 'Workflows', 'getWorkflowVersion');
+    $admin('PATCH', '/workflows/{id:[^/]+}/versions/{vid:[^/]+}', 'Workflows', 'updateWorkflowVersion');
+    $admin('POST', '/workflows/{id:[^/]+}/versions/{vid:[^/]+}/publish', 'Workflows', 'publishWorkflowVersion');
+
     // --- /deployments -----------------------------------------------------
     $admin('GET', '/deployments', 'Deployments', 'listDeployments');
     $admin('POST', '/deployments', 'Deployments', 'createDeployment');

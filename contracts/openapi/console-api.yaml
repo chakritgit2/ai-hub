@@ -384,6 +384,30 @@ components:
         is_published: { type: boolean }
         published_by: { type: string, nullable: true }
         published_at: { type: string, format: date-time, nullable: true }
+    Workflow:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string }
+        archived_at: { type: string, format: date-time, nullable: true }
+    WorkflowVersion:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        workflow_id: { type: string }
+        version_no: { type: integer }
+        spec: { type: object, additionalProperties: true, description: 'PRD §6.9, phase 4 - states/edges/manager (see ai/app/services/workflow_spec.py).' }
+        spec_version: { type: string }
+        compiled_definition: { type: object, additionalProperties: true, nullable: true }
+        compiler_version: { type: string, nullable: true }
+        dynamiq_version: { type: string, nullable: true }
+        is_published: { type: boolean }
+        published_by: { type: string, nullable: true }
+        published_at: { type: string, format: date-time, nullable: true }
     Deployment:
       type: object
       properties:
@@ -714,6 +738,99 @@ paths:
       summary: Recompiles via ai-runtime, sets is_published=true, bumps dependent deployments' config_version (PRD §4.4-A).
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AgentVersion' } } } }
+
+  /workflows:
+    get:
+      operationId: listWorkflows
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Workflow' } } } } }
+    post:
+      operationId: createWorkflow
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Workflow' }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Workflow' } } } }
+  /workflows/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getWorkflow
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Workflow' } } } }
+    patch:
+      operationId: updateWorkflow
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Workflow' }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Workflow' } } } }
+  /workflows/{id}/archive:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: archiveWorkflow
+      summary: Soft-deletes a workflow (sets status=archived, archived_at=now()) — there is no hard delete for workflows.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Workflow' } } } }
+  /workflows/{id}/unarchive:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: unarchiveWorkflow
+      summary: Reverses archiveWorkflow (clears status back to draft, archived_at to null).
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Workflow' } } } }
+  /workflows/{id}/versions:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: listWorkflowVersions
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/WorkflowVersion' } } } } }
+    post:
+      operationId: createWorkflowVersion
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkflowVersion' }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/WorkflowVersion' } } } }
+  /workflows/{id}/versions/{vid}:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+      - { name: vid, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getWorkflowVersion
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/WorkflowVersion' } } } }
+    patch:
+      operationId: updateWorkflowVersion
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkflowVersion' }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/WorkflowVersion' } } } }
+  /workflows/{id}/versions/{vid}/publish:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+      - { name: vid, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: publishWorkflowVersion
+      summary: Recompiles via ai-runtime (GraphOrchestrator), sets is_published=true (PRD §6.9, phase 4). No execution/deployment exposure yet.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/WorkflowVersion' } } } }
 
   /deployments:
     get:

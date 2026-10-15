@@ -358,6 +358,66 @@ export interface AgentVersion {
 	published_at?: string | null;
 }
 
+// Workflows (PRD §6.9, phase 4) - slice 1: CRUD + a JSON spec editor + compile/validate
+// only, no execution yet. Each state references an existing, published company Agent by
+// agent_version_id - no inline agent definitions. Mirrors
+// ai/app/services/workflow_spec.py's WorkflowSpecDoc exactly.
+export interface Workflow {
+	id: string;
+	company_id: string;
+	name: string;
+	description?: string | null;
+	status: string;
+	archived_at?: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WorkflowInput {
+	name?: string;
+	description?: string | null;
+}
+
+export interface WorkflowStateSpec {
+	id: string;
+	label?: string | null;
+	agent_version_id: string;
+	// 0 entries -> auto-wired to END by the compiler; 1 -> a deterministic transition;
+	// 2+ (no condition) -> the workflow's manager LLM decides at run time which to take.
+	next_states: string[];
+}
+
+export interface WorkflowManagerSpec {
+	connection_id: string;
+	model: string;
+	temperature?: number | null;
+	max_tokens?: number | null;
+}
+
+export interface WorkflowSpec {
+	states: WorkflowStateSpec[];
+	initial_state: string;
+	manager: WorkflowManagerSpec;
+	max_loops?: number;
+}
+
+export interface WorkflowVersion {
+	id: string;
+	company_id: string;
+	workflow_id: string;
+	version_no: number;
+	spec: WorkflowSpec | Record<string, unknown>;
+	spec_version: string;
+	compiled_definition?: Record<string, unknown> | null;
+	compiler_version?: string | null;
+	dynamiq_version?: string | null;
+	is_published: boolean;
+	published_by?: string | null;
+	published_at?: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
 export interface Deployment {
 	id: string;
 	company_id: string;
