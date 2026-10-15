@@ -89,6 +89,26 @@ def fake_runtime_claims(
     return _claims
 
 
+def fake_workflow_runtime_claims(
+    company_id: str = "",
+    workflow_version_id: str = "00000000-0000-0000-0000-000000000000",
+    role: str = "developer",
+):
+    """Stands in for a verified workflow runtime token (PRD §6.9, phase 4, slice 2) via
+    FastAPI's `dependency_overrides` - same shape/defaults as `fake_runtime_claims`, just
+    carrying `workflow_version_id` instead of `agent_version_id`."""
+
+    def _claims() -> dict:
+        return {
+            "company_id": company_id,
+            "user_id": "test-user",
+            "role": role,
+            "workflow_version_id": workflow_version_id,
+        }
+
+    return _claims
+
+
 def fake_internal_claims(company_id: str = "test-company"):
     """Stands in for a verified internal call token (PRD §9.2/§7.6) via FastAPI's
     `dependency_overrides`."""

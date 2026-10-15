@@ -69,6 +69,7 @@ runs_table = sa.Table(
     sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
     sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
     sa.Column("agent_version_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("workflow_version_id", postgresql.UUID(as_uuid=True), nullable=True),
     sa.Column("deployment_id", postgresql.UUID(as_uuid=True), nullable=True),
     sa.Column("conversation_id", postgresql.UUID(as_uuid=True), nullable=True),
     sa.Column("source", sa.String(length=32), nullable=False),

@@ -31,6 +31,7 @@ return function (Router $router): void {
 
     // --- /runtime-token ---------------------------------------------------
     $admin('POST', '/runtime-token', 'RuntimeToken', 'issueRuntimeToken');
+    $admin('POST', '/workflow-runtime-token', 'RuntimeToken', 'issueWorkflowRuntimeToken');
 
     // --- /connections -------------------------------------------------------
     $admin('GET', '/connections', 'Connections', 'listConnections');

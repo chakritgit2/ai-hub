@@ -11,6 +11,7 @@ use Phalcon\Http\Response;
 
 /**
  * POST /runtime-token — issues a 5-minute Playground runtime JWT (PRD §4.4-B, §7.6).
+ * POST /workflow-runtime-token — same, for a workflow version (PRD §6.9, phase 4).
  * Backed by ConsoleApi\Services\TokenIssuer.
  */
 class RuntimeTokenController extends ControllerBase
@@ -63,6 +64,58 @@ class RuntimeTokenController extends ControllerBase
 
         // fetchOne()'s declared return type is `array`, not `array|false` — see the
         // same note in AuthService::syncUser().
+        return !empty($row);
+    }
+
+    /**
+     * POST /workflow-runtime-token — issues a 5-minute Playground runtime JWT for a
+     * workflow version (PRD §6.9, phase 4, slice 2). Same shape as issueRuntimeToken()
+     * above, deliberately NOT requiring is_published - Playground tests draft workflow
+     * versions too, exactly like a draft agent version already can be.
+     */
+    public function issueWorkflowRuntimeToken(): Response
+    {
+        $companyId = $this->getCompanyId();
+        if ($companyId === null) {
+            return $this->jsonResponse(['error' => 'company_id_required'], 400);
+        }
+
+        $role = $this->getRoleForCurrentCompany();
+        if ($role === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $body = $this->request->getJsonRawBody(true) ?? [];
+        $workflowVersionId = $body['workflow_version_id'] ?? null;
+        if (!is_string($workflowVersionId) || !$this->isUuid($workflowVersionId)) {
+            return $this->jsonResponse(['error' => 'workflow_version_id_required'], 400);
+        }
+
+        if (!$this->workflowVersionExistsInCompany($workflowVersionId)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        /** @var TokenIssuer $tokenIssuer */
+        $tokenIssuer = $this->getDI()->getShared('tokenIssuer');
+        $result = $tokenIssuer->issueWorkflowRuntimeToken($companyId, $this->getAuthUser()['id'], $role, $workflowVersionId);
+
+        return $this->jsonResponse(['token' => $result['token'], 'expires_in' => $result['expires_in']]);
+    }
+
+    /**
+     * workflow_versions is RLS-protected (PRD §7.3), same reasoning as
+     * agentVersionExistsInCompany() above.
+     */
+    private function workflowVersionExistsInCompany(string $workflowVersionId): bool
+    {
+        $row = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                'SELECT id FROM console.workflow_versions WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $workflowVersionId]
+            )
+        );
+
         return !empty($row);
     }
 }

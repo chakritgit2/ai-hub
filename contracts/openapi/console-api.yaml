@@ -543,6 +543,26 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeTokenResponse' }
 
+  /workflow-runtime-token:
+    post:
+      operationId: issueWorkflowRuntimeToken
+      summary: Issue a 5-minute Playground runtime JWT for a workflow version (PRD §6.9, phase 4, slice 2).
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workflow_version_id]
+              properties:
+                workflow_version_id: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuntimeTokenResponse' }
+
   /connections:
     get:
       operationId: listConnections

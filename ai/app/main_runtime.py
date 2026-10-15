@@ -44,6 +44,8 @@ from app.integrations.safe_http_client import (
 )
 from app.services.company_keys import get_or_create_company_dek
 from app.services.compiler import compile_spec
+from app.services.workflow_compiler import compile_workflow_spec
+from app.services.workflow_runtime import execute_workflow_run
 from app.services.connection_secrets import (
     decrypt_connection_secret,
     delete_connection_secret,
@@ -235,6 +237,44 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> Response
     return _not_implemented("runPlaygroundStream")
 
 
+class WorkflowRunRequest(BaseModel):
+    input: str
+
+
+class WorkflowRunResult(BaseModel):
+    output: str | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    cost_usd: float | None = None
+    latency_ms: int | None = None
+    trace_id: str
+
+
+@app.post("/ai/v1/playground/run-workflow", response_model=WorkflowRunResult)
+async def runPlaygroundWorkflow(body: WorkflowRunRequest, claims: RuntimeAuth) -> Response:
+    """Run a given workflow version synchronously (PRD §6.9, phase 4, slice 2).
+
+    REAL: compiles the workflow's current (possibly draft) spec live - exactly like
+    runPlayground does for a lone agent - then builds and runs a real
+    `GraphOrchestrator` via `app.services.workflow_runtime.execute_workflow_run`, with
+    every state's agent built from its own real decrypted secret. No streaming, no
+    conversation memory, no guardrails yet - mirrors the existing single-agent
+    constraints exactly (see workflow_runtime.py's own module docstring).
+    """
+    try:
+        result = await execute_workflow_run(
+            company_id=claims["company_id"],
+            workflow_version_id=claims["workflow_version_id"],
+            role=claims["role"],
+            input_text=body.input,
+            source="playground",
+        )
+    except Exception as exc:  # surface as a clear upstream error, not a 500 crash
+        logger.exception("playground workflow run failed")
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+    return WorkflowRunResult(**result)
+
+
 @app.post("/ai/v1/runs/{id}/cancel")
 async def cancelRun(id: str, claims: RuntimeAuth) -> Response:
     return _not_implemented("cancelRun")
@@ -289,6 +329,27 @@ async def compileAgentSpec(body: CompileRequest, claims: InternalAuth) -> Respon
 @app.post("/internal/v1/agents/recompile-all")
 async def recompileAllAgents(claims: InternalAuth) -> Response:
     return _not_implemented("recompileAllAgents")
+
+
+class CompileWorkflowRequest(BaseModel):
+    spec: dict
+    role: Literal["admin", "developer", "viewer"]
+
+
+@app.post("/internal/v1/workflows/compile", response_model=CompileResult)
+async def compileWorkflowSpec(body: CompileWorkflowRequest, claims: InternalAuth) -> Response:
+    """Validates + compiles a workflow spec into a runnable `GraphOrchestrator` definition
+    (PRD §6.9, phase 4) - slice 1: compile/validate only, no execution. Reuses the same
+    `CompileResult` response shape as `compileAgentSpec` above; a compile failure (bad
+    spec, cross-company/unpublished agent reference, disallowed node type) is a normal 200
+    with `ok: false`, never a 4xx/5xx - only a genuine infra failure becomes the 502 below.
+    """
+    try:
+        result = await compile_workflow_spec(body.spec, body.role, claims["company_id"])
+    except Exception as exc:
+        logger.exception("workflow spec compilation failed")
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+    return CompileResult(**result)
 
 
 class ConnectionSecretInput(BaseModel):

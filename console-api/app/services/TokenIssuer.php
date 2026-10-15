@@ -12,7 +12,9 @@ use RuntimeException;
  * against the same JWKS (JwksController) and distinguished only by `aud`:
  *
  *   - Runtime token (PRD §4.4-B): 5 minutes, carries company_id/user_id/role/
- *     agent_version_id, exchanged by the web app for Playground access.
+ *     agent_version_id (or, for `issueWorkflowRuntimeToken`, workflow_version_id in
+ *     its place - PRD §6.9 phase 4 slice 2), exchanged by the web app for Playground
+ *     access.
  *   - Internal call token (PRD §9.2): 60 seconds, aud=ai-internal, no claims beyond
  *     standard ones — authorizes console-api -> ai-runtime /internal/v1/* calls,
  *     which also carry X-Company-Id/traceparent headers (RuntimeClient's job, not
@@ -45,6 +47,26 @@ class TokenIssuer
             'user_id' => $userId,
             'role' => $role,
             'agent_version_id' => $agentVersionId,
+            'iat' => $now,
+            'exp' => $now + self::RUNTIME_TOKEN_TTL_SECONDS,
+        ], $this->privateKey(), 'RS256', $this->kid);
+
+        return ['token' => $token, 'expires_in' => self::RUNTIME_TOKEN_TTL_SECONDS];
+    }
+
+    /**
+     * @return array{token: string, expires_in: int}
+     */
+    public function issueWorkflowRuntimeToken(string $companyId, string $userId, string $role, string $workflowVersionId): array
+    {
+        $now = time();
+        $token = JWT::encode([
+            'iss' => $this->issuer,
+            'aud' => $this->runtimeTokenAudience,
+            'company_id' => $companyId,
+            'user_id' => $userId,
+            'role' => $role,
+            'workflow_version_id' => $workflowVersionId,
             'iat' => $now,
             'exp' => $now + self::RUNTIME_TOKEN_TTL_SECONDS,
         ], $this->privateKey(), 'RS256', $this->kid);
