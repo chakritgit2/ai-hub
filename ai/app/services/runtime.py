@@ -21,7 +21,9 @@ from typing import Any
 from uuid import uuid4
 
 from dynamiq.callbacks.base import BaseCallbackHandler
+from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
 from dynamiq.runnables.base import RunnableConfig, RunnableStatus
+from dynamiq.types.streaming import StreamingConfig, StreamingEventMessage, StreamingMode
 
 from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
@@ -115,6 +117,7 @@ async def execute_agent_run(
     identity_claims: dict | None = None,
     identity_sub: str | None = None,
     run_id: str | None = None,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
 ) -> dict:
     """Shared core: guardrail checks, memory, build+run the real Agent, usage tracking,
     `logs.runs`/`logs.guardrail_events` writes. Raises on resolution-adjacent failures
@@ -130,14 +133,110 @@ async def execute_agent_run(
     caller) to avoid widening that public response shape. Defaults to a fresh uuid4 for
     every existing caller, unchanged from before this parameter existed.
 
+    `stream_handler` (PRD Goal #6) is only actually wired into the run when
+    `guardrails.output` is empty - output guardrails can only run *after* `agent.run()`
+    returns the complete text (see below), so live token-by-token delivery would let
+    unguarded text reach the caller before a block/redact decision is made. When an
+    output guardrail is configured, `stream_handler` is accepted but never attached to
+    the run; the caller (`app.main_runtime.runPlaygroundStream`) is expected to send the
+    already-guardrail-checked `output` as a single chunk instead. The whole function body
+    runs inside a `try/finally` purely to guarantee `stream_handler.done_event` is always
+    set on every exit path (blocked-input return, exception, success) - a bare
+    `Agent.run()` (not wrapped in a `dynamiq.Workflow`) never fires the
+    `on_workflow_*` hooks that would otherwise set it, so without this a caller
+    iterating `async for event in stream_handler` would hang forever once the real
+    answer is done. See `streamed_live` in the returned dict.
+
     Returns `{"output": str, "trace_id": str, "latency_ms": int,
     "conversation_id": str | None, "guardrail_events": list, "tokens_in": int | None,
-    "tokens_out": int | None, "cost_usd": float | None}`.
+    "tokens_out": int | None, "cost_usd": float | None, "streamed_live": bool}`.
     """
     run_id = run_id or str(uuid4())
     trace_id = str(uuid4())
     started = time.monotonic()
+    try:
+        return await _execute_agent_run_body(
+            compiled_definition,
+            guardrails,
+            company_id=company_id,
+            agent_version_id=agent_version_id,
+            source=source,
+            input_text=input_text,
+            external_user_id=external_user_id,
+            conversation_id=conversation_id,
+            deployment_id=deployment_id,
+            identity_claims=identity_claims,
+            identity_sub=identity_sub,
+            run_id=run_id,
+            trace_id=trace_id,
+            started=started,
+            stream_handler=stream_handler,
+        )
+    finally:
+        if stream_handler is not None:
+            stream_handler.done_event.set()
 
+
+def attach_stream_completion(
+    run_task: "asyncio.Task[dict]", stream_handler: AsyncStreamingIteratorCallbackHandler
+) -> None:
+    """Guarantees a consumer draining `stream_handler` *concurrently* with `run_task` (the
+    realistic SSE shape: `async for event in stream_handler` running alongside the task,
+    not after it's awaited) always terminates - on every completion path: success, any
+    exception raised from inside `execute_agent_run`, or even a failure in the caller
+    *before* `execute_agent_run` is ever reached (e.g. `resolve_and_compile`'s "not found"
+    `ValueError`, which `execute_agent_run`'s own `try/finally` can't cover since it's
+    never entered).
+
+    `execute_agent_run`'s own `finally: stream_handler.done_event.set()` is NOT sufficient
+    on its own for this concurrent-drain shape, for a second, independent reason:
+    `AsyncStreamingIteratorCallbackHandler._iter_queue_events`'s `await self.queue.get()`
+    only wakes up when an item is actually put into the queue - never just because
+    `done_event` changed. A consumer already blocked inside that `get()` (which is exactly
+    what happens when nothing more arrives right as the run finishes) hangs forever even
+    though `done_event` is set correctly. Confirmed by reproducing a real hang live against
+    this project's own dev stack (a real OpenRouter call, concurrent drain, `done_event`
+    set correctly, consumer still stuck) before this helper existed - a sequential
+    "await the run, then drain" caller (this project's own `execute_agent_run`-level tests)
+    never hits this, since the queue's final contents are already settled by the time
+    draining starts; a concurrent drain always needs this.
+
+    Call this once, right after creating `run_task` (e.g. via `asyncio.create_task(
+    run_playground_agent(..., stream_handler=stream_handler))`) and before starting to
+    drain `stream_handler` - see `app.main_runtime.runPlaygroundStream` for the canonical
+    caller. Any future caller that streams concurrently (gateway/workflow streaming) must
+    call this too.
+    """
+
+    def _on_done(_task: "asyncio.Task[dict]") -> None:
+        stream_handler.done_event.set()
+        stream_handler.queue.put_nowait(StreamingEventMessage(data=None))
+
+    run_task.add_done_callback(_on_done)
+
+
+async def _execute_agent_run_body(
+    compiled_definition: dict,
+    guardrails: GuardrailsSpec,
+    *,
+    company_id: str,
+    agent_version_id: str,
+    source: str,
+    input_text: str,
+    external_user_id: str | None,
+    conversation_id: str | None,
+    deployment_id: str | None,
+    identity_claims: dict | None,
+    identity_sub: str | None,
+    run_id: str,
+    trace_id: str,
+    started: float,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None,
+) -> dict:
+    """The actual body of `execute_agent_run`, split out only so the `try/finally` that
+    guarantees `stream_handler.done_event` gets set (see `execute_agent_run`'s docstring)
+    doesn't force re-indenting this whole function - not a separate concept on its own,
+    never call directly."""
     # PRD §7.5: the per-run delegated-identity context every `auth_mode: delegated` HTTP
     # tool this run builds will mint its Authorization JWT from - `act` identifies which
     # deployment/agent-version is acting, `sub` falls back to the memory-scoping
@@ -185,6 +284,7 @@ async def execute_agent_run(
             "tokens_in": None,
             "tokens_out": None,
             "cost_usd": None,
+            "streamed_live": False,
         }
 
     secret = await decrypt_connection_secret(company_id, connection_id)
@@ -276,6 +376,15 @@ async def execute_agent_run(
     )
 
     usage_collector = _UsageCollector()
+    callbacks: list[BaseCallbackHandler] = [usage_collector]
+    # Live streaming is only safe when there's no output guardrail that could later
+    # redact/block this text - see execute_agent_run's docstring. `agent.streaming` is a
+    # plain mutable field on the already-built Node (dynamiq/nodes/node.py), so setting
+    # it here needs no change to app.services.compiler.build_agent.
+    streamed_live = stream_handler is not None and not guardrails.output
+    if streamed_live:
+        agent.streaming = StreamingConfig(enabled=True, mode=StreamingMode.FINAL)
+        callbacks.append(stream_handler)
 
     # `Agent.run` is synchronous and, with memory attached, does blocking
     # psycopg I/O on top of the already-blocking LLM call - run it off the
@@ -295,7 +404,7 @@ async def execute_agent_run(
                     "user_id": user_id,
                     "session_id": resolved_conversation_id,
                 },
-                config=RunnableConfig(callbacks=[usage_collector]),
+                config=RunnableConfig(callbacks=callbacks),
             ),
             timeout=get_settings().RUN_TIMEOUT_SECONDS,
         )
@@ -381,6 +490,7 @@ async def execute_agent_run(
         "tokens_in": usage.tokens_in,
         "tokens_out": usage.tokens_out,
         "cost_usd": usage.cost_usd,
+        "streamed_live": streamed_live,
     }
 
 
@@ -394,6 +504,7 @@ async def run_playground_agent(
     deployment_id: str | None = None,
     claims: dict | None = None,
     identity_sub: str | None = None,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
 ) -> dict:
     """Resolve `agent_version_id`, compile it live, build a real Agent from the
     company's own decrypted connection secret, and run it - with memory when a
@@ -415,6 +526,9 @@ async def run_playground_agent(
     §7.5) - `identity_sub` lets a caller supply the runtime token's own user id as the
     delegated `sub` when no simulated external user was given, distinct from
     `external_user_id`'s memory-scoping role.
+
+    `stream_handler` (PRD Goal #6) is passed straight through to `execute_agent_run` -
+    see its docstring for the guardrail-conditional live-streaming behavior.
     """
     compiled_definition = await resolve_and_compile(company_id, agent_version_id, role)
     guardrails = GuardrailsSpec.model_validate(compiled_definition["guardrails"])
@@ -431,6 +545,7 @@ async def run_playground_agent(
         deployment_id=deployment_id,
         identity_claims=claims,
         identity_sub=identity_sub,
+        stream_handler=stream_handler,
     )
 
 

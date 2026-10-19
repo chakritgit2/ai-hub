@@ -17,16 +17,19 @@ feature-complete service.
 """
 import asyncio
 import hashlib
+import json
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import httpx
 import openai
 import sqlalchemy as sa
+from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from sse_starlette.sse import EventSourceResponse
 
 from app.core.auth import InvalidTokenError, verify_internal_token, verify_runtime_token
 from app.core.crypto import encrypt_with_dek
@@ -71,7 +74,7 @@ from app.services.knowledge_bases import (
     resolve_knowledge_base,
     upsert_kb_document,
 )
-from app.services.runtime import resolve_and_compile, run_playground_agent
+from app.services.runtime import attach_stream_completion, resolve_and_compile, run_playground_agent
 from app.services.tool_secrets import decrypt_tool_secret, delete_tool_secret, upsert_tool_secret
 from app.services.tools import resolve_tool
 
@@ -128,6 +131,31 @@ def _not_implemented(operation_id: str) -> JSONResponse:
         status_code=501,
         content={"error": "not_implemented", "operation_id": operation_id},
     )
+
+
+def _extract_answer_delta(event_data: Any) -> str | None:
+    """Real dynamiq `Agent` streaming never hands a plain string to our callback, even in
+    `StreamingMode.FINAL`: `AgentStreamingParserCallback._emit` builds a plain-string
+    `content_to_stream` for the ANSWER step, but `Agent.stream_response` (dynamiq/nodes/
+    agents/base.py) always re-wraps it as `StreamChunk(choices=[StreamChunkChoice(delta=
+    StreamChunkChoiceDelta(content=..., step=...))]).model_dump()` before calling
+    `run_on_node_execute_stream` - so `StreamingEventMessage.data` (built by
+    `format_value(chunk)`, which preserves dict structure) is always this nested dict
+    shape, never a bare string. Confirmed by reading the installed dynamiq==0.65.0 source
+    directly, not assumed - an earlier version of this endpoint checked
+    `isinstance(event.data, str)`, which is never true for a real run and silently dropped
+    every live token.
+    """
+    if not isinstance(event_data, dict):
+        return None
+    choices = event_data.get("choices") or []
+    if not choices:
+        return None
+    delta = (choices[0] or {}).get("delta") or {}
+    if delta.get("step") != "answer":
+        return None
+    content = delta.get("content")
+    return content if isinstance(content, str) and content else None
 
 
 def _is_uuid(value: str) -> bool:
@@ -232,9 +260,75 @@ async def runPlayground(
 
 
 @app.post("/ai/v1/playground/stream")
-async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> Response:
-    """Run a given agent version over SSE (PRD §6.2). Stub — auth is real."""
-    return _not_implemented("runPlaygroundStream")
+async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSourceResponse:
+    """Run a given agent version over SSE (PRD Goal #6).
+
+    REAL: streams real answer tokens live via `app.services.runtime.run_playground_agent`'s
+    `stream_handler` param when the resolved agent version has no output guardrails
+    configured (see `execute_agent_run`'s docstring for why) - falls back to the existing
+    buffer-then-guardrail-check flow (unchanged) and emits the already-redacted-if-needed
+    text as a single `token` event otherwise, so the client always sees the same three
+    event types (`token`, `final`, `error`) regardless of which path actually ran.
+
+    Auth/validation are unaffected by streaming: `RuntimeAuth`'s `Depends` and
+    `RunRequest`'s `conversation_id` validator both resolve before this function body ever
+    runs, same as the non-streaming `runPlayground` above - a missing token is still a 401,
+    a malformed `conversation_id` is still a 422.
+    """
+    stream_handler = AsyncStreamingIteratorCallbackHandler(loop=asyncio.get_running_loop())
+
+    async def event_generator():
+        run_task = asyncio.create_task(
+            run_playground_agent(
+                body.input,
+                agent_version_id=claims["agent_version_id"],
+                role=claims["role"],
+                company_id=claims["company_id"],
+                external_user_id=body.user.external_id if body.user else None,
+                conversation_id=body.conversation_id,
+                claims=body.user.claims if body.user else {},
+                identity_sub=body.user.external_id if body.user else claims["user_id"],
+                stream_handler=stream_handler,
+            )
+        )
+        # See attach_stream_completion's own docstring for why this is required beyond
+        # execute_agent_run's internal done_event - confirmed necessary by reproducing a
+        # real hang live (a successful run, concurrently drained) before this existed.
+        attach_stream_completion(run_task, stream_handler)
+
+        async for event in stream_handler:
+            delta = _extract_answer_delta(event.data)
+            if delta:
+                yield {"event": "token", "data": json.dumps({"delta": delta})}
+
+        try:
+            result = await run_task
+        except Exception as exc:  # surface as a clear upstream error, same shape as runPlayground's 502
+            logger.exception("playground stream run failed")
+            yield {"event": "error", "data": json.dumps({"error": "upstream_error", "detail": str(exc)})}
+            return
+
+        if not result.get("streamed_live") and result.get("output"):
+            # Guardrail-gated or blocked-input path: nothing was streamed live above, so the
+            # full (already final) text goes out as one token event before `final`.
+            yield {"event": "token", "data": json.dumps({"delta": result["output"]})}
+
+        yield {
+            "event": "final",
+            "data": json.dumps(
+                {
+                    "conversation_id": result.get("conversation_id"),
+                    "output": result.get("output"),
+                    "tokens_in": result.get("tokens_in"),
+                    "tokens_out": result.get("tokens_out"),
+                    "cost_usd": result.get("cost_usd"),
+                    "latency_ms": result.get("latency_ms"),
+                    "trace_id": result.get("trace_id"),
+                }
+            ),
+        }
+
+    return EventSourceResponse(event_generator())
 
 
 class WorkflowRunRequest(BaseModel):
