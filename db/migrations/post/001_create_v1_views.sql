@@ -91,7 +91,7 @@ GRANT SELECT (id, company_id, agent_id, version_no, compiled_definition, compile
 GRANT SELECT (id, name)
   ON console.agents TO ai_app, gateway_app;
 GRANT SELECT (
-  id, company_id, slug, environment, agent_version_id,
+  id, company_id, slug, environment, agent_version_id, workflow_version_id,
   rate_limit_per_min, daily_token_limit, daily_cost_limit_usd,
   allowed_origins, guardrail_overrides, output_mode,
   allow_write_tools, conversation_ttl_days, config_version, enabled

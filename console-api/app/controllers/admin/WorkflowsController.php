@@ -444,9 +444,9 @@ class WorkflowsController extends ControllerBase
      * is_published=true (PRD §6.9, phase 4). A compile failure (bad spec, cross-company
      * or unpublished agent reference, disallowed node type) leaves the version untouched
      * and is surfaced as 422 with the compiler's errors — publishing is all-or-nothing,
-     * same as AgentsController::publishAgentVersion. No publish-gate check (that's an
-     * agent-specific PRD §6.7 concept) and no dependent-deployments config_version bump
-     * (no workflow-driven deployments exist yet).
+     * same as AgentsController::publishAgentVersion, including the dependent-deployments
+     * config_version bump (PRD §6.3 deployment/gateway exposure). No publish-gate check
+     * (that's an agent-specific PRD §6.7 concept).
      */
     public function publishWorkflowVersion(string $id, string $vid): Response
     {
@@ -525,6 +525,17 @@ class WorkflowsController extends ControllerBase
                 ]
             );
             $updated = $db->affectedRows() > 0;
+
+            if ($updated) {
+                // Bumps config_version on every deployment bound to this workflow version,
+                // same mechanism AgentsController::publishAgentVersion already uses (PRD
+                // §4.4-A) - the gateway notices its cached compiled_definition is stale.
+                $db->execute(
+                    'UPDATE console.deployments SET config_version = config_version + 1
+                     WHERE workflow_version_id = :workflow_version_id',
+                    ['workflow_version_id' => $vid]
+                );
+            }
 
             $row = $db->fetchOne(
                 'SELECT id, company_id, workflow_id, version_no, spec, spec_version, compiled_definition,

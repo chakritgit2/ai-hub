@@ -1,3 +1,4 @@
+import uuid
 from types import SimpleNamespace
 
 import httpx
@@ -235,6 +236,79 @@ async def test_quota_counts_real_usage_even_when_run_fails_after_partial_usage(
     # reservation (would leave this counter at 0); the fix must leave it reflecting the
     # 150 tokens that were actually spent before the failure.
     assert int(await redis_client.get(tokens_key)) == 150
+
+
+@requires_postgres
+async def test_run_workflow_deployment_happy_path_via_api_key(
+    gateway_async_client, company_ids, make_workflow_version, make_deployment, make_api_key, monkeypatch
+) -> None:
+    """A workflow-targeting deployment dispatches to run_deployment_workflow, not
+    run_deployment_agent - stubbed here (GraphOrchestrator construction/execution is
+    already covered by test_workflow_runtime.py) to isolate runDeployment's own
+    agent-vs-workflow branching."""
+
+    async def _fake_run_deployment_workflow(*_args, **_kwargs) -> dict:
+        return {
+            "output": "fake workflow reply",
+            "trace_id": "fake-trace-id",
+            "latency_ms": 5,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "cost_usd": 0.0,
+        }
+
+    monkeypatch.setattr("app.main_gateway.run_deployment_workflow", _fake_run_deployment_workflow)
+
+    company_id = company_ids()
+    workflow_version_id = make_workflow_version(company_id, {})
+    deployment_id, slug = make_deployment(company_id, workflow_version_id=workflow_version_id)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/run", json={"input": "hi"}, headers={"Authorization": f"Bearer {full_key}"}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["output"] == "fake workflow reply"
+    assert body["conversation_id"] is None
+
+
+@requires_postgres
+async def test_run_workflow_deployment_rejects_conversation_id(
+    gateway_async_client, company_ids, make_workflow_version, make_deployment, make_api_key
+) -> None:
+    company_id = company_ids()
+    workflow_version_id = make_workflow_version(company_id, {})
+    deployment_id, slug = make_deployment(company_id, workflow_version_id=workflow_version_id)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/run",
+        json={"input": "hi", "conversation_id": str(uuid.uuid4())},
+        headers={"Authorization": f"Bearer {full_key}"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "conversation_id_not_supported"
+
+
+@requires_postgres
+async def test_info_for_workflow_deployment_returns_workflow_name(
+    gateway_async_client, company_ids, make_workflow_version, make_deployment, make_api_key
+) -> None:
+    company_id = company_ids()
+    workflow_version_id = make_workflow_version(company_id, {})
+    deployment_id, slug = make_deployment(company_id, workflow_version_id=workflow_version_id)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+
+    resp = await gateway_async_client.get(
+        f"/v1/deployments/{slug}/info", headers={"Authorization": f"Bearer {full_key}"}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"display_name": "test-workflow", "role": "workflow", "languages": []}
 
 
 @requires_postgres

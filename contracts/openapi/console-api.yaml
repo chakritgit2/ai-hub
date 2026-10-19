@@ -415,7 +415,8 @@ components:
         company_id: { type: string }
         slug: { type: string }
         environment: { type: string, enum: [staging, production] }
-        agent_version_id: { type: string }
+        agent_version_id: { type: string, nullable: true, description: "Exactly one of agent_version_id/workflow_version_id is set." }
+        workflow_version_id: { type: string, nullable: true }
         rate_limit_per_min: { type: integer }
         daily_token_limit: { type: integer }
         daily_cost_limit_usd: { type: number }

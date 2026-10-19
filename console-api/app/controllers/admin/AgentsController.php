@@ -621,9 +621,8 @@ class AgentsController extends ControllerBase
             $updated = $db->affectedRows() > 0;
 
             if ($updated) {
-                // No Deployments CRUD exists yet (still a 501 stub), so this never matches
-                // any row today — kept here because it's part of what publishing means
-                // (PRD §4.4-A) and costs nothing to leave wired for when Deployments lands.
+                // Bumps config_version on every deployment bound to this agent version, so
+                // the gateway notices its cached compiled_definition is stale (PRD §4.4-A).
                 $db->execute(
                     'UPDATE console.deployments SET config_version = config_version + 1
                      WHERE agent_version_id = :agent_version_id',

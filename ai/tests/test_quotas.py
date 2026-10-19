@@ -4,7 +4,14 @@ import pytest
 import redis.exceptions
 
 from app.core.redis import get_redis
-from app.services.quotas import _bangkok_today, check_rate_limit, reconcile_quota, reserve_quota
+from app.services.quotas import (
+    _bangkok_today,
+    check_quota_not_exceeded,
+    check_rate_limit,
+    record_actual_usage,
+    reconcile_quota,
+    reserve_quota,
+)
 
 from .markers import requires_redis
 
@@ -142,6 +149,89 @@ async def test_reconcile_quota_noop_when_nothing_was_reserved(deployment_id) -> 
     # no-limits deployments never touch Redis in reserve_quota - reconcile must not
     # either, or it would create a counter for a deployment with no configured limits.
     await reconcile_quota(deployment_id, reserved_tokens=0, reserved_cost_usd=0.0, actual_tokens=123, actual_cost_usd=0.01)
+
+    redis_client = get_redis()
+    tokens_key = f"gw:quota:tokens:{deployment_id}:{_bangkok_today()}"
+    assert await redis_client.get(tokens_key) is None
+
+
+@requires_redis
+async def test_check_quota_not_exceeded_without_limits_skips_redis_and_always_allows(deployment_id) -> None:
+    check = await check_quota_not_exceeded(deployment_id, daily_token_limit=None, daily_cost_limit_usd=None)
+    assert check.allowed
+    assert check.today is None  # nothing to record_actual_usage against
+
+
+@requires_redis
+async def test_check_quota_not_exceeded_allows_until_already_at_limit(deployment_id) -> None:
+    # Record usage directly (simulating a prior run) rather than via reserve_quota, since
+    # this precheck path never reserves itself.
+    await record_actual_usage(deployment_id, actual_tokens=1000, actual_cost_usd=0.0, today=_bangkok_today(), ttl=60)
+
+    under = await check_quota_not_exceeded(deployment_id, daily_token_limit=1000, daily_cost_limit_usd=None)
+    assert not under.allowed
+    assert under.reason == "daily_token_limit"
+
+
+@requires_redis
+async def test_check_quota_not_exceeded_allows_when_under_limit(deployment_id) -> None:
+    await record_actual_usage(deployment_id, actual_tokens=100, actual_cost_usd=0.0, today=_bangkok_today(), ttl=60)
+
+    check = await check_quota_not_exceeded(deployment_id, daily_token_limit=1000, daily_cost_limit_usd=None)
+    assert check.allowed
+    assert check.today == _bangkok_today()
+
+
+@requires_redis
+async def test_check_quota_not_exceeded_blocks_at_daily_cost_limit(deployment_id) -> None:
+    await record_actual_usage(deployment_id, actual_tokens=0, actual_cost_usd=0.02, today=_bangkok_today(), ttl=60)
+
+    check = await check_quota_not_exceeded(deployment_id, daily_token_limit=None, daily_cost_limit_usd=0.01)
+    assert not check.allowed
+    assert check.reason == "daily_cost_limit"
+
+
+@requires_redis
+async def test_check_quota_not_exceeded_fails_open_without_cost_limit_when_redis_down(deployment_id, monkeypatch) -> None:
+    class _BrokenRedis:
+        async def mget(self, *_args, **_kwargs):
+            raise redis.exceptions.ConnectionError("simulated outage")
+
+    monkeypatch.setattr("app.services.quotas.get_redis", lambda: _BrokenRedis())
+
+    check = await check_quota_not_exceeded(deployment_id, daily_token_limit=1000, daily_cost_limit_usd=None)
+    assert check.allowed
+
+
+@requires_redis
+async def test_check_quota_not_exceeded_fails_closed_with_cost_limit_when_redis_down(deployment_id, monkeypatch) -> None:
+    class _BrokenRedis:
+        async def mget(self, *_args, **_kwargs):
+            raise redis.exceptions.ConnectionError("simulated outage")
+
+    monkeypatch.setattr("app.services.quotas.get_redis", lambda: _BrokenRedis())
+
+    check = await check_quota_not_exceeded(deployment_id, daily_token_limit=None, daily_cost_limit_usd=0.01)
+    assert not check.allowed
+    assert check.reason == "redis_unavailable"
+
+
+@requires_redis
+async def test_record_actual_usage_accumulates_across_calls(deployment_id) -> None:
+    today = _bangkok_today()
+    await record_actual_usage(deployment_id, actual_tokens=100, actual_cost_usd=0.01, today=today, ttl=60)
+    await record_actual_usage(deployment_id, actual_tokens=50, actual_cost_usd=0.02, today=today, ttl=60)
+
+    redis_client = get_redis()
+    tokens_key = f"gw:quota:tokens:{deployment_id}:{today}"
+    cost_key = f"gw:quota:cost_microusd:{deployment_id}:{today}"
+    assert int(await redis_client.get(tokens_key)) == 150
+    assert int(await redis_client.get(cost_key)) == 30_000
+
+
+@requires_redis
+async def test_record_actual_usage_noop_for_zero_usage(deployment_id) -> None:
+    await record_actual_usage(deployment_id, actual_tokens=0, actual_cost_usd=0.0, today=_bangkok_today(), ttl=60)
 
     redis_client = get_redis()
     tokens_key = f"gw:quota:tokens:{deployment_id}:{_bangkok_today()}"

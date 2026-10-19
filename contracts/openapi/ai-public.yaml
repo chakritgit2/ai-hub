@@ -162,7 +162,10 @@ paths:
     parameters: [{ $ref: '#/components/parameters/Slug' }]
     post:
       operationId: runDeployment
-      summary: Server-to-server synchronous run (PRD §4.4-C).
+      summary: >-
+        Server-to-server synchronous run (PRD §4.4-C). Runs the agent or workflow version
+        the deployment targets; a workflow-targeting deployment rejects a non-null
+        conversation_id with 400 (no conversation memory for workflow runs yet).
       security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
       requestBody:
         content:
@@ -213,7 +216,10 @@ paths:
     parameters: [{ $ref: '#/components/parameters/Slug' }]
     get:
       operationId: getDeploymentInfo
-      summary: display_name, role, languages only — never instructions (PRD §6.1a).
+      summary: >-
+        display_name, role, languages only — never instructions (PRD §6.1a). For a
+        workflow-targeting deployment, display_name is the workflow's own name,
+        role is the literal "workflow", and languages is empty.
       security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
       responses:
         "200":

@@ -12,6 +12,14 @@ and rate limiting (`app.services.runtime.run_deployment_agent`), CORS validation
 a deployment's own `allowed_origins` for session-token/browser callers. `streamDeployment`
 (SSE) and `decideApproval` (Phase 2 per the contract's own `x-phase: 2`) remain 501 stubs -
 explicit scope boundaries, not gaps.
+
+A deployment targets exactly one of a published agent version or a published workflow
+version (PRD §6.3/§6.9 phase 4) - `runDeployment`/`getDeploymentInfo` branch on
+`deployment.workflow_version_id` to call the workflow-shaped sibling of each agent
+function (`app.services.workflow_runtime.run_deployment_workflow`/
+`app.services.workflow_versions.resolve_workflow_identity`). Workflow runs have no
+conversation memory, so `body.conversation_id` is rejected for a workflow-targeting
+deployment rather than silently ignored.
 """
 import logging
 from contextlib import asynccontextmanager
@@ -35,6 +43,8 @@ from app.services.deployments import DeploymentRow, resolve_deployment, resolve_
 from app.services.gateway_auth import get_jwks, mint_session_token, verify_session_token
 from app.services.quotas import QuotaExceededError
 from app.services.runtime import run_deployment_agent
+from app.services.workflow_runtime import run_deployment_workflow
+from app.services.workflow_versions import resolve_workflow_identity
 
 logger = logging.getLogger(__name__)
 
@@ -260,16 +270,37 @@ async def runDeployment(
         external_user_id = body.user.external_id if body.user else None
         identity_claims = body.user.claims if body.user else {}
 
-    try:
-        result = await run_deployment_agent(
-            identity.company_id,
-            identity.deployment_id,
-            _GATEWAY_RUN_ROLE,
-            body.input,
-            external_user_id=external_user_id,
-            conversation_id=body.conversation_id,
-            claims=identity_claims,
+    is_workflow = deployment.workflow_version_id is not None
+    if is_workflow and body.conversation_id is not None:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "conversation_id_not_supported",
+                "detail": "workflow deployments have no conversation memory",
+            },
         )
+
+    try:
+        if is_workflow:
+            result = await run_deployment_workflow(
+                identity.company_id,
+                identity.deployment_id,
+                _GATEWAY_RUN_ROLE,
+                body.input,
+                external_user_id=external_user_id,
+                claims=identity_claims,
+            )
+            result.setdefault("conversation_id", None)
+        else:
+            result = await run_deployment_agent(
+                identity.company_id,
+                identity.deployment_id,
+                _GATEWAY_RUN_ROLE,
+                body.input,
+                external_user_id=external_user_id,
+                conversation_id=body.conversation_id,
+                claims=identity_claims,
+            )
     except QuotaExceededError as exc:
         return JSONResponse(
             status_code=429,
@@ -335,15 +366,23 @@ class DeploymentInfo(BaseModel):
 
 @app.get("/v1/deployments/{slug}/info", response_model=DeploymentInfo)
 async def getDeploymentInfo(slug: str, identity: GatewayAuth, request: Request, response: Response) -> Response:
-    """display_name, role, languages only - never instructions (PRD §6.1a). REAL: these
-    come straight from the agent version's own `AgentIdentitySpec`, not the compiled
-    `role` (system prompt) `compile_spec` builds for the Agent itself, which folds
-    `instructions` in and would leak it."""
+    """display_name, role, languages only - never instructions (PRD §6.1a). REAL: for an
+    agent-backed deployment these come straight from the agent version's own
+    `AgentIdentitySpec`, not the compiled `role` (system prompt) `compile_spec` builds for
+    the Agent itself, which folds `instructions` in and would leak it. A workflow has no
+    identity-shaped spec field at all, so a workflow-backed deployment reports its own
+    `name` as `display_name` with a fixed `role: "workflow"` and no `languages`."""
     deployment = await resolve_deployment(identity.company_id, identity.deployment_id)
     if deployment is None or not deployment.enabled:
         raise HTTPException(status_code=404, detail="deployment_not_found")
 
     _enforce_cors(identity, deployment, request, response)
+
+    if deployment.workflow_version_id is not None:
+        workflow_identity = await resolve_workflow_identity(identity.company_id, deployment.workflow_version_id)
+        if workflow_identity is None:
+            raise HTTPException(status_code=404, detail="deployment_not_found")
+        return DeploymentInfo(display_name=workflow_identity.name, role="workflow", languages=[])
 
     version = await resolve_agent_version(identity.company_id, deployment.agent_version_id)
     if version is None:

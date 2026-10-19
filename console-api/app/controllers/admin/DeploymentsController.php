@@ -11,6 +11,10 @@ use Throwable;
 
 /**
  * /deployments — gateway-facing deployment configs (PRD §6.3, §8.1 `deployments` table).
+ * A deployment targets exactly one of a published agent version or a published workflow
+ * version (`agent_version_id` xor `workflow_version_id`, enforced by a DB CHECK
+ * constraint) - everything downstream (API keys, scopes, slug resolution, quotas) is
+ * target-agnostic, keyed by `deployment_id` alone.
  *
  * `promoteDeployment` stays 501 (x-phase: 3, see contracts/openapi/console-api.yaml).
  * Everything else is real.
@@ -31,10 +35,10 @@ class DeploymentsController extends ControllerBase
 
         $rows = $this->runInCompanyTransaction(
             static fn ($db) => $db->fetchAll(
-                'SELECT id, company_id, slug, environment, agent_version_id, rate_limit_per_min,
-                        daily_token_limit, daily_cost_limit_usd, allowed_origins, guardrail_overrides,
-                        output_mode, allow_write_tools, conversation_ttl_days, config_version, enabled,
-                        created_at, updated_at
+                'SELECT id, company_id, slug, environment, agent_version_id, workflow_version_id,
+                        rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
+                        guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
+                        config_version, enabled, created_at, updated_at
                  FROM console.deployments ORDER BY created_at DESC',
                 Enum::FETCH_ASSOC
             )
@@ -57,9 +61,29 @@ class DeploymentsController extends ControllerBase
         if (!is_string($slug) || trim($slug) === '') {
             return $this->jsonResponse(['error' => 'slug_required'], 400);
         }
+
         $agentVersionId = $body['agent_version_id'] ?? null;
-        if (!is_string($agentVersionId) || !$this->isUuid($agentVersionId)) {
-            return $this->jsonResponse(['error' => 'agent_version_id_required'], 400);
+        $workflowVersionId = $body['workflow_version_id'] ?? null;
+        if ($agentVersionId !== null && $workflowVersionId !== null) {
+            return $this->jsonResponse(['error' => 'exactly_one_target_required'], 400);
+        }
+        if ($agentVersionId === null && $workflowVersionId === null) {
+            return $this->jsonResponse(['error' => 'agent_version_id_or_workflow_version_id_required'], 400);
+        }
+        if ($agentVersionId !== null) {
+            if (!is_string($agentVersionId) || !$this->isUuid($agentVersionId)) {
+                return $this->jsonResponse(['error' => 'agent_version_id_required'], 400);
+            }
+            if ($this->findPublishedAgentVersion($agentVersionId) === null) {
+                return $this->jsonResponse(['error' => 'agent_version_not_published'], 400);
+            }
+        } else {
+            if (!is_string($workflowVersionId) || !$this->isUuid($workflowVersionId)) {
+                return $this->jsonResponse(['error' => 'workflow_version_id_required'], 400);
+            }
+            if ($this->findPublishedWorkflowVersion($workflowVersionId) === null) {
+                return $this->jsonResponse(['error' => 'workflow_version_not_published'], 400);
+            }
         }
 
         [$fields, $error] = $this->parseOptionalFields($body);
@@ -67,30 +91,27 @@ class DeploymentsController extends ControllerBase
             return $error;
         }
 
-        if ($this->findPublishedAgentVersion($agentVersionId) === null) {
-            return $this->jsonResponse(['error' => 'agent_version_not_published'], 400);
-        }
-
         try {
             $row = $this->runInCompanyTransaction(
                 fn ($db) => $db->fetchOne(
                     'INSERT INTO console.deployments
-                        (company_id, slug, agent_version_id, environment, rate_limit_per_min,
+                        (company_id, slug, agent_version_id, workflow_version_id, environment, rate_limit_per_min,
                          daily_token_limit, daily_cost_limit_usd, allowed_origins, guardrail_overrides,
                          output_mode, allow_write_tools, conversation_ttl_days, enabled)
                      VALUES
-                        (:company_id, :slug, :agent_version_id, :environment, :rate_limit_per_min,
+                        (:company_id, :slug, :agent_version_id, :workflow_version_id, :environment, :rate_limit_per_min,
                          :daily_token_limit, :daily_cost_limit_usd, :allowed_origins::jsonb, :guardrail_overrides::jsonb,
                          :output_mode, :allow_write_tools, :conversation_ttl_days, :enabled)
-                     RETURNING id, company_id, slug, environment, agent_version_id, rate_limit_per_min,
-                               daily_token_limit, daily_cost_limit_usd, allowed_origins, guardrail_overrides,
-                               output_mode, allow_write_tools, conversation_ttl_days, config_version, enabled,
-                               created_at, updated_at',
+                     RETURNING id, company_id, slug, environment, agent_version_id, workflow_version_id,
+                               rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
+                               guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
+                               config_version, enabled, created_at, updated_at',
                     Enum::FETCH_ASSOC,
                     [
                         'company_id' => $this->getCompanyId(),
                         'slug' => $slug,
                         'agent_version_id' => $agentVersionId,
+                        'workflow_version_id' => $workflowVersionId,
                         'environment' => $fields['environment'] ?? 'production',
                         'rate_limit_per_min' => $fields['rate_limit_per_min'] ?? 60,
                         'daily_token_limit' => $fields['daily_token_limit'] ?? null,
@@ -152,6 +173,11 @@ class DeploymentsController extends ControllerBase
             return $this->jsonResponse(['error' => 'not_found'], 404);
         }
 
+        $existing = $this->findDeployment($id);
+        if ($existing === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
         $body = $this->request->getJsonRawBody(true) ?? [];
         $columns = [];
 
@@ -161,7 +187,13 @@ class DeploymentsController extends ControllerBase
             }
             $columns['slug'] = $body['slug'];
         }
+        // Switching a deployment's target type (agent <-> workflow) isn't supported this
+        // slice - delete and recreate instead. A request is only allowed to touch the
+        // field matching the row's existing target.
         if (array_key_exists('agent_version_id', $body)) {
+            if ($existing['agent_version_id'] === null) {
+                return $this->jsonResponse(['error' => 'target_type_mismatch'], 400);
+            }
             if (!is_string($body['agent_version_id']) || !$this->isUuid($body['agent_version_id'])) {
                 return $this->jsonResponse(['error' => 'agent_version_id_required'], 400);
             }
@@ -169,6 +201,18 @@ class DeploymentsController extends ControllerBase
                 return $this->jsonResponse(['error' => 'agent_version_not_published'], 400);
             }
             $columns['agent_version_id'] = $body['agent_version_id'];
+        }
+        if (array_key_exists('workflow_version_id', $body)) {
+            if ($existing['workflow_version_id'] === null) {
+                return $this->jsonResponse(['error' => 'target_type_mismatch'], 400);
+            }
+            if (!is_string($body['workflow_version_id']) || !$this->isUuid($body['workflow_version_id'])) {
+                return $this->jsonResponse(['error' => 'workflow_version_id_required'], 400);
+            }
+            if ($this->findPublishedWorkflowVersion($body['workflow_version_id']) === null) {
+                return $this->jsonResponse(['error' => 'workflow_version_not_published'], 400);
+            }
+            $columns['workflow_version_id'] = $body['workflow_version_id'];
         }
 
         [$fields, $error] = $this->parseOptionalFields($body);
@@ -214,10 +258,10 @@ class DeploymentsController extends ControllerBase
                 }
 
                 return $db->fetchOne(
-                    'SELECT id, company_id, slug, environment, agent_version_id, rate_limit_per_min,
-                            daily_token_limit, daily_cost_limit_usd, allowed_origins, guardrail_overrides,
-                            output_mode, allow_write_tools, conversation_ttl_days, config_version, enabled,
-                            created_at, updated_at
+                    'SELECT id, company_id, slug, environment, agent_version_id, workflow_version_id,
+                            rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
+                            guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
+                            config_version, enabled, created_at, updated_at
                      FROM console.deployments WHERE id = :id',
                     Enum::FETCH_ASSOC,
                     ['id' => $id]
@@ -395,10 +439,10 @@ class DeploymentsController extends ControllerBase
 
         $row = $this->runInCompanyTransaction(
             static fn ($db) => $db->fetchOne(
-                'SELECT id, company_id, slug, environment, agent_version_id, rate_limit_per_min,
-                        daily_token_limit, daily_cost_limit_usd, allowed_origins, guardrail_overrides,
-                        output_mode, allow_write_tools, conversation_ttl_days, config_version, enabled,
-                        created_at, updated_at
+                'SELECT id, company_id, slug, environment, agent_version_id, workflow_version_id,
+                        rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
+                        guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
+                        config_version, enabled, created_at, updated_at
                  FROM console.deployments WHERE id = :id',
                 Enum::FETCH_ASSOC,
                 ['id' => $id]
@@ -432,6 +476,26 @@ class DeploymentsController extends ControllerBase
     }
 
     /**
+     * Same reasoning as findPublishedAgentVersion, for a workflow-targeting deployment -
+     * `console.workflow_versions.is_published` has the identical shape/semantics as
+     * `console.agent_versions.is_published`.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function findPublishedWorkflowVersion(string $workflowVersionId): ?array
+    {
+        $row = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                'SELECT id FROM console.workflow_versions WHERE id = :id AND is_published = true',
+                Enum::FETCH_ASSOC,
+                ['id' => $workflowVersionId]
+            )
+        );
+
+        return empty($row) ? null : $row;
+    }
+
+    /**
      * @param array<string, mixed> $row
      * @return array<string, mixed>
      */
@@ -443,6 +507,7 @@ class DeploymentsController extends ControllerBase
             'slug' => $row['slug'],
             'environment' => $row['environment'],
             'agent_version_id' => $row['agent_version_id'],
+            'workflow_version_id' => $row['workflow_version_id'],
             'rate_limit_per_min' => (int) $row['rate_limit_per_min'],
             'daily_token_limit' => $row['daily_token_limit'] !== null ? (int) $row['daily_token_limit'] : null,
             'daily_cost_limit_usd' => $row['daily_cost_limit_usd'] !== null ? (float) $row['daily_cost_limit_usd'] : null,

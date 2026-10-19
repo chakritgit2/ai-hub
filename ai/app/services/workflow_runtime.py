@@ -17,6 +17,12 @@ concept. No delegated end-user identity either (`identity=None` per state) - an
 `auth_mode: delegated` HTTP tool inside a state's agent fails closed at call time (the
 same fail-closed behavior a missing identity already has in `compiler.build_agent`),
 since there's no Playground-sourced end-user identity concept for workflow runs yet.
+
+`run_deployment_workflow` (PRD §6.3/§6.9 phase 4 workflow deployment exposure) is the
+workflow-shaped sibling of `app.services.runtime.run_deployment_agent` - same rate-limit/
+quota-then-run-then-reconcile shape, but deliberately does not pre-reserve quota (see its
+own docstring for why) and has no guardrail_overrides merge to perform (nothing in a
+compiled workflow definition to merge them into yet).
 """
 import asyncio
 import time
@@ -28,8 +34,10 @@ from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
 from app.services.compiler import BUILTIN_TOOL_TYPES, RETRIEVAL_TOOL_TYPE, build_agent
 from app.services.connection_secrets import decrypt_connection_secret
+from app.services.deployments import resolve_deployment
 from app.services.egress_allowlist import list_egress_allowlist
-from app.services.runs import log_run
+from app.services.quotas import QuotaExceededError, check_quota_not_exceeded, check_rate_limit, record_actual_usage
+from app.services.runs import RunUsage, log_run
 
 # Reused as-is rather than duplicated - a small, pure usage-aggregation utility with no
 # workflow-specific assumptions (see runtime.py's own docstring on how it threads through
@@ -125,11 +133,13 @@ async def execute_workflow_run(
     role: str,
     input_text: str,
     source: str = "playground",
+    deployment_id: str | None = None,
 ) -> dict:
     """Resolves `workflow_version_id`, compiles it live, builds a real `GraphOrchestrator`
-    from real decrypted secrets (manager + every state's agent), and runs it. Never
-    counted against a deployment's quota - no workflow deployment/gateway surface exists
-    yet.
+    from real decrypted secrets (manager + every state's agent), and runs it.
+    `deployment_id` is `None` for Playground calls (the default) and the real deployment id
+    for a gateway call via `run_deployment_workflow`, threaded into `logs.runs` exactly
+    like `runtime.execute_agent_run`'s own `deployment_id` param.
 
     Returns `{"output", "trace_id", "latency_ms", "tokens_in", "tokens_out", "cost_usd"}`
     - no `conversation_id` (no memory this slice).
@@ -190,6 +200,10 @@ async def execute_workflow_run(
     except Exception as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
         usage = usage_collector.total_usage()
+        # Lets a deployment caller (run_deployment_workflow) record real usage from a run
+        # that failed partway through, same convention runtime.execute_agent_run already
+        # attaches `partial_usage` for.
+        exc.partial_usage = usage
         await log_run(
             run_id=run_id,
             company_id=company_id,
@@ -197,6 +211,7 @@ async def execute_workflow_run(
             status="error",
             source=source,
             workflow_version_id=workflow_version_id,
+            deployment_id=deployment_id,
             usage=usage,
             latency_ms=latency_ms,
             input_text=input_text,
@@ -215,6 +230,7 @@ async def execute_workflow_run(
         status="success",
         source=source,
         workflow_version_id=workflow_version_id,
+        deployment_id=deployment_id,
         usage=usage,
         latency_ms=latency_ms,
         input_text=input_text,
@@ -229,3 +245,75 @@ async def execute_workflow_run(
         "tokens_out": usage.tokens_out,
         "cost_usd": usage.cost_usd,
     }
+
+
+async def run_deployment_workflow(
+    company_id: str,
+    deployment_id: str,
+    role: str,
+    input_text: str,
+    external_user_id: str | None = None,
+    claims: dict | None = None,
+) -> dict:
+    """The workflow-shaped sibling of `app.services.runtime.run_deployment_agent` - the
+    gateway's counterpart to Playground's `execute_workflow_run`. Unlike the agent path,
+    does NOT pre-reserve quota: `reserve_quota` needs one `model`/`max_tokens` pair to size
+    an estimate, but a workflow run uses one model per state plus a manager, so there's no
+    single honest number to reserve against (see `check_quota_not_exceeded`'s own docstring
+    for the accepted tradeoff). There is also no guardrail_overrides merge to perform -
+    `execute_workflow_run` doesn't build a `guardrails` argument at all yet (no guardrails
+    concept exists for workflows this slice).
+
+    Raises `ValueError` for a missing/disabled/non-workflow deployment and
+    `QuotaExceededError` when rate-limited/over quota, same conventions as
+    `run_deployment_agent`.
+    """
+    deployment = await resolve_deployment(company_id, deployment_id)
+    if deployment is None:
+        raise ValueError(f"deployment_id {deployment_id!r} not found for this company")
+    if not deployment.enabled:
+        raise ValueError(f"deployment_id {deployment_id!r} is disabled")
+    if deployment.workflow_version_id is None:
+        raise ValueError(f"deployment_id {deployment_id!r} is not a workflow deployment")
+
+    rate_limit = await check_rate_limit(deployment_id, deployment.rate_limit_per_min)
+    if not rate_limit.allowed:
+        raise QuotaExceededError("rate_limit", reset_at=None)
+
+    quota_check = await check_quota_not_exceeded(
+        deployment_id, deployment.daily_token_limit, deployment.daily_cost_limit_usd
+    )
+    if not quota_check.allowed:
+        raise QuotaExceededError(quota_check.reason or "quota_exceeded", reset_at=quota_check.reset_at)
+
+    result: dict | None = None
+    partial_usage: RunUsage | None = None
+    try:
+        result = await execute_workflow_run(
+            company_id,
+            deployment.workflow_version_id,
+            role,
+            input_text,
+            source="api",
+            deployment_id=deployment_id,
+        )
+        return result
+    except Exception as exc:
+        partial_usage = getattr(exc, "partial_usage", None)
+        raise
+    finally:
+        # quota_check.today is None when the deployment has no limits configured at all
+        # (check_quota_not_exceeded never touched Redis in that case) - nothing to record.
+        if quota_check.today is not None and quota_check.ttl is not None:
+            if result is not None:
+                actual_tokens = (result.get("tokens_in") or 0) + (result.get("tokens_out") or 0)
+                actual_cost_usd = result.get("cost_usd") or 0
+            elif partial_usage is not None:
+                actual_tokens = (partial_usage.tokens_in or 0) + (partial_usage.tokens_out or 0)
+                actual_cost_usd = partial_usage.cost_usd or 0
+            else:
+                actual_tokens = 0
+                actual_cost_usd = 0
+            await record_actual_usage(
+                deployment_id, actual_tokens, actual_cost_usd, quota_check.today, quota_check.ttl
+            )

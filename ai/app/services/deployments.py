@@ -16,7 +16,11 @@ from app.core.db import get_company_session
 @dataclass(frozen=True)
 class DeploymentRow:
     id: str
-    agent_version_id: str
+    # Exactly one of these two is set (DB CHECK constraint enforces it) - agent_version_id
+    # for an Agent-backed deployment, workflow_version_id for a Workflow-backed one (PRD
+    # §6.3/§6.9 phase 4 workflow deployment exposure).
+    agent_version_id: str | None
+    workflow_version_id: str | None
     rate_limit_per_min: int
     daily_token_limit: int | None
     daily_cost_limit_usd: float | None
@@ -47,8 +51,8 @@ async def resolve_deployment(company_id: str, deployment_id: str) -> DeploymentR
     async with get_company_session(company_id) as session:
         result = await session.execute(
             sa.text(
-                "SELECT id, agent_version_id, rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, "
-                "allowed_origins, guardrail_overrides, output_mode, allow_write_tools, "
+                "SELECT id, agent_version_id, workflow_version_id, rate_limit_per_min, daily_token_limit, "
+                "daily_cost_limit_usd, allowed_origins, guardrail_overrides, output_mode, allow_write_tools, "
                 "conversation_ttl_days, enabled "
                 "FROM console.deployments WHERE id = :id AND company_id = :company_id"
             ),
@@ -61,7 +65,8 @@ async def resolve_deployment(company_id: str, deployment_id: str) -> DeploymentR
 
     return DeploymentRow(
         id=str(row["id"]),
-        agent_version_id=str(row["agent_version_id"]),
+        agent_version_id=str(row["agent_version_id"]) if row["agent_version_id"] is not None else None,
+        workflow_version_id=str(row["workflow_version_id"]) if row["workflow_version_id"] is not None else None,
         rate_limit_per_min=row["rate_limit_per_min"],
         daily_token_limit=row["daily_token_limit"],
         daily_cost_limit_usd=float(row["daily_cost_limit_usd"]) if row["daily_cost_limit_usd"] is not None else None,

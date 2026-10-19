@@ -63,6 +63,18 @@ class QuotaReservation:
     ttl: int | None = None
 
 
+@dataclass(frozen=True)
+class QuotaCheck:
+    allowed: bool
+    reset_at: datetime | None = None
+    reason: str | None = None  # set when allowed=False: "daily_token_limit" | "daily_cost_limit" | "redis_unavailable"
+    # Set only when allowed=True and at least one limit is configured - pass straight
+    # through to `record_actual_usage` afterward. None when there was nothing to check
+    # (no limits configured) or the check failed, in which case there's nothing to record.
+    today: str | None = None
+    ttl: int | None = None
+
+
 class QuotaExceededError(Exception):
     """Raised by `app.services.runtime.run_deployment_agent` when the rate limit or a
     daily quota rejects the request before anything runs - callers (app.main_gateway)
@@ -201,3 +213,81 @@ async def reconcile_quota(
         # only means today's counters run slightly high until midnight reset, never an
         # unbounded leak.
         logger.warning("quota reconciliation skipped: Redis unavailable", exc_info=True)
+
+
+async def check_quota_not_exceeded(
+    deployment_id: str,
+    daily_token_limit: int | None,
+    daily_cost_limit_usd: float | None,
+) -> QuotaCheck:
+    """Read-only precheck used by `app.services.workflow_runtime.run_deployment_workflow`
+    instead of `reserve_quota` - a workflow has one model per state plus a manager, not the
+    single `model`/`max_tokens` pair `reserve_quota` needs to size an estimate, so there's
+    no single honest number to reserve. This reads today's accumulated counters without
+    incrementing them, rejecting only if a configured limit is already met or exceeded.
+    Weaker than `reserve_quota`'s increment-then-check: two concurrent requests can both
+    read "under limit" and jointly land over it before either records its actual usage
+    afterward via `record_actual_usage` - an accepted tradeoff for workflow deployments
+    (PRD §6.3's reserve-before-run design assumes one model per run; workflow runs are
+    also slower/lower-volume than single-agent chat, narrowing the race window).
+    """
+    if daily_token_limit is None and daily_cost_limit_usd is None:
+        return QuotaCheck(allowed=True)
+
+    today = _bangkok_today()
+    ttl = _seconds_until_bangkok_midnight()
+    tokens_key = f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
+    cost_key = f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+    reset_at = datetime.now(_BANGKOK) + timedelta(seconds=ttl)
+
+    try:
+        redis_client = get_redis()
+        current_tokens, current_cost_microusd = await redis_client.mget(tokens_key, cost_key)
+    except redis.exceptions.RedisError:
+        if daily_cost_limit_usd is not None:
+            logger.warning("quota precheck failed closed: Redis unavailable", exc_info=True)
+            return QuotaCheck(allowed=False, reason="redis_unavailable", reset_at=reset_at)
+        logger.warning("quota precheck (token-only) failed open: Redis unavailable", exc_info=True)
+        return QuotaCheck(allowed=True)
+
+    current_tokens = int(current_tokens or 0)
+    current_cost_microusd = int(current_cost_microusd or 0)
+
+    if daily_token_limit is not None and current_tokens >= daily_token_limit:
+        return QuotaCheck(allowed=False, reason="daily_token_limit", reset_at=reset_at)
+    if daily_cost_limit_usd is not None and current_cost_microusd >= _microusd(daily_cost_limit_usd):
+        return QuotaCheck(allowed=False, reason="daily_cost_limit", reset_at=reset_at)
+
+    return QuotaCheck(allowed=True, today=today, ttl=ttl)
+
+
+async def record_actual_usage(
+    deployment_id: str,
+    actual_tokens: int,
+    actual_cost_usd: float,
+    today: str,
+    ttl: int,
+) -> None:
+    """Unconditionally adds real post-run usage to today's counters - the workflow-
+    deployment counterpart to `reconcile_quota`'s delta-from-reservation approach, used
+    after `check_quota_not_exceeded` (which never reserves anything to true up against).
+    `today`/`ttl` must be the same check's own values, not recomputed, for the same
+    Bangkok-midnight-straddle reason `reconcile_quota` already documents. Best-effort: a
+    lost increment here only means today's counters run slightly low until the next
+    request, never an unbounded leak."""
+    if actual_tokens == 0 and actual_cost_usd == 0:
+        return
+
+    tokens_key = f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
+    cost_key = f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+
+    try:
+        redis_client = get_redis()
+        if actual_tokens:
+            await redis_client.incrby(tokens_key, actual_tokens)
+        if actual_cost_usd:
+            await redis_client.incrby(cost_key, _microusd(actual_cost_usd))
+        await redis_client.expire(tokens_key, ttl)
+        await redis_client.expire(cost_key, ttl)
+    except redis.exceptions.RedisError:
+        logger.warning("quota usage recording skipped: Redis unavailable", exc_info=True)

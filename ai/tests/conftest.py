@@ -551,8 +551,9 @@ def make_deployment():
 
     def _make(
         company_id: str,
-        agent_version_id: str,
+        agent_version_id: str | None = None,
         *,
+        workflow_version_id: str | None = None,
         rate_limit_per_min: int = 60,
         daily_token_limit: int | None = None,
         daily_cost_limit_usd: float | None = None,
@@ -560,6 +561,12 @@ def make_deployment():
         guardrail_overrides: dict | None = None,
         enabled: bool = True,
     ) -> tuple[str, str]:
+        # Mirrors the DB's own deployments_exactly_one_target CHECK constraint - fail
+        # fast with a clear assertion rather than a raw PDO-style constraint violation
+        # when a test misuses this fixture.
+        assert (agent_version_id is None) != (workflow_version_id is None), (
+            "exactly one of agent_version_id/workflow_version_id must be given"
+        )
         deployment_id = str(uuid.uuid4())
         slug = f"test-{deployment_id}"
         with _connect() as conn:
@@ -568,14 +575,15 @@ def make_deployment():
             conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
             conn.execute(
                 """INSERT INTO console.deployments
-                   (id, company_id, slug, agent_version_id, rate_limit_per_min, daily_token_limit,
-                    daily_cost_limit_usd, allowed_origins, guardrail_overrides, enabled)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   (id, company_id, slug, agent_version_id, workflow_version_id, rate_limit_per_min,
+                    daily_token_limit, daily_cost_limit_usd, allowed_origins, guardrail_overrides, enabled)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     deployment_id,
                     company_id,
                     slug,
                     agent_version_id,
+                    workflow_version_id,
                     rate_limit_per_min,
                     daily_token_limit,
                     daily_cost_limit_usd,
@@ -647,6 +655,54 @@ def make_api_key():
             conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
             conn.execute("DELETE FROM console.api_key_scopes WHERE api_key_id = %s", (api_key_id,))
             conn.execute("DELETE FROM console.api_keys WHERE id = %s", (api_key_id,))
+            conn.commit()
+
+
+@pytest.fixture
+def make_workflow_version():
+    """Inserts `console.workflows` + `console.workflow_versions` rows directly - no
+    WorkflowsController HTTP round trip needed, same `console_app`-role direct-SQL
+    convention `make_agent_version`/`make_connection` already use. Always a DRAFT (never
+    published) - a workflow version's own `is_published` status is not a precondition for
+    compiling/running it (see `app.services.workflow_runtime`'s own docstring)."""
+    settings = get_settings()
+    created: list[tuple[str, str, str]] = []  # (company_id, workflow_id, version_id)
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(company_id: str, spec: dict) -> str:
+        workflow_id = str(uuid.uuid4())
+        version_id = str(uuid.uuid4())
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute(
+                "INSERT INTO console.workflows (id, company_id, name) VALUES (%s, %s, %s)",
+                (workflow_id, company_id, "test-workflow"),
+            )
+            conn.execute(
+                """INSERT INTO console.workflow_versions
+                   (id, company_id, workflow_id, version_no, spec, spec_version)
+                   VALUES (%s, %s, %s, 1, %s, '1')""",
+                (version_id, company_id, workflow_id, json.dumps(spec)),
+            )
+            conn.commit()
+        created.append((company_id, workflow_id, version_id))
+        return version_id
+
+    yield _make
+
+    for company_id, workflow_id, version_id in created:
+        with _connect() as conn:
+            conn.execute(f"SET LOCAL app.company_id = '{company_id}'")
+            conn.execute("DELETE FROM console.workflow_versions WHERE id = %s", (version_id,))
+            conn.execute("DELETE FROM console.workflows WHERE id = %s", (workflow_id,))
             conn.commit()
 
 
