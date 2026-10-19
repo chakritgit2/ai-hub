@@ -8,6 +8,7 @@
 	import type { Placeholder, Company } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser } from '$lib/stores/auth';
+	import { companyId } from '$lib/stores/company';
 
 	headerContent.set({ menu: 'Settings', title: 'Settings' });
 
@@ -68,6 +69,15 @@
 		loadEgress();
 	});
 
+	// Same company_id-placeholder race every other list page handles (the initial fetch
+	// can land before $companyId resolves to the real value) - re-fetch once it changes,
+	// same pattern as datasets/+page.svelte's load().
+	$effect(() => {
+		$companyId;
+		loadUsers();
+		loadEgress();
+	});
+
 	$effect(() => {
 		if (activeTab === 'companies' && $currentUser?.is_platform_admin && companies.length === 0) {
 			loadCompanies();
@@ -121,7 +131,17 @@
 		{#if usersLoading}
 			<p class="text-sm text-neutral-500" role="status">Loading users…</p>
 		{:else if usersError}
-			<div class="rounded-md border border-danger/30 bg-danger/5 p-4 text-sm text-danger">{usersError}</div>
+			<div class="rounded-md border border-danger/30 bg-danger/5 p-4">
+				<p class="text-sm font-medium text-danger">Could not load users</p>
+				<p class="mt-1 text-sm text-neutral-700">{usersError}</p>
+				<button
+					type="button"
+					class="mt-3 rounded-md border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10"
+					onclick={loadUsers}
+				>
+					Retry
+				</button>
+			</div>
 		{:else if users.length === 0}
 			<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 				<p class="text-sm text-neutral-500">No users synced from SSO yet.</p>
@@ -133,7 +153,17 @@
 		{#if egressLoading}
 			<p class="text-sm text-neutral-500" role="status">Loading egress allowlist…</p>
 		{:else if egressError}
-			<div class="rounded-md border border-danger/30 bg-danger/5 p-4 text-sm text-danger">{egressError}</div>
+			<div class="rounded-md border border-danger/30 bg-danger/5 p-4">
+				<p class="text-sm font-medium text-danger">Could not load the egress allowlist</p>
+				<p class="mt-1 text-sm text-neutral-700">{egressError}</p>
+				<button
+					type="button"
+					class="mt-3 rounded-md border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10"
+					onclick={loadEgress}
+				>
+					Retry
+				</button>
+			</div>
 		{:else if egress.length === 0}
 			<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 				<p class="text-sm text-neutral-500">
