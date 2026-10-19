@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 import openai
@@ -313,8 +314,14 @@ async def test_compiled_http_tool_execution_is_egress_blocked_by_default(make_co
     agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
     tool = agent.tools[0]
 
+    # `SafeHttpApiCall.execute` calls `asyncio.run()` internally, which is only safe when
+    # there's no event loop already running in the calling thread - true in production
+    # (always invoked via `asyncio.to_thread(agent.run, ...)` in app.services.runtime) but
+    # not true if called directly from this test's own async def, which already runs
+    # inside pytest-asyncio's event loop. Route through a worker thread here too so the
+    # test exercises the same calling convention as the real caller.
     with pytest.raises(ToolExecutionException, match="egress_blocked"):
-        tool.execute(HttpApiCallInputSchema())
+        await asyncio.to_thread(tool.execute, HttpApiCallInputSchema())
 
 
 @requires_postgres

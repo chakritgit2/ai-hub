@@ -38,6 +38,18 @@ class SafeHttpApiCall(HttpApiCall):
     audience: str | None = None
     identity: DelegatedIdentityContext | None = None
     secret: str | None = None
+    # The event loop `app.services.compiler.build_agent` was running on when this tool was
+    # built (always the server's main loop, real run or not). `list_egress_allowlist` goes
+    # through `app.core.db`'s process-wide cached `AsyncEngine`, whose pooled asyncpg
+    # connections are bound to whichever loop first opened them - almost always this main
+    # loop, since `resolve_and_compile` already runs DB queries on it before `execute()`
+    # is ever reached. Routing the coroutine back here with `run_coroutine_threadsafe`
+    # (instead of `asyncio.run()`, which would spin up a brand new loop in the worker
+    # thread) keeps every DB call on the loop its connections actually belong to -
+    # confirmed required by reproducing a real
+    # `asyncpg.exceptions.InternalClientError: got result for unknown protocol state`
+    # otherwise.
+    loop: asyncio.AbstractEventLoop | None = None
 
     def _safe_request_kwargs(self, input_data: HttpApiCallInputSchema) -> dict:
         request_kwargs = self._build_request_kwargs(input_data)
@@ -83,6 +95,16 @@ class SafeHttpApiCall(HttpApiCall):
         allowlist = await list_egress_allowlist(self.company_id)
         return await SafeHttpClient(allowlist).request(**request_kwargs)
 
+    def _run_safe_request_from_thread(self, request_kwargs: dict):
+        """Dispatches `_run_safe_request` from the worker thread `execute()` runs in back
+        onto `self.loop` and blocks until it's done - see the `loop` field's docstring for
+        why `asyncio.run()` alone is unsafe here. Falls back to `asyncio.run()` when no
+        loop was supplied (never the real run-time case - see `loop`'s docstring - but
+        keeps this usable standalone, e.g. in a unit test that builds the tool directly)."""
+        if self.loop is not None:
+            return asyncio.run_coroutine_threadsafe(self._run_safe_request(request_kwargs), self.loop).result()
+        return asyncio.run(self._run_safe_request(request_kwargs))
+
     def execute(self, input_data: HttpApiCallInputSchema, config: RunnableConfig = None, **kwargs):
         config = ensure_config(config)
         check_cancellation(config)
@@ -91,8 +113,8 @@ class SafeHttpApiCall(HttpApiCall):
         request_kwargs = self._safe_request_kwargs(input_data)
         try:
             # Called from a plain worker thread (`asyncio.to_thread(agent.run, ...)` in
-            # app.services.runtime), never the main event loop - asyncio.run() is safe here.
-            response = asyncio.run(self._run_safe_request(request_kwargs))
+            # app.services.runtime), never the main event loop - see `_run_safe_request_from_thread`.
+            response = self._run_safe_request_from_thread(request_kwargs)
         except SafeHttpClientError as exc:
             raise ToolExecutionException(
                 f"Request blocked: {exc}. Please analyze the error and take appropriate action.",

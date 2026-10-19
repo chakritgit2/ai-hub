@@ -340,6 +340,9 @@ def _build_http_tool(
         audience=tool_def.get("audience"),
         identity=identity,
         secret=secret,
+        # See SafeHttpApiCall.loop's docstring - this is always the server's main loop,
+        # since this function only ever runs from inside the already-async build_agent.
+        loop=asyncio.get_running_loop(),
     )
 
 
@@ -356,9 +359,14 @@ def _build_builtin_tool(tool_def: dict, company_id: str, secret: str | None = No
     from app.integrations.safe_builtin_tools import SafeExaTool, SafeTavilyTool
 
     api_key = secret or _COMPILE_TIME_PLACEHOLDER_API_KEY
+    # See SafeHttpApiCall.loop's docstring - same reasoning applies to these tools' own
+    # egress-allowlist DB call.
+    loop = asyncio.get_running_loop()
     if tool_def["type"] == TAVILY_TOOL_TYPE:
-        return SafeTavilyTool(name=tool_def["name"], connection=Tavily(api_key=api_key), company_id=company_id)
-    return SafeExaTool(name=tool_def["name"], connection=Exa(api_key=api_key), company_id=company_id)
+        return SafeTavilyTool(
+            name=tool_def["name"], connection=Tavily(api_key=api_key), company_id=company_id, loop=loop
+        )
+    return SafeExaTool(name=tool_def["name"], connection=Exa(api_key=api_key), company_id=company_id, loop=loop)
 
 
 async def _build_knowledge_tool(tool_def: dict, company_id: str, api_key: str):

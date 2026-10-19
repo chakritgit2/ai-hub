@@ -32,10 +32,21 @@ class _SafeBuiltinSearchTool:
     `self.client`/`self.get_async_client()`."""
 
     company_id: str
+    # See `app.integrations.safe_http_tool.SafeHttpApiCall.loop`'s docstring - same
+    # cross-loop asyncpg hazard, same fix: route the egress-allowlist DB call back onto
+    # the loop its pooled connections actually belong to instead of spinning up a new one.
+    loop: asyncio.AbstractEventLoop | None = None
 
     async def _run_safe_request(self, method: str, url: str, json: dict, headers: dict | None = None):
         allowlist = await list_egress_allowlist(self.company_id)
         return await SafeHttpClient(allowlist).request(method=method, url=url, json=json, headers=headers or {})
+
+    def _run_safe_request_from_thread(self, method: str, url: str, json: dict, headers: dict | None = None):
+        if self.loop is not None:
+            return asyncio.run_coroutine_threadsafe(
+                self._run_safe_request(method, url, json, headers), self.loop
+            ).result()
+        return asyncio.run(self._run_safe_request(method, url, json, headers))
 
 
 class SafeTavilyTool(_SafeBuiltinSearchTool, TavilyTool):
@@ -47,12 +58,10 @@ class SafeTavilyTool(_SafeBuiltinSearchTool, TavilyTool):
         request_payload, connection_url = self._build_search_payload(input_data)
         try:
             # Called from a plain worker thread (`asyncio.to_thread(agent.run, ...)` in
-            # app.services.runtime), never the main event loop - asyncio.run() is safe
-            # here, same justification as SafeHttpApiCall.execute.
-            response = asyncio.run(
-                self._run_safe_request(
-                    self.connection.method, connection_url, {**self.connection.data, **request_payload}
-                )
+            # app.services.runtime), never the main event loop - see
+            # `_run_safe_request_from_thread`.
+            response = self._run_safe_request_from_thread(
+                self.connection.method, connection_url, {**self.connection.data, **request_payload}
             )
             response.raise_for_status()
             search_result = response.json()
@@ -87,8 +96,8 @@ class SafeExaTool(_SafeBuiltinSearchTool, ExaTool):
 
         payload, connection_url = self._build_search_payload(input_data)
         try:
-            response = asyncio.run(
-                self._run_safe_request(self.connection.method, connection_url, payload, self.connection.headers)
+            response = self._run_safe_request_from_thread(
+                self.connection.method, connection_url, payload, self.connection.headers
             )
             response.raise_for_status()
             search_result = response.json()
