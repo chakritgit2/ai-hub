@@ -27,6 +27,7 @@ class Deployment extends Model
     public int $conversation_ttl_days = 30;
     public int $config_version = 1;
     public bool $enabled = true;
+    public ?string $promoted_to_id = null;
     public string $created_at;
     public string $updated_at;
 

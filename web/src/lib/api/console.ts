@@ -181,9 +181,12 @@ export function deleteDeployment(id: string): Promise<void> {
 	return apiFetch<void>(`/deployments/${id}`, { method: 'DELETE' });
 }
 
-/** Phase 3. */
-export function promoteDeployment(id: string): Promise<Deployment> {
-	return apiFetch<Deployment>(`/deployments/${id}/promote`, { method: 'POST' });
+/** Required on the first promote from this (staging) deployment; afterwards optional. */
+export function promoteDeployment(id: string, targetDeploymentId?: string): Promise<Deployment> {
+	return apiFetch<Deployment>(`/deployments/${id}/promote`, {
+		method: 'POST',
+		body: targetDeploymentId ? { target_deployment_id: targetDeploymentId } : undefined
+	});
 }
 
 // ---- /api-keys ----------------------------------------------------------

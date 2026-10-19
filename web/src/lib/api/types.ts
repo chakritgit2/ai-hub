@@ -457,6 +457,7 @@ export interface Deployment {
 	conversation_ttl_days?: number;
 	config_version?: number;
 	enabled: boolean;
+	promoted_to_id?: string | null;
 }
 
 export interface ApiKey {

@@ -427,6 +427,7 @@ components:
         conversation_ttl_days: { type: integer }
         config_version: { type: integer }
         enabled: { type: boolean }
+        promoted_to_id: { type: string, nullable: true, description: "Production deployment this (staging) deployment was last promoted to." }
     ApiKey:
       type: object
       properties:
@@ -895,6 +896,15 @@ paths:
     post:
       operationId: promoteDeployment
       x-phase: 3
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target_deployment_id:
+                  type: string
+                  description: Production deployment to copy agent_version_id/workflow_version_id onto. Required on the first promote from this (staging) deployment; afterwards defaults to the previous target (promoted_to_id).
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Deployment' } } } }
 

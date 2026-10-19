@@ -16,8 +16,10 @@ use Throwable;
  * constraint) - everything downstream (API keys, scopes, slug resolution, quotas) is
  * target-agnostic, keyed by `deployment_id` alone.
  *
- * `promoteDeployment` stays 501 (x-phase: 3, see contracts/openapi/console-api.yaml).
- * Everything else is real.
+ * `promoteDeployment` copies a staging deployment's published version pointer
+ * (agent_version_id/workflow_version_id only — not quotas/CORS/guardrails, which stay
+ * independently tuned per deployment row, PRD §6.3) onto a paired production
+ * deployment, recorded via `promoted_to_id`.
  */
 class DeploymentsController extends ControllerBase
 {
@@ -38,7 +40,7 @@ class DeploymentsController extends ControllerBase
                 'SELECT id, company_id, slug, environment, agent_version_id, workflow_version_id,
                         rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
                         guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
-                        config_version, enabled, created_at, updated_at
+                        config_version, enabled, promoted_to_id, created_at, updated_at
                  FROM console.deployments ORDER BY created_at DESC',
                 Enum::FETCH_ASSOC
             )
@@ -105,7 +107,7 @@ class DeploymentsController extends ControllerBase
                      RETURNING id, company_id, slug, environment, agent_version_id, workflow_version_id,
                                rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
                                guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
-                               config_version, enabled, created_at, updated_at',
+                               config_version, enabled, promoted_to_id, created_at, updated_at',
                     Enum::FETCH_ASSOC,
                     [
                         'company_id' => $this->getCompanyId(),
@@ -261,7 +263,7 @@ class DeploymentsController extends ControllerBase
                     'SELECT id, company_id, slug, environment, agent_version_id, workflow_version_id,
                             rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
                             guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
-                            config_version, enabled, created_at, updated_at
+                            config_version, enabled, promoted_to_id, created_at, updated_at
                      FROM console.deployments WHERE id = :id',
                     Enum::FETCH_ASSOC,
                     ['id' => $id]
@@ -311,10 +313,85 @@ class DeploymentsController extends ControllerBase
         return $this->noContentResponse();
     }
 
-    /** x-phase: 3 */
+    /**
+     * Copies this staging deployment's version pointer (agent_version_id or
+     * workflow_version_id — whichever is set) onto a production deployment, and bumps
+     * the production row's config_version so the gateway reloads it. Operational config
+     * (quotas, CORS, guardrails, output_mode, ...) is NOT copied — each deployment row
+     * keeps its own, since staging and production typically need different limits.
+     *
+     * `target_deployment_id` is required the first time; afterwards it defaults to the
+     * target remembered on `promoted_to_id` from the previous promote, so repeat
+     * promotes from the same staging deployment don't need to repeat it.
+     */
     public function promoteDeployment(string $id): Response
     {
-        return $this->notImplemented();
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireWriteRole()) !== null) {
+            return $error;
+        }
+
+        $source = $this->findDeployment($id);
+        if ($source === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        if ($source['environment'] !== 'staging') {
+            return $this->jsonResponse(['error' => 'source_must_be_staging'], 400);
+        }
+
+        $body = $this->request->getJsonRawBody(true) ?? [];
+        $targetId = $body['target_deployment_id'] ?? $source['promoted_to_id'];
+        if (!is_string($targetId) || !$this->isUuid($targetId)) {
+            return $this->jsonResponse(['error' => 'target_deployment_id_required'], 400);
+        }
+        if ($targetId === $id) {
+            return $this->jsonResponse(['error' => 'target_deployment_same_as_source'], 400);
+        }
+
+        $target = $this->findDeployment($targetId);
+        if ($target === null) {
+            return $this->jsonResponse(['error' => 'target_deployment_not_found'], 400);
+        }
+        if ($target['environment'] !== 'production') {
+            return $this->jsonResponse(['error' => 'target_must_be_production'], 400);
+        }
+        if (($target['agent_version_id'] !== null) !== ($source['agent_version_id'] !== null)) {
+            return $this->jsonResponse(['error' => 'target_type_mismatch'], 400);
+        }
+
+        $row = $this->runInCompanyTransaction(function ($db) use ($id, $targetId, $source) {
+            $db->execute(
+                'UPDATE console.deployments
+                    SET agent_version_id = :agent_version_id,
+                        workflow_version_id = :workflow_version_id,
+                        config_version = config_version + 1,
+                        updated_at = now()
+                 WHERE id = :id',
+                [
+                    'id' => $targetId,
+                    'agent_version_id' => $source['agent_version_id'],
+                    'workflow_version_id' => $source['workflow_version_id'],
+                ]
+            );
+            $db->execute(
+                'UPDATE console.deployments SET promoted_to_id = :promoted_to_id, updated_at = now() WHERE id = :id',
+                ['id' => $id, 'promoted_to_id' => $targetId]
+            );
+
+            return $db->fetchOne(
+                'SELECT id, company_id, slug, environment, agent_version_id, workflow_version_id,
+                        rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
+                        guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
+                        config_version, enabled, promoted_to_id, created_at, updated_at
+                 FROM console.deployments WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $targetId]
+            );
+        });
+
+        return $this->jsonResponse($this->formatDeployment($row));
     }
 
     private function isUniqueViolation(Throwable $exception): bool
@@ -442,7 +519,7 @@ class DeploymentsController extends ControllerBase
                 'SELECT id, company_id, slug, environment, agent_version_id, workflow_version_id,
                         rate_limit_per_min, daily_token_limit, daily_cost_limit_usd, allowed_origins,
                         guardrail_overrides, output_mode, allow_write_tools, conversation_ttl_days,
-                        config_version, enabled, created_at, updated_at
+                        config_version, enabled, promoted_to_id, created_at, updated_at
                  FROM console.deployments WHERE id = :id',
                 Enum::FETCH_ASSOC,
                 ['id' => $id]
@@ -518,6 +595,7 @@ class DeploymentsController extends ControllerBase
             'conversation_ttl_days' => (int) $row['conversation_ttl_days'],
             'config_version' => (int) $row['config_version'],
             'enabled' => (bool) $row['enabled'],
+            'promoted_to_id' => $row['promoted_to_id'],
             'created_at' => $row['created_at'],
             'updated_at' => $row['updated_at'],
         ];
