@@ -8,6 +8,11 @@ RUN npm ci
 COPY . .
 ARG PUBLIC_CONSOLE_API_BASE_URL=/admin/v1
 ENV PUBLIC_CONSOLE_API_BASE_URL=$PUBLIC_CONSOLE_API_BASE_URL
+# Playground SSE stream (PRD §9.3) calls ai-runtime directly, never through console-api -
+# see web/src/lib/api/runtimeStream.ts. $env/static/public requires this to exist at
+# build time or `npm run build` fails outright, same as PUBLIC_CONSOLE_API_BASE_URL above.
+ARG PUBLIC_AI_RUNTIME_BASE_URL=/ai/v1
+ENV PUBLIC_AI_RUNTIME_BASE_URL=$PUBLIC_AI_RUNTIME_BASE_URL
 RUN npm run build
 
 FROM nginx:alpine
