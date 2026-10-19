@@ -14,6 +14,13 @@ export default defineConfig({
 			'/admin/v1': {
 				target: 'http://127.0.0.1:8000',
 				changeOrigin: true
+			},
+			// ai-runtime's Playground surface (PRD §9.3) - the browser calls this directly
+			// with a runtime token, same proxy-locally reasoning as /admin/v1 above. Pairs
+			// with PUBLIC_AI_RUNTIME_BASE_URL=/ai/v1 in web/.env.
+			'/ai/v1': {
+				target: 'http://127.0.0.1:8080',
+				changeOrigin: true
 			}
 		}
 	}

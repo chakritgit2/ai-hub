@@ -22,6 +22,29 @@ export interface RuntimeTokenResponse {
 	expires_in: number;
 }
 
+// POST /ai/v1/playground/stream SSE events (PRD Goal #6) - mirrors
+// ai/app/main_runtime.py::runPlaygroundStream's event_generator exactly, both the
+// no-output-guardrails live-token path and the buffered-fallback path emit the same
+// three event shapes.
+export interface PlaygroundStreamTokenEvent {
+	delta: string;
+}
+
+export interface PlaygroundStreamFinalEvent {
+	conversation_id: string | null;
+	output: string | null;
+	tokens_in: number | null;
+	tokens_out: number | null;
+	cost_usd: number | null;
+	latency_ms: number | null;
+	trace_id: string;
+}
+
+export interface PlaygroundStreamErrorEvent {
+	error: string;
+	detail?: string;
+}
+
 export interface Connection {
 	id: string;
 	company_id: string;
