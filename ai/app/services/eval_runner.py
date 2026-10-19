@@ -518,14 +518,32 @@ async def run_eval(company_id: str, eval_run_id: str) -> dict:
             judge_llm = await _build_judge_llm(company_id, compiled_definition, eval_run.judge_model)
 
         semaphore = asyncio.Semaphore(_EVAL_CONCURRENCY)
-        item_runs = list(
-            await asyncio.gather(
+        # Run the first item alone before fanning the rest out concurrently. dynamiq's
+        # ConnectionManager.get_async_connection_client has a documented cold-start race
+        # (dynamiq/connections/managers.py's own docstring: "the only race is two
+        # coroutines on the same loop both initializing simultaneously - the second one
+        # overwrites the cache entry and the first client is discarded") - reproduced
+        # live: two concurrent execute_agent_run calls sharing a connection that has
+        # never been used yet on this event loop both fail with
+        # "litellm.InternalServerError: OpenAIException - Connection error.", every
+        # single time, while the same two calls run sequentially (or concurrently once
+        # the connection is already warm) succeed every time. Evaluation is the only
+        # place in this codebase that fans out concurrent LLM calls sharing one
+        # connection on a fresh ARQ job's event loop - priming it with one real item
+        # first avoids the race without touching the vendored dynamiq library.
+        if items:
+            first_run = await _run_item(
+                semaphore, compiled_definition, guardrails, company_id, eval_run.agent_version_id, items[0]
+            )
+            rest_runs = await asyncio.gather(
                 *[
                     _run_item(semaphore, compiled_definition, guardrails, company_id, eval_run.agent_version_id, item)
-                    for item in items
+                    for item in items[1:]
                 ]
             )
-        )
+            item_runs = [first_run, *rest_runs]
+        else:
+            item_runs = []
 
         scores_by_item: dict[str, dict[str, float]] = {ir.dataset_item_id: {} for ir in item_runs}
         reasons_by_item: dict[str, dict[str, str | None]] = {ir.dataset_item_id: {} for ir in item_runs}
