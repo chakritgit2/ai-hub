@@ -6,12 +6,15 @@ targets to verify delegated identity tokens (PRD §7.5/7.6).
 
 Every route's function name matches the `operationId` in
 `dynamiq-console/contracts/openapi/ai-public.yaml` exactly. REAL: `runDeployment`,
-`createDeploymentSession`, `getDeploymentInfo`, `getJwks` - API key / session token auth
-(`require_gateway_auth`/`require_gateway_api_key`), real quota reservation/reconciliation
-and rate limiting (`app.services.runtime.run_deployment_agent`), CORS validation against
-a deployment's own `allowed_origins` for session-token/browser callers. `streamDeployment`
-(SSE) and `decideApproval` (Phase 2 per the contract's own `x-phase: 2`) remain 501 stubs -
-explicit scope boundaries, not gaps.
+`streamDeployment`, `createDeploymentSession`, `getDeploymentInfo`, `getJwks` - API key /
+session token auth (`require_gateway_auth`/`require_gateway_api_key`), real quota
+reservation/reconciliation and rate limiting (`app.services.runtime.run_deployment_agent`),
+CORS validation against a deployment's own `allowed_origins` for session-token/browser
+callers. `streamDeployment` (PRD Goal #6, SSE) is real only for an agent-backed
+deployment - a workflow-backed one still gets a 501 there (dynamiq's `GraphOrchestrator`
+streaming behavior was never researched, unlike the plain `Agent` streaming this reuses,
+and nobody has asked for it). `decideApproval` (Phase 2 per the contract's own
+`x-phase: 2`) remains a 501 stub - an explicit scope boundary, not a gap.
 
 A deployment targets exactly one of a published agent version or a published workflow
 version (PRD §6.3/§6.9 phase 4) - `runDeployment`/`getDeploymentInfo` branch on
@@ -21,6 +24,8 @@ function (`app.services.workflow_runtime.run_deployment_workflow`/
 conversation memory, so `body.conversation_id` is rejected for a workflow-targeting
 deployment rather than silently ignored.
 """
+import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -28,9 +33,12 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 import jwt
+from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
+from dynamiq.types.streaming import StreamingMode
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
+from sse_starlette.sse import EventSourceResponse
 
 from app.core.auth import verify_gateway_api_key
 from app.core.config import get_settings
@@ -42,7 +50,8 @@ from app.services.agent_versions import resolve_agent_version
 from app.services.deployments import DeploymentRow, resolve_deployment, resolve_deployment_id_by_slug
 from app.services.gateway_auth import get_jwks, mint_session_token, verify_session_token
 from app.services.quotas import QuotaExceededError
-from app.services.runtime import run_deployment_agent
+from app.services.runtime import attach_stream_completion, run_deployment_agent
+from app.services.streaming_events import extract_answer_delta, extract_tool_step_event
 from app.services.workflow_runtime import run_deployment_workflow
 from app.services.workflow_versions import resolve_workflow_identity
 
@@ -331,10 +340,140 @@ async def runDeployment(
 
 
 @app.post("/v1/deployments/{slug}/stream")
-async def streamDeployment(slug: str, body: dict) -> Response:
-    """SSE run, from a server or a browser using a session token. Stub — out of scope
-    with Playground's own `/stream` (also unimplemented)."""
-    return _not_implemented("streamDeployment")
+async def streamDeployment(slug: str, body: RunRequest, identity: GatewayAuth, request: Request) -> Response:
+    """SSE run (PRD Goal #6), from a server (API key) or a browser using a session token.
+
+    REAL for an agent-backed deployment: same `token`/`final`/`error` event shape as
+    Playground's own `/ai/v1/playground/stream`, reusing
+    `app.services.streaming_events.extract_answer_delta` so both apps parse dynamiq's
+    stream chunks identically. **Additionally streams a `step` event** right before and
+    right after each tool call - `{"phase": "tool_call", "tool": <name>}` then
+    `{"phase": "tool_result", "tool": <name>, "sources"?: [...]}` - a PRD Goal #6
+    follow-up scoped with the user to the gateway only: Playground stays on
+    `StreamingMode.FINAL` unchanged (see `execute_agent_run`'s `stream_mode` docstring),
+    only this endpoint passes `StreamingMode.ALL`. `sources` is only ever populated for a
+    tool shaped like dynamiq's own TavilyTool/ExaTool output (see
+    `extract_tool_step_event`) - never guessed for a generic `kind: http` tool, so a
+    caller can never be shown a wrong/misleading "source" link.
+
+    A workflow-backed deployment stays a 501 stub here - scoped out with the user:
+    dynamiq's `GraphOrchestrator` streaming behavior was never researched (unlike the
+    plain `Agent` streaming this reuses, which already went through that research for
+    Playground), and nobody has asked for it. Use the synchronous `/run` above for a
+    workflow deployment instead.
+
+    CORS is enforced the same way, and at the same point, as `runDeployment`
+    (`_enforce_cors`, before branching on workflow-vs-agent) - but applied to a throwaway
+    `Response(status_code=204)` first and copied into the `EventSourceResponse` actually
+    returned. Two things that each break this in a way only an in-process test transport
+    would hide, both confirmed by reading Starlette's own `Response.init_headers` source:
+    mutating the `response: Response` FastAPI would normally auto-merge only works when
+    the endpoint returns a plain value, not when it returns its own `EventSourceResponse`
+    directly (as every SSE endpoint must) - that bypasses the merge entirely, so CORS
+    headers have to be copied in by hand; and the throwaway `Response` must be constructed
+    with `status_code=204` specifically, never the default `200` with no body, which
+    `init_headers` stamps with `Content-Length: 0` - copying that into the SSE response
+    would declare a zero-length body to any real HTTP stack even though this keeps
+    writing to it indefinitely (httpx's in-process `ASGITransport`, used by this file's
+    own tests, ignores Content-Length framing entirely, so this would have silently
+    shipped broken against every real server while every test still passed).
+
+    `QuotaExceededError`/an upstream run failure can't become an HTTP 429/502 anymore
+    once the SSE response has started (headers are already sent) - both become an
+    `error` event instead, the same convention Playground's own `upstream_error`
+    already uses. Deliberate, accepted tradeoff: a client must inspect the event stream,
+    not just the HTTP status, to detect either failure mode on this endpoint.
+    """
+    deployment = await resolve_deployment(identity.company_id, identity.deployment_id)
+    if deployment is None or not deployment.enabled:
+        raise HTTPException(status_code=404, detail="deployment_not_found")
+
+    cors_response = Response(status_code=204)
+    _enforce_cors(identity, deployment, request, cors_response)
+
+    if deployment.workflow_version_id is not None:
+        return _not_implemented("streamDeployment")
+
+    if identity.auth_kind == "session_token":
+        external_user_id = identity.external_user_id
+        identity_claims = identity.claims
+    else:
+        external_user_id = body.user.external_id if body.user else None
+        identity_claims = body.user.claims if body.user else {}
+
+    stream_handler = AsyncStreamingIteratorCallbackHandler(loop=asyncio.get_running_loop())
+
+    async def event_generator():
+        run_task = asyncio.create_task(
+            run_deployment_agent(
+                identity.company_id,
+                identity.deployment_id,
+                _GATEWAY_RUN_ROLE,
+                body.input,
+                external_user_id=external_user_id,
+                conversation_id=body.conversation_id,
+                claims=identity_claims,
+                stream_handler=stream_handler,
+                stream_mode=StreamingMode.ALL,
+            )
+        )
+        # See attach_stream_completion's own docstring (app.services.runtime) - required
+        # beyond execute_agent_run's internal done_event for the same concurrent-drain
+        # reasons as Playground's runPlaygroundStream, which already hit this live.
+        attach_stream_completion(run_task, stream_handler)
+
+        async for event in stream_handler:
+            delta = extract_answer_delta(event.data)
+            if delta:
+                yield {"event": "token", "data": json.dumps({"delta": delta})}
+                continue
+            step_event = extract_tool_step_event(event.data)
+            if step_event:
+                yield {"event": "step", "data": json.dumps(step_event)}
+
+        try:
+            result = await run_task
+        except QuotaExceededError as exc:
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {
+                        "error": "quota_exceeded",
+                        "reason": exc.reason,
+                        "reset_at": exc.reset_at.isoformat() if exc.reset_at else None,
+                    }
+                ),
+            }
+            return
+        except (ValueError, RuntimeError) as exc:
+            # Same two exception types runDeployment's own 502 handler documents itself
+            # as catching - anything else is a bug in this app's own code, not a run
+            # failure, and must not be silently flattened into the same error event.
+            logger.exception("deployment stream run failed")
+            yield {"event": "error", "data": json.dumps({"error": "upstream_error", "detail": str(exc)})}
+            return
+
+        if not result.get("streamed_live") and result.get("output"):
+            # Guardrail-gated or blocked-input path: nothing was streamed live above, so
+            # the full (already final) text goes out as one token event before `final`.
+            yield {"event": "token", "data": json.dumps({"delta": result["output"]})}
+
+        yield {
+            "event": "final",
+            "data": json.dumps(
+                {
+                    "conversation_id": result.get("conversation_id"),
+                    "output": result.get("output"),
+                    "tokens_in": result.get("tokens_in"),
+                    "tokens_out": result.get("tokens_out"),
+                    "cost_usd": result.get("cost_usd"),
+                    "latency_ms": result.get("latency_ms"),
+                    "trace_id": result.get("trace_id"),
+                }
+            ),
+        }
+
+    return EventSourceResponse(event_generator(), headers=dict(cors_response.headers))
 
 
 class SessionRequest(BaseModel):

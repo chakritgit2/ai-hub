@@ -11,10 +11,11 @@ from dynamiq.nodes.agents.base import StreamChunk, StreamChunkChoice, StreamChun
 from dynamiq.runnables.base import RunnableStatus
 from fastapi.testclient import TestClient
 
-from app.main_runtime import _extract_answer_delta, app as runtime_app
+from app.main_runtime import app as runtime_app
 from app.main_runtime import require_runtime_auth
 from app.services import compiler
 from app.services.runtime import run_deployment_agent, run_playground_agent
+from app.services.streaming_events import extract_answer_delta as _extract_answer_delta
 
 from .markers import fake_runtime_claims, requires_openai_key, requires_postgres
 
@@ -107,9 +108,9 @@ async def _drain_with_timeout(
     `execute_agent_run` failed to set `stream_handler.done_event` on some exit path (see
     its docstring), which would otherwise leave a real SSE client's `async for` waiting
     forever. Failing fast on a timeout turns that into a clear test failure instead of a
-    stuck test suite. Reuses `main_runtime._extract_answer_delta` - the same extraction
-    the real SSE endpoint applies - so a regression there fails here too, not just at the
-    HTTP-layer test."""
+    stuck test suite. Reuses `app.services.streaming_events.extract_answer_delta` - the
+    same extraction the real SSE endpoint applies - so a regression there fails here too,
+    not just at the HTTP-layer test."""
     deltas: list[str] = []
 
     async def _drain() -> None:

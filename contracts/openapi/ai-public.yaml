@@ -182,7 +182,14 @@ paths:
     parameters: [{ $ref: '#/components/parameters/Slug' }]
     post:
       operationId: streamDeployment
-      summary: SSE run, from a server or directly from an end-user browser using a session token (PRD §4.4-C).
+      summary: >-
+        SSE run, from a server or directly from an end-user browser using a session token
+        (PRD §4.4-C). Events: token (answer text, incremental), step (tool_call/tool_result,
+        with sources when the tool is a web-search type like Tavily/Exa), final, error.
+        Agent-backed deployments only - a workflow-backed deployment returns 501 here (use
+        the synchronous /run instead); QuotaExceededError and an upstream run failure are
+        both delivered as an error event, not an HTTP status, since the stream has already
+        started by the time either can be detected.
       security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
       requestBody:
         content:

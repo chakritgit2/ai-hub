@@ -118,6 +118,7 @@ async def execute_agent_run(
     identity_sub: str | None = None,
     run_id: str | None = None,
     stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
+    stream_mode: StreamingMode = StreamingMode.FINAL,
 ) -> dict:
     """Shared core: guardrail checks, memory, build+run the real Agent, usage tracking,
     `logs.runs`/`logs.guardrail_events` writes. Raises on resolution-adjacent failures
@@ -147,6 +148,15 @@ async def execute_agent_run(
     iterating `async for event in stream_handler` would hang forever once the real
     answer is done. See `streamed_live` in the returned dict.
 
+    `stream_mode` (PRD Goal #6 follow-up: tool-call status events) controls how much
+    dynamiq actually emits onto `stream_handler` when `streamed_live` ends up true -
+    `StreamingMode.FINAL` (the default, what every existing caller gets unchanged) only
+    ever emits `step="answer"` chunks; `StreamingMode.ALL` additionally unlocks
+    `step="reasoning"` (a structured event right before a tool call, carrying the real
+    tool name/input) and `step="tool"` (the tool's result, once it finishes) - see
+    `app.main_gateway.streamDeployment`'s own docstring for how it turns those into
+    `step` SSE events. Has no effect at all when `streamed_live` is false.
+
     Returns `{"output": str, "trace_id": str, "latency_ms": int,
     "conversation_id": str | None, "guardrail_events": list, "tokens_in": int | None,
     "tokens_out": int | None, "cost_usd": float | None, "streamed_live": bool}`.
@@ -171,6 +181,7 @@ async def execute_agent_run(
             trace_id=trace_id,
             started=started,
             stream_handler=stream_handler,
+            stream_mode=stream_mode,
         )
     finally:
         if stream_handler is not None:
@@ -232,6 +243,7 @@ async def _execute_agent_run_body(
     trace_id: str,
     started: float,
     stream_handler: AsyncStreamingIteratorCallbackHandler | None,
+    stream_mode: StreamingMode,
 ) -> dict:
     """The actual body of `execute_agent_run`, split out only so the `try/finally` that
     guarantees `stream_handler.done_event` gets set (see `execute_agent_run`'s docstring)
@@ -383,7 +395,7 @@ async def _execute_agent_run_body(
     # it here needs no change to app.services.compiler.build_agent.
     streamed_live = stream_handler is not None and not guardrails.output
     if streamed_live:
-        agent.streaming = StreamingConfig(enabled=True, mode=StreamingMode.FINAL)
+        agent.streaming = StreamingConfig(enabled=True, mode=stream_mode)
         callbacks.append(stream_handler)
 
     # `Agent.run` is synchronous and, with memory attached, does blocking
@@ -557,12 +569,21 @@ async def run_deployment_agent(
     external_user_id: str | None = None,
     conversation_id: str | None = None,
     claims: dict | None = None,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
+    stream_mode: StreamingMode = StreamingMode.FINAL,
 ) -> dict:
     """Resolve `deployment_id`'s agent version, compile it live with the deployment's
     own `guardrail_overrides` layered on top (PRD §6.4), reserve quota before running and
     reconcile to actual usage after (PRD §6.3) - the gateway's counterpart to
     `run_playground_agent`. Raises `QuotaExceededError` when rate-limited/over quota, same
     "let it bubble to the caller" convention as resolution/compile/secret failures.
+
+    `stream_handler`/`stream_mode` (PRD Goal #6, gateway streaming) are passed straight
+    through to `execute_agent_run` - see its docstring. Quota reserve/reconcile is
+    unaffected either way: reservation happens before the run starts and reconciliation
+    reads the final returned dict's actual usage after, same as the non-streaming path -
+    `execute_agent_run` itself is still awaited to completion even when a caller is
+    concurrently draining `stream_handler` alongside it.
     """
     deployment = await resolve_deployment(company_id, deployment_id)
     if deployment is None:
@@ -599,6 +620,8 @@ async def run_deployment_agent(
             conversation_id=conversation_id,
             deployment_id=deployment_id,
             identity_claims=claims,
+            stream_handler=stream_handler,
+            stream_mode=stream_mode,
         )
         return result
     except Exception as exc:

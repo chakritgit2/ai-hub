@@ -19,7 +19,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 import httpx
@@ -75,6 +75,7 @@ from app.services.knowledge_bases import (
     upsert_kb_document,
 )
 from app.services.runtime import attach_stream_completion, resolve_and_compile, run_playground_agent
+from app.services.streaming_events import extract_answer_delta
 from app.services.tool_secrets import decrypt_tool_secret, delete_tool_secret, upsert_tool_secret
 from app.services.tools import resolve_tool
 
@@ -131,31 +132,6 @@ def _not_implemented(operation_id: str) -> JSONResponse:
         status_code=501,
         content={"error": "not_implemented", "operation_id": operation_id},
     )
-
-
-def _extract_answer_delta(event_data: Any) -> str | None:
-    """Real dynamiq `Agent` streaming never hands a plain string to our callback, even in
-    `StreamingMode.FINAL`: `AgentStreamingParserCallback._emit` builds a plain-string
-    `content_to_stream` for the ANSWER step, but `Agent.stream_response` (dynamiq/nodes/
-    agents/base.py) always re-wraps it as `StreamChunk(choices=[StreamChunkChoice(delta=
-    StreamChunkChoiceDelta(content=..., step=...))]).model_dump()` before calling
-    `run_on_node_execute_stream` - so `StreamingEventMessage.data` (built by
-    `format_value(chunk)`, which preserves dict structure) is always this nested dict
-    shape, never a bare string. Confirmed by reading the installed dynamiq==0.65.0 source
-    directly, not assumed - an earlier version of this endpoint checked
-    `isinstance(event.data, str)`, which is never true for a real run and silently dropped
-    every live token.
-    """
-    if not isinstance(event_data, dict):
-        return None
-    choices = event_data.get("choices") or []
-    if not choices:
-        return None
-    delta = (choices[0] or {}).get("delta") or {}
-    if delta.get("step") != "answer":
-        return None
-    content = delta.get("content")
-    return content if isinstance(content, str) and content else None
 
 
 def _is_uuid(value: str) -> bool:
@@ -297,7 +273,7 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
         attach_stream_completion(run_task, stream_handler)
 
         async for event in stream_handler:
-            delta = _extract_answer_delta(event.data)
+            delta = extract_answer_delta(event.data)
             if delta:
                 yield {"event": "token", "data": json.dumps({"delta": delta})}
 
