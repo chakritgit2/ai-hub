@@ -9,6 +9,7 @@ import type {
 	AgentVersion,
 	ApiKey,
 	ApiKeyCreated,
+	Approval,
 	Company,
 	Connection,
 	ConnectionSecretInput,
@@ -289,14 +290,14 @@ export function compareEvalRuns(a: string, b: string): Promise<EvalRunComparison
 	return apiFetch<EvalRunComparison>(`/evals/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
 }
 
-// ---- /approvals (phase 2) --------------------------------------------------
+// ---- /approvals (PRD §6.5) --------------------------------------------------
 
-export function listApprovals(): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>('/approvals');
+export function listApprovals(): Promise<Approval[]> {
+	return apiFetch<Approval[]>('/approvals');
 }
 
-export function decideApproval(id: string, input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/approvals/${id}`, { method: 'POST', body: input });
+export function decideApproval(id: string, decision: 'approved' | 'rejected'): Promise<Approval> {
+	return apiFetch<Approval>(`/approvals/${id}`, { method: 'POST', body: { decision } });
 }
 
 // ---- /kb (phase 2 - vector-only retrieval this round, PRD §6.6) -------------
@@ -507,6 +508,7 @@ export type {
 	AgentVersion,
 	ApiKey,
 	ApiKeyCreated,
+	Approval,
 	Company,
 	Connection,
 	DashboardSummary,

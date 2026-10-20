@@ -478,6 +478,22 @@ export interface ApiKeyCreated extends ApiKey {
 	key: string;
 }
 
+// Human approval gate for `write`-access tool calls (PRD §6.5/§8.1 `tool_approvals`
+// table). Nothing yet creates a `pending` row (that requires hooking the write-tool call
+// path itself, deliberately deferred) - the list is real but will be empty until that
+// ships.
+export interface Approval {
+	id: string;
+	company_id: string;
+	run_id: string;
+	tool_id: string;
+	request: Record<string, unknown>;
+	status: 'pending' | 'approved' | 'rejected' | 'expired';
+	decided_by: string | null;
+	decided_at: string | null;
+	created_at: string;
+}
+
 export type RunStatus = 'success' | 'error' | 'blocked' | 'interrupted' | 'truncated' | 'cancelled';
 export type RunSource = 'playground' | 'api' | 'eval';
 

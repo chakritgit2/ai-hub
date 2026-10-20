@@ -156,3 +156,18 @@ eval_results_table = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     schema="logs",
 )
+
+tool_approvals_table = sa.Table(
+    "tool_approvals",
+    _metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("run_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("tool_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("request", postgresql.JSONB(), nullable=False),
+    sa.Column("status", sa.String(length=16), nullable=False),
+    sa.Column("decided_by", sa.Text(), nullable=True),
+    sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    schema="runtime",
+)

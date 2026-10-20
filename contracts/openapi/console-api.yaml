@@ -449,6 +449,23 @@ components:
             key:
               type: string
               description: Full key value, shown once.
+    Approval:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string }
+        run_id: { type: string }
+        tool_id: { type: string }
+        request: { type: object, additionalProperties: true, description: The pending tool-call payload. }
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        decided_by: { type: string, nullable: true }
+        decided_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    DecideApprovalInput:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
     Run:
       type: object
       properties:
@@ -1152,18 +1169,19 @@ paths:
   /approvals:
     get:
       operationId: listApprovals
-      x-phase: 2
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Placeholder' } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Approval' } } } } } }
   /approvals/{id}:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
       - { $ref: '#/components/parameters/IdParam' }
     post:
       operationId: decideApproval
-      x-phase: 2
-      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/DecideApprovalInput' } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Approval' } } } }
+        "404": { description: no such approval for this company }
+        "409": { description: approval already decided }
 
   /kb:
     get:

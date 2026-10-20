@@ -56,6 +56,7 @@ from app.services.connection_secrets import (
 )
 from app.services.connections import resolve_connection
 from app.services.agent_versions import resolve_agent_version
+from app.services.approvals import ApprovalAlreadyDecidedError, ApprovalNotFoundError, decide_approval
 from app.services.datasets import resolve_dataset
 from app.services.egress_allowlist import list_egress_allowlist
 from app.services.eval_runner import (
@@ -943,7 +944,48 @@ async def cancelEvalRun(id: str, claims: InternalAuth) -> Response:
     return _not_implemented("cancelEvalRun")
 
 
-@app.post("/internal/v1/approvals/{id}")
-async def decideApproval(id: str, body: dict, claims: InternalAuth) -> Response:
-    """Phase 2."""
-    return _not_implemented("decideApproval")
+class DecideApprovalRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+    decided_by: str
+
+
+class ApprovalResponse(BaseModel):
+    id: str
+    run_id: str
+    tool_id: str
+    request: dict
+    status: str
+    decided_by: str | None
+    decided_at: str | None
+    created_at: str
+
+
+@app.post("/internal/v1/approvals/{id}", response_model=ApprovalResponse)
+async def decideApproval(id: str, body: DecideApprovalRequest, claims: InternalAuth) -> Response:
+    """Approve/reject a write tool call from the console (PRD §6.5). `decided_by` is a
+    body field, not taken from `claims` - the internal JWT (TokenIssuer::issueInternalToken)
+    carries no user identity at all, only service-to-service auth, same reason
+    createEvalRun's `role` is a body field rather than a claim."""
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="not_found")
+
+    try:
+        approval = await decide_approval(company_id, id, body.decision, body.decided_by)
+    except ApprovalNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+    except ApprovalAlreadyDecidedError as exc:
+        raise HTTPException(status_code=409, detail=f"already_decided: {exc.status}")
+
+    return JSONResponse(
+        content=ApprovalResponse(
+            id=approval.id,
+            run_id=approval.run_id,
+            tool_id=approval.tool_id,
+            request=approval.request,
+            status=approval.status,
+            decided_by=approval.decided_by,
+            decided_at=approval.decided_at.isoformat() if approval.decided_at else None,
+            created_at=approval.created_at.isoformat(),
+        ).model_dump()
+    )

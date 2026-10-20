@@ -271,6 +271,35 @@ class RuntimeClient
     }
 
     /**
+     * POST /internal/v1/approvals/{id} - approve/reject a write tool call from the console
+     * (PRD §6.5), used by ApprovalsController::decideApproval(). `decidedBy` is sent
+     * explicitly (the console user's id) since the internal JWT itself carries no user
+     * identity - same reason createEvalRun() passes `role` explicitly. Documents 404
+     * (no such approval for this company) and 409 (already decided) as real,
+     * distinguishable outcomes, same as estimateEvalCost()/createEvalRun(), so this goes
+     * through requestWithStatus() and throws ApprovalRequestInvalidException for those two
+     * codes instead of flattening them into a 502.
+     *
+     * @return array<string, mixed>
+     */
+    public function decideApproval(string $approvalId, string $decision, string $decidedBy): array
+    {
+        [$statusCode, $decoded] = $this->requestWithStatus('POST', "approvals/{$approvalId}", [
+            'decision' => $decision,
+            'decided_by' => $decidedBy,
+        ]);
+
+        if ($statusCode === 200) {
+            return $decoded;
+        }
+        if ($statusCode === 404 || $statusCode === 409) {
+            throw new ApprovalRequestInvalidException($statusCode, (string) ($decoded['detail'] ?? 'invalid'));
+        }
+
+        throw new RuntimeException("RuntimeClient: POST approvals/{$approvalId} failed with status {$statusCode}");
+    }
+
+    /**
      * Same auth/header setup as request(), but never throws on a non-2xx - returns the
      * raw status code alongside the decoded body so the caller can decide what a given
      * status means (estimateEvalCost() is the only caller today; every other method still

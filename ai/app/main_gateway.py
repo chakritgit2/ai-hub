@@ -13,8 +13,11 @@ CORS validation against a deployment's own `allowed_origins` for session-token/b
 callers. `streamDeployment` (PRD Goal #6, SSE) is real only for an agent-backed
 deployment - a workflow-backed one still gets a 501 there (dynamiq's `GraphOrchestrator`
 streaming behavior was never researched, unlike the plain `Agent` streaming this reuses,
-and nobody has asked for it). `decideApproval` (Phase 2 per the contract's own
-`x-phase: 2`) remains a 501 stub - an explicit scope boundary, not a gap.
+and nobody has asked for it). `decideApproval` is real too - the app-side counterpart to
+console-api's own `decideApproval` (PRD §6.5), both forwarding to the same
+`app.services.approvals.decide_approval`. Nothing yet creates a `pending`
+`runtime.tool_approvals` row (that requires hooking the write-tool call path itself,
+deliberately deferred), so this is reachable today only against a row inserted by hand.
 
 A deployment targets exactly one of a published agent version or a published workflow
 version (PRD §6.3/§6.9 phase 4) - `runDeployment`/`getDeploymentInfo` branch on
@@ -47,6 +50,7 @@ from app.core.otel import setup_tracing
 from app.core.redis import get_redis
 from app.services.agent_spec import AgentSpecDoc
 from app.services.agent_versions import resolve_agent_version
+from app.services.approvals import ApprovalAlreadyDecidedError, ApprovalNotFoundError, decide_approval
 from app.services.deployments import DeploymentRow, resolve_deployment, resolve_deployment_id_by_slug
 from app.services.gateway_auth import get_jwks, mint_session_token, verify_session_token
 from app.services.quotas import QuotaExceededError
@@ -533,10 +537,55 @@ async def getDeploymentInfo(slug: str, identity: GatewayAuth, request: Request, 
     )
 
 
-@app.post("/v1/deployments/{slug}/approvals/{id}")
-async def decideApproval(slug: str, id: str, body: dict) -> Response:
-    """Phase 2."""
-    return _not_implemented("decideApproval")
+class DecideApprovalRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+
+
+class ApprovalResponse(BaseModel):
+    id: str
+    run_id: str
+    tool_id: str
+    request: dict
+    status: str
+    decided_by: str | None
+    decided_at: str | None
+    created_at: str
+
+
+@app.post("/v1/deployments/{slug}/approvals/{id}", response_model=ApprovalResponse)
+async def decideApproval(slug: str, id: str, body: DecideApprovalRequest, identity: GatewayAuth) -> Response:
+    """Approve/reject a write tool call from the calling app (PRD §6.5) - same
+    `decide_approval` service console-api's own `decideApproval` forwards to
+    (ai-internal.yaml), reached here with ordinary API-key/session-token gateway auth
+    instead of the internal JWT. `GatewayIdentity` carries no console user id, so
+    `decided_by` records the session token's end user when there is one, falling back to a
+    descriptor of the deployment/auth kind for a bare API-key call."""
+    try:
+        UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    decided_by = identity.external_user_id or f"gateway:{identity.auth_kind}:{identity.deployment_id}"
+
+    try:
+        approval = await decide_approval(identity.company_id, id, body.decision, decided_by)
+    except ApprovalNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+    except ApprovalAlreadyDecidedError as exc:
+        raise HTTPException(status_code=409, detail=f"already_decided: {exc.status}")
+
+    return JSONResponse(
+        content=ApprovalResponse(
+            id=approval.id,
+            run_id=approval.run_id,
+            tool_id=approval.tool_id,
+            request=approval.request,
+            status=approval.status,
+            decided_by=approval.decided_by,
+            decided_at=approval.decided_at.isoformat() if approval.decided_at else None,
+            created_at=approval.created_at.isoformat(),
+        ).model_dump()
+    )
 
 
 @app.get("/.well-known/jwks.json")

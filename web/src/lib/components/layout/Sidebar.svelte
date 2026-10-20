@@ -23,6 +23,7 @@
 		{ label: 'Evaluation', href: '/evaluation' },
 		{ label: 'Workflows', href: '/workflows' },
 		{ label: 'Runs & Logs', href: '/runs' },
+		{ label: 'Approvals', href: '/approvals' },
 		{ label: 'Deployments', href: '/deployments' },
 		{ label: 'API Keys', href: '/api-keys' },
 		{ label: 'Settings', href: '/settings' }

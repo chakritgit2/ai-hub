@@ -38,6 +38,22 @@ components:
     Placeholder:
       type: object
       additionalProperties: true
+    Approval:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        tool_id: { type: string }
+        request: { type: object, additionalProperties: true, description: The pending tool-call payload. }
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        decided_by: { type: string, nullable: true }
+        decided_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    DecideApprovalInput:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
     RunRequest:
       type: object
       required: [input]
@@ -241,15 +257,16 @@ paths:
       - { $ref: '#/components/parameters/IdParam' }
     post:
       operationId: decideApproval
-      x-phase: 2
       summary: Approve/reject a write tool call from the calling app (PRD §6.5).
       security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
       requestBody:
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Placeholder' }
+            schema: { $ref: '#/components/schemas/DecideApprovalInput' }
       responses:
-        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } }
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Approval' } } } }
+        "404": { description: no such approval for this deployment }
+        "409": { description: approval already decided }
 
   /.well-known/jwks.json:
     get:
