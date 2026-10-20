@@ -110,7 +110,15 @@
 	}
 
 	async function revoke(key: ApiKey) {
-		if (!confirm(`Revoke "${key.name}"? Any caller using it will get 404s immediately.`)) return;
+		// A key with a last_used_at is known to be in active use somewhere —
+		// revoking it before the consuming app's config is updated to a new
+		// key causes an immediate outage there (deployment_not_found at the
+		// gateway), not just a clean 401. Warn harder in that case so the
+		// overlap step doesn't get skipped during rotation.
+		const message = key.last_used_at
+			? `Revoke "${key.name}"? This key has been used as recently as ${new Date(key.last_used_at).toLocaleString()} — revoking it now will immediately break any app still using it. Make sure the consuming app's config has already been updated to a new key before continuing.`
+			: `Revoke "${key.name}"? Any caller using it will get 404s immediately.`;
+		if (!confirm(message)) return;
 		revokingId = key.id;
 		try {
 			await revokeApiKey(key.id);
