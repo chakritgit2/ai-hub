@@ -11,7 +11,7 @@ from app.main_runtime import app as runtime_app
 from app.main_runtime import require_runtime_auth
 from app.services.compiler import compile_spec
 from app.services.quotas import QuotaExceededError, _bangkok_today, record_actual_usage
-from app.services.runs import RunUsage
+from app.services.runs import RunUsage, log_run
 from app.services.workflow_runtime import execute_workflow_run, run_deployment_workflow
 
 from .markers import fake_workflow_runtime_claims, requires_openai_key, requires_postgres, requires_redis
@@ -270,6 +270,30 @@ async def test_run_deployment_workflow_returns_429_when_already_over_daily_limit
     with pytest.raises(QuotaExceededError) as exc_info:
         await run_deployment_workflow(company_id, deployment_id, "viewer", "hi")
     assert exc_info.value.reason == "daily_token_limit"
+
+
+@requires_postgres
+@requires_redis
+async def test_run_deployment_workflow_returns_429_when_monthly_budget_exceeded(
+    fake_execute_workflow_run, make_fake_workflow_deployment, make_company
+) -> None:
+    """app.services.company_budget's monthly check runs before the per-deployment daily
+    quota (none configured here at all) - a company-wide cap must reject a workflow
+    deployment run exactly like an agent one (test_gateway_run.py's gateway-level
+    counterpart exercises the agent path through the real HTTP route)."""
+    company_id, deployment_id = await make_fake_workflow_deployment()  # no daily limits
+    make_company(company_id, monthly_budget_usd=1.00)
+    await log_run(
+        run_id=str(uuid.uuid4()),
+        company_id=company_id,
+        trace_id=str(uuid.uuid4()),
+        status="success",
+        usage=RunUsage(cost_usd=1.50),
+    )
+
+    with pytest.raises(QuotaExceededError) as exc_info:
+        await run_deployment_workflow(company_id, deployment_id, "viewer", "hi")
+    assert exc_info.value.reason == "monthly_budget"
 
 
 @requires_postgres

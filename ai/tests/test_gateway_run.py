@@ -65,6 +65,32 @@ def failing_agent_with_usage(monkeypatch):
     monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
 
 
+class _SucceedingAgentWithUsage:
+    """Like `_FailingAgentWithUsage` but actually succeeds - used to record a real,
+    non-zero `logs.runs.cost_usd` so a following request can be checked against a
+    company's monthly budget (app.services.company_budget), which `_FakeAgent`'s
+    zero-usage success can't exercise."""
+
+    _USAGE = _FailingAgentWithUsage._USAGE
+
+    def __init__(self, **kwargs) -> None:
+        self.memory = kwargs.get("memory")
+
+    def run(self, input_data: dict, config=None, **_kwargs) -> SimpleNamespace:
+        if config is not None:
+            for callback in config.callbacks:
+                callback.on_node_execute_run({}, usage_data=self._USAGE)
+        return SimpleNamespace(output={"content": "fake gateway reply"}, status=RunnableStatus.SUCCESS)
+
+
+@pytest.fixture
+def succeeding_agent_with_usage(monkeypatch):
+    import dynamiq.nodes.agents
+
+    monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _SucceedingAgentWithUsage)
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
+
+
 @pytest.fixture
 def gateway_client() -> TestClient:
     return TestClient(gateway_app)
@@ -197,6 +223,37 @@ async def test_run_returns_429_when_daily_token_limit_exceeded(
     assert resp.status_code == 429
     assert resp.json()["error"] == "quota_exceeded"
     assert resp.json()["reason"] == "daily_token_limit"
+
+
+@requires_postgres
+@requires_redis
+async def test_run_returns_429_when_monthly_budget_exceeded(
+    succeeding_agent_with_usage,
+    gateway_async_client,
+    company_ids,
+    resolvable_agent_version,
+    make_deployment,
+    make_api_key,
+    make_company,
+) -> None:
+    """app.services.company_budget's monthly check runs before the per-deployment daily
+    quota (none configured on this deployment at all) - a company-wide spend cap must
+    reject the next call once the company's current Bangkok-month `logs.runs.cost_usd`
+    total reaches it, end-to-end through the real HTTP route."""
+    company_id = company_ids()
+    make_company(company_id, monthly_budget_usd=0.005)  # below the $0.01 one call costs
+    version_id = await resolvable_agent_version(company_id)
+    deployment_id, slug = make_deployment(company_id, version_id)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+    headers = {"Authorization": f"Bearer {full_key}"}
+
+    first = await gateway_async_client.post(f"/v1/deployments/{slug}/run", json={"input": "hi"}, headers=headers)
+    assert first.status_code == 200
+
+    second = await gateway_async_client.post(f"/v1/deployments/{slug}/run", json={"input": "hi"}, headers=headers)
+    assert second.status_code == 429
+    assert second.json()["error"] == "quota_exceeded"
+    assert second.json()["reason"] == "monthly_budget"
 
 
 @requires_postgres

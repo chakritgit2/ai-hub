@@ -187,6 +187,48 @@ def make_connection():
 
 
 @pytest.fixture
+def make_company():
+    """Inserts a `console.companies` row (console-api's own write role, same convention
+    as make_connection) with a given id/monthly_budget_usd and deletes it afterward.
+    Unlike every other make_* fixture here, no `SET LOCAL app.company_id` is needed -
+    `console.companies` carries no RLS company_isolation policy at all (it IS the tenant
+    row, not a company_id-scoped child table - see db/migrations/post/002_rls_policies.sql's
+    own "every table with company_id" comment). `company_ids()` alone never creates a real
+    row here, only hands out a bare uuid for RLS-scoped runtime.*/logs.* tables - tests
+    that need `app.services.company_budget.check_monthly_budget_not_exceeded` to see a
+    real `monthly_budget_usd` must use this fixture too, with the same id."""
+    settings = get_settings()
+    created: list[str] = []
+
+    def _connect() -> psycopg.Connection:
+        return psycopg.connect(
+            host=settings.MEMORY_DB_HOST,
+            port=settings.MEMORY_DB_PORT,
+            dbname=settings.MEMORY_DB_NAME,
+            user="console_app",
+            password="changeme_local_dev_only",
+        )
+
+    def _make(company_id: str, monthly_budget_usd: float | None = None) -> str:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO console.companies (id, code, name, monthly_budget_usd) "
+                "VALUES (%s, %s, %s, %s)",
+                (company_id, f"test-{company_id[:8]}", "Test Co", monthly_budget_usd),
+            )
+            conn.commit()
+        created.append(company_id)
+        return company_id
+
+    yield _make
+
+    for company_id in created:
+        with _connect() as conn:
+            conn.execute("DELETE FROM console.companies WHERE id = %s", (company_id,))
+            conn.commit()
+
+
+@pytest.fixture
 def make_tool():
     """Inserts a `console.tools` row as `console_app` (same write-role convention as
     make_connection) and deletes it afterward."""
