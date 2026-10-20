@@ -11,6 +11,7 @@
 	let error = $state<string | null>(null);
 	let showForm = $state(false);
 	let copied = $state(false);
+	let copyFailed = $state(false);
 	let revokingId = $state<string | null>(null);
 
 	let form = $state({
@@ -55,14 +56,43 @@
 	}
 
 	async function copyKey(key: string) {
-		try {
-			await navigator.clipboard.writeText(key);
-			copied = true;
-			setTimeout(() => (copied = false), 2000);
-		} catch {
-			// Clipboard API unavailable (non-secure context, permission denied) - the key
-			// is still visible in the code block for manual selection, nothing to recover.
+		let ok = false;
+		if (navigator.clipboard) {
+			// `navigator.clipboard` itself is undefined outside a secure context (HTTPS or
+			// localhost) in every major browser - this console is currently served over
+			// plain HTTP (no Ingress/TLS yet), so this branch never runs there today, only
+			// the execCommand fallback below does. Still tried first since it's the real
+			// API and this console will eventually sit behind TLS.
+			try {
+				await navigator.clipboard.writeText(key);
+				ok = true;
+			} catch {
+				// Permission denied - fall through to the execCommand fallback below.
+			}
 		}
+		if (!ok) {
+			// `execCommand('copy')` is deprecated but, unlike the Clipboard API above,
+			// doesn't require a secure context - the only way to offer a working copy
+			// button on this console's current plain-HTTP deployment.
+			const textarea = document.createElement('textarea');
+			textarea.value = key;
+			textarea.style.position = 'fixed';
+			textarea.style.opacity = '0';
+			document.body.appendChild(textarea);
+			textarea.select();
+			try {
+				ok = document.execCommand('copy');
+			} catch {
+				ok = false;
+			}
+			document.body.removeChild(textarea);
+		}
+		copyFailed = !ok;
+		copied = ok;
+		setTimeout(() => {
+			copied = false;
+			copyFailed = false;
+		}, 2000);
 	}
 
 	async function revoke(key: ApiKey) {
@@ -89,6 +119,10 @@
 	});
 
 	async function submitForm() {
+		if (form.deployment_ids.length === 0) {
+			formError = 'Select at least one deployment — a key scoped to none can never match anything on the gateway.';
+			return;
+		}
 		submitting = true;
 		formError = null;
 		try {
@@ -146,6 +180,11 @@
 				Done
 			</button>
 		</div>
+		{#if copyFailed}
+			<p class="mt-2 text-xs text-danger">
+				Couldn't copy automatically — select the key above and copy it manually (Ctrl/Cmd+C).
+			</p>
+		{/if}
 	</div>
 {/if}
 
@@ -172,6 +211,40 @@
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
 		</label>
+		<fieldset class="sm:col-span-2">
+			<legend class="text-sm font-medium text-neutral-700">Scoped deployments *</legend>
+			<p class="mt-1 text-xs text-neutral-500">
+				Required — a key scoped to none can authenticate but will match nothing on the gateway
+				(every call gets 404). Server-to-server only, browsers use 5-minute session tokens instead
+				(PRD §6.3).
+			</p>
+			{#if deployments.length === 0}
+				<p class="mt-2 text-sm text-neutral-500">No deployments yet — publish one first.</p>
+			{:else}
+				<div class="mt-2 flex flex-col gap-1.5">
+					{#each deployments as deployment (deployment.id)}
+						<label
+							class="flex items-center gap-2 text-sm"
+							class:text-neutral-700={deployment.enabled}
+							class:text-neutral-400={!deployment.enabled}
+						>
+							<input
+								type="checkbox"
+								value={deployment.id}
+								disabled={!deployment.enabled}
+								checked={form.deployment_ids.includes(deployment.id)}
+								onchange={(e) =>
+									toggleDeployment(deployment.id, (e.currentTarget as HTMLInputElement).checked)}
+							/>
+							{deploymentLabel(deployment)}
+							{#if !deployment.enabled}
+								<span class="text-xs">— disabled, can't be scoped</span>
+							{/if}
+						</label>
+					{/each}
+				</div>
+			{/if}
+		</fieldset>
 		<label class="block">
 			<span class="text-sm font-medium text-neutral-700">Allowed IPs (comma-separated)</span>
 			<input
@@ -203,32 +276,6 @@
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
 		</label>
-		<fieldset class="sm:col-span-2">
-			<legend class="text-sm font-medium text-neutral-700">Scoped deployments</legend>
-			<p class="mt-1 text-xs text-neutral-500">
-				A key with no deployment checked can authenticate but will match nothing on the gateway
-				(every call gets 404) — server-to-server only, browsers use 5-minute session tokens instead
-				(PRD §6.3).
-			</p>
-			{#if deployments.length === 0}
-				<p class="mt-2 text-sm text-neutral-500">No deployments yet — publish one first.</p>
-			{:else}
-				<div class="mt-2 flex flex-col gap-1.5">
-					{#each deployments as deployment (deployment.id)}
-						<label class="flex items-center gap-2 text-sm text-neutral-700">
-							<input
-								type="checkbox"
-								value={deployment.id}
-								checked={form.deployment_ids.includes(deployment.id)}
-								onchange={(e) =>
-									toggleDeployment(deployment.id, (e.currentTarget as HTMLInputElement).checked)}
-							/>
-							{deploymentLabel(deployment)}
-						</label>
-					{/each}
-				</div>
-			{/if}
-		</fieldset>
 		<div class="flex gap-2 sm:col-span-2">
 			<button
 				type="submit"
