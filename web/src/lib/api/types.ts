@@ -471,6 +471,7 @@ export interface ApiKey {
 	last_used_at?: string | null;
 	created_by: string;
 	revoked_at?: string | null;
+	deployment_ids?: string[];
 }
 
 export interface ApiKeyCreated extends ApiKey {
