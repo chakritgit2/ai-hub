@@ -13,6 +13,7 @@
 	let copied = $state(false);
 	let copyFailed = $state(false);
 	let revokingId = $state<string | null>(null);
+	let copiedPrefixId = $state<string | null>(null);
 
 	let form = $state({
 		name: '',
@@ -55,7 +56,7 @@
 		}
 	}
 
-	async function copyKey(key: string) {
+	async function copyToClipboard(text: string): Promise<boolean> {
 		let ok = false;
 		if (navigator.clipboard) {
 			// `navigator.clipboard` itself is undefined outside a secure context (HTTPS or
@@ -64,7 +65,7 @@
 			// the execCommand fallback below does. Still tried first since it's the real
 			// API and this console will eventually sit behind TLS.
 			try {
-				await navigator.clipboard.writeText(key);
+				await navigator.clipboard.writeText(text);
 				ok = true;
 			} catch {
 				// Permission denied - fall through to the execCommand fallback below.
@@ -75,7 +76,7 @@
 			// doesn't require a secure context - the only way to offer a working copy
 			// button on this console's current plain-HTTP deployment.
 			const textarea = document.createElement('textarea');
-			textarea.value = key;
+			textarea.value = text;
 			textarea.style.position = 'fixed';
 			textarea.style.opacity = '0';
 			document.body.appendChild(textarea);
@@ -87,11 +88,24 @@
 			}
 			document.body.removeChild(textarea);
 		}
+		return ok;
+	}
+
+	async function copyKey(key: string) {
+		const ok = await copyToClipboard(key);
 		copyFailed = !ok;
 		copied = ok;
 		setTimeout(() => {
 			copied = false;
 			copyFailed = false;
+		}, 2000);
+	}
+
+	async function copyPrefix(key: ApiKey) {
+		const ok = await copyToClipboard(key.prefix);
+		copiedPrefixId = ok ? key.id : null;
+		setTimeout(() => {
+			if (copiedPrefixId === key.id) copiedPrefixId = null;
 		}, 2000);
 	}
 
@@ -157,6 +171,12 @@
 	</button>
 {/snippet}
 
+<p class="mb-4 text-sm text-neutral-600">
+	API keys are long-lived credentials external apps use to call the gateway server-to-server
+	(not for browsers — those use short-lived session tokens instead). Each key is scoped to one
+	or more deployments and can carry its own IP allowlist, rate limit, and daily cost limit.
+</p>
+
 {#if justCreated}
 	{@const createdKey = justCreated.key}
 	<div class="mb-6 rounded-md border border-warning/40 bg-warning/10 p-4">
@@ -210,6 +230,9 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-500">
+				A label to recognize this key later — e.g. which integration or service uses it.
+			</p>
 		</label>
 		<fieldset class="sm:col-span-2">
 			<legend class="text-sm font-medium text-neutral-700">Scoped deployments *</legend>
@@ -254,6 +277,9 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-500">
+				Restrict this key to calls from these IPs only. Leave blank to allow any IP.
+			</p>
 		</label>
 		<label class="block">
 			<span class="text-sm font-medium text-neutral-700">Rate limit / min</span>
@@ -264,6 +290,9 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-500">
+				Max requests per minute this key may make. Leave blank for no limit.
+			</p>
 		</label>
 		<label class="block">
 			<span class="text-sm font-medium text-neutral-700">Daily cost limit (USD)</span>
@@ -275,6 +304,10 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-500">
+				Max USD this key may spend per day across its scoped deployments. Leave blank for no
+				limit.
+			</p>
 		</label>
 		<div class="flex gap-2 sm:col-span-2">
 			<button
@@ -319,13 +352,21 @@
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
 				<tr>
 					<th class="px-4 py-2">Name</th>
-					<th class="px-4 py-2">Prefix</th>
-					<th class="px-4 py-2">Scope</th>
-					<th class="px-4 py-2">Allowed IPs</th>
-					<th class="px-4 py-2">Rate limit</th>
-					<th class="px-4 py-2">Daily cost limit</th>
-					<th class="px-4 py-2">Last used</th>
-					<th class="px-4 py-2">Status</th>
+					<th class="px-4 py-2" title="Short, non-secret identifier for this key. The full secret is only ever shown once, at creation.">
+						Prefix
+					</th>
+					<th class="px-4 py-2" title="Deployments this key can call through the gateway.">Scope</th>
+					<th class="px-4 py-2" title="Caller IPs allowed to use this key. 'any' means no IP restriction.">
+						Allowed IPs
+					</th>
+					<th class="px-4 py-2" title="Max requests per minute this key may make.">Rate limit</th>
+					<th class="px-4 py-2" title="Max USD this key may spend per day across its scoped deployments.">
+						Daily cost limit
+					</th>
+					<th class="px-4 py-2" title="When this key was last used to call the gateway.">Last used</th>
+					<th class="px-4 py-2" title="Revoked keys are rejected immediately and can't be reactivated.">
+						Status
+					</th>
 					<th class="px-4 py-2"></th>
 				</tr>
 			</thead>
@@ -333,7 +374,19 @@
 				{#each apiKeys as key (key.id)}
 					<tr class={key.revoked_at ? 'opacity-50' : ''}>
 						<td class="px-4 py-2 font-medium text-neutral-900">{key.name}</td>
-						<td class="px-4 py-2 font-mono text-xs text-neutral-600">{key.prefix}••••</td>
+						<td class="px-4 py-2 font-mono text-xs text-neutral-600">
+							<span class="inline-flex items-center gap-1.5">
+								{key.prefix}••••
+								<button
+									type="button"
+									title="Copy prefix"
+									class="rounded border border-neutral-300 px-1.5 py-0.5 text-[11px] font-sans text-neutral-500 hover:bg-neutral-50"
+									onclick={() => copyPrefix(key)}
+								>
+									{copiedPrefixId === key.id ? 'Copied!' : 'Copy'}
+								</button>
+							</span>
+						</td>
 						<td class="px-4 py-2 text-neutral-600">{deploymentSlugs(key)}</td>
 						<td class="px-4 py-2 text-neutral-600">{(key.allowed_ips ?? []).join(', ') || 'any'}</td>
 						<td class="px-4 py-2 text-neutral-600">
