@@ -546,20 +546,6 @@ class KbController extends ControllerBase
     }
 
     /**
-     * `name` is only validated as non-empty (validateKnowledgeBaseFields) - a `"` in it
-     * would otherwise break out of the quoted filename segment of the Content-Disposition
-     * header. Escapes backslashes and double quotes per RFC 6266's quoted-string syntax,
-     * and strips CR/LF defensively (PHP's own header() already rejects embedded newlines,
-     * but this keeps the value well-formed regardless of how the response is sent).
-     */
-    private function escapeContentDispositionFilename(string $filename): string
-    {
-        $filename = str_replace(["\r", "\n"], '', $filename);
-
-        return str_replace(['\\', '"'], ['\\\\', '\\"'], $filename);
-    }
-
-    /**
      * @return array<string, mixed>|null
      */
     private function findKnowledgeBase(string $id): ?array

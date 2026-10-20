@@ -115,12 +115,10 @@ export function unarchiveAgent(id: string): Promise<Agent> {
 	return apiFetch<Agent>(`/agents/${id}/unarchive`, { method: 'POST' });
 }
 
-/** Phase 3. */
 export function exportAgent(id: string): Promise<string> {
 	return apiFetch<string>(`/agents/${id}/export`);
 }
 
-/** Phase 3. */
 export function importAgent(id: string, yaml: string): Promise<Agent> {
 	return apiFetch<Agent>(`/agents/${id}/import`, {
 		method: 'POST',

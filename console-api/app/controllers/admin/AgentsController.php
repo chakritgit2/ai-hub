@@ -6,19 +6,24 @@ namespace ConsoleApi\Controllers\Admin;
 
 use ConsoleApi\Controllers\ControllerBase;
 use ConsoleApi\Services\RuntimeClient;
+use Phalcon\Db\Adapter\Pdo\AbstractPdo;
 use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
+use Symfony\Component\Yaml\Exception\ParseException;
+use Symfony\Component\Yaml\Yaml;
 use Throwable;
 
 /**
  * /agents and /agents/{id}/versions* — agent specs and their published versions
  * (PRD §4.4-A, §8.1 `agents` + `agent_versions` tables).
- *
- * `export`/`importAgent` stay 501 (x-phase: 3, see contracts/openapi/console-api.yaml).
- * Everything else is real.
  */
 class AgentsController extends ControllerBase
 {
+    // An agent spec (identity/model/guardrails/tools/skills/knowledge refs/memory/
+    // publish_gate) is a few KB at most - well under SkillsController's 100 KB raw-text
+    // cap. This is deliberately generous headroom over that, not a precise PRD figure.
+    private const MAX_IMPORT_YAML_BYTES = 262144; // 256 KB
+
     public function listAgents(): Response
     {
         if (($error = $this->requireCompanyId()) !== null) {
@@ -328,14 +333,127 @@ class AgentsController extends ControllerBase
         return $this->jsonResponse($this->formatAgent($result['row']));
     }
 
+    /**
+     * YAML snapshot of this agent's latest version - `name`/`description` (console.agents)
+     * plus `spec`/`spec_version` (the latest console.agent_versions row, same "only the
+     * latest version" scope cloneAgent already uses). Deliberately excludes
+     * `compiled_definition` (resolved connection/tool details, not portable across
+     * companies anyway) and every version's history (importAgent only ever creates one new
+     * version, same as a normal createAgentVersion call).
+     */
     public function exportAgent(string $id): Response
     {
-        return $this->notImplemented();
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
+
+        $agent = $this->findAgent($id);
+        if ($agent === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $latestVersion = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                'SELECT spec, spec_version FROM console.agent_versions
+                 WHERE agent_id = :agent_id ORDER BY version_no DESC LIMIT 1',
+                Enum::FETCH_ASSOC,
+                ['agent_id' => $id]
+            )
+        );
+        if (empty($latestVersion)) {
+            return $this->jsonResponse(['error' => 'no_versions'], 400);
+        }
+
+        $document = [
+            'name' => $agent['name'],
+            'description' => $agent['description'],
+            'spec_version' => $latestVersion['spec_version'],
+            'spec' => json_decode((string) $latestVersion['spec'], true),
+        ];
+
+        $filename = $this->escapeContentDispositionFilename($agent['name'] . '.yaml');
+
+        $response = new Response();
+        $response->setStatusCode(200);
+        $response->setContentType('application/yaml');
+        $response->setHeader('Content-Disposition', 'attachment; filename="' . $filename . '"');
+        $response->setContent(Yaml::dump($document, 10, 2));
+
+        return $response;
     }
 
+    /**
+     * Imports a YAML document (as produced by exportAgent, or hand-written in the same
+     * shape) as a new draft version of the *existing* agent $id - mirrors
+     * createAgentVersion exactly, just reading `spec`/`spec_version` from a parsed YAML
+     * body instead of JSON. `name`/`description` in the document are accepted (for
+     * round-tripping exportAgent's own output) but deliberately not applied to the target
+     * agent - importing a spec into agent $id should never silently rename it.
+     */
     public function importAgent(string $id): Response
     {
-        return $this->notImplemented();
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireWriteRole()) !== null) {
+            return $error;
+        }
+
+        $agent = $this->findAgent($id);
+        if ($agent === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        if ($agent['archived_at'] !== null) {
+            return $this->jsonResponse(['error' => 'agent_archived'], 409);
+        }
+
+        $raw = (string) $this->request->getRawBody();
+        if (trim($raw) === '') {
+            return $this->jsonResponse(['error' => 'yaml_required'], 400);
+        }
+        if (strlen($raw) > self::MAX_IMPORT_YAML_BYTES) {
+            return $this->jsonResponse(['error' => 'yaml_too_large', 'max_bytes' => self::MAX_IMPORT_YAML_BYTES], 413);
+        }
+
+        try {
+            // PARSE_EXCEPTION_ON_ALIAS rejects YAML anchors/aliases (`&foo`/`*foo`) outright
+            // - without it, a ~500-byte "billion laughs" style payload (a chain of aliases
+            // each referencing the previous one twice) parses near-instantly via PHP's
+            // copy-on-write arrays, then exhausts all available memory the moment
+            // insertNextAgentVersion()'s json_encode() below forces it to materialize -
+            // an uncatchable fatal error, not something this try/catch can turn into a 400.
+            // exportAgent never emits aliases and no legitimate agent spec needs them, so
+            // this closes the hole for free.
+            $document = Yaml::parse($raw, Yaml::PARSE_EXCEPTION_ON_ALIAS);
+        } catch (ParseException $exception) {
+            return $this->jsonResponse(['error' => 'invalid_yaml', 'message' => $exception->getMessage()], 400);
+        }
+
+        if (!is_array($document) || !is_array($document['spec'] ?? null)) {
+            return $this->jsonResponse(['error' => 'spec_required'], 400);
+        }
+        $spec = $document['spec'];
+        $specVersion = is_string($document['spec_version'] ?? null) && $document['spec_version'] !== ''
+            ? $document['spec_version']
+            : '1';
+
+        try {
+            $this->runInCompanyTransaction(function ($db) use ($id, $spec, $specVersion) {
+                $this->insertNextAgentVersion($db, $this->getCompanyId(), $id, $spec, $specVersion);
+            });
+        } catch (Throwable $exception) {
+            // Same race as createAgentVersion - two concurrent imports/creates for the same
+            // agent can compute the same next_version_no.
+            if ($this->isUniqueViolation($exception)) {
+                return $this->jsonResponse(['error' => 'version_conflict_retry'], 409);
+            }
+            throw $exception;
+        }
+
+        return $this->jsonResponse($this->formatAgent($agent));
     }
 
     public function listAgentVersions(string $id): Response
@@ -388,31 +506,9 @@ class AgentsController extends ControllerBase
         $specVersion = is_string($body['spec_version'] ?? null) && $body['spec_version'] !== '' ? $body['spec_version'] : '1';
 
         try {
-            $row = $this->runInCompanyTransaction(function ($db) use ($id, $spec, $specVersion) {
-                $companyId = $this->getCompanyId();
-                $next = $db->fetchOne(
-                    'SELECT COALESCE(MAX(version_no), 0) + 1 AS next_version_no
-                     FROM console.agent_versions WHERE agent_id = :agent_id',
-                    Enum::FETCH_ASSOC,
-                    ['agent_id' => $id]
-                );
-
-                return $db->fetchOne(
-                    'INSERT INTO console.agent_versions (company_id, agent_id, version_no, spec, spec_version)
-                     VALUES (:company_id, :agent_id, :version_no, :spec::jsonb, :spec_version)
-                     RETURNING id, company_id, agent_id, version_no, spec, spec_version, compiled_definition,
-                               compiler_version, dynamiq_version, is_published, published_by, published_at,
-                               created_at, updated_at',
-                    Enum::FETCH_ASSOC,
-                    [
-                        'company_id' => $companyId,
-                        'agent_id' => $id,
-                        'version_no' => $next['next_version_no'],
-                        'spec' => json_encode($spec),
-                        'spec_version' => $specVersion,
-                    ]
-                );
-            });
+            $row = $this->runInCompanyTransaction(
+                fn ($db) => $this->insertNextAgentVersion($db, $this->getCompanyId(), $id, $spec, $specVersion)
+            );
         } catch (Throwable $exception) {
             // console.agent_versions has UNIQUE (agent_id, version_no) — two concurrent
             // creates for the same agent can compute the same next_version_no and race.
@@ -653,6 +749,41 @@ class AgentsController extends ControllerBase
     private function isUniqueViolation(Throwable $exception): bool
     {
         return $exception instanceof \PDOException && ($exception->errorInfo[0] ?? null) === '23505';
+    }
+
+    /**
+     * Inserts the next version_no row for $agentId within an already-open company
+     * transaction - shared by createAgentVersion and importAgent (YAML import is just
+     * "create a new version", with the spec coming from a parsed YAML body instead of a
+     * JSON one).
+     *
+     * @param array<string, mixed> $spec
+     * @return array<string, mixed>
+     */
+    private function insertNextAgentVersion(AbstractPdo $db, string $companyId, string $agentId, array $spec, string $specVersion): array
+    {
+        $next = $db->fetchOne(
+            'SELECT COALESCE(MAX(version_no), 0) + 1 AS next_version_no
+             FROM console.agent_versions WHERE agent_id = :agent_id',
+            Enum::FETCH_ASSOC,
+            ['agent_id' => $agentId]
+        );
+
+        return $db->fetchOne(
+            'INSERT INTO console.agent_versions (company_id, agent_id, version_no, spec, spec_version)
+             VALUES (:company_id, :agent_id, :version_no, :spec::jsonb, :spec_version)
+             RETURNING id, company_id, agent_id, version_no, spec, spec_version, compiled_definition,
+                       compiler_version, dynamiq_version, is_published, published_by, published_at,
+                       created_at, updated_at',
+            Enum::FETCH_ASSOC,
+            [
+                'company_id' => $companyId,
+                'agent_id' => $agentId,
+                'version_no' => $next['next_version_no'],
+                'spec' => json_encode($spec),
+                'spec_version' => $specVersion,
+            ]
+        );
     }
 
     /**

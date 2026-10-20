@@ -174,6 +174,23 @@ abstract class ControllerBase extends Controller
     }
 
     /**
+     * `name`-derived download filenames are only validated as non-empty by their
+     * respective controllers - a `"` in one would otherwise break out of the quoted
+     * filename segment of the Content-Disposition header. Escapes backslashes and double
+     * quotes per RFC 6266's quoted-string syntax, and strips CR/LF defensively (PHP's own
+     * header() already rejects embedded newlines, but this keeps the value well-formed
+     * regardless of how the response is sent). Shared by every controller that returns a
+     * non-JSON file download (KbController's `.zip` export, AgentsController's `.yaml`
+     * export).
+     */
+    protected function escapeContentDispositionFilename(string $filename): string
+    {
+        $filename = str_replace(["\r", "\n"], '', $filename);
+
+        return str_replace(['\\', '"'], ['\\\\', '\\"'], $filename);
+    }
+
+    /**
      * Strict UUID format (8-4-4-4-12 hex groups) — not just "36 characters of hex digits
      * and dashes in any position", which Postgres's `uuid` column type itself rejects
      * with an uncaught SQLSTATE 22P02 (never caught by isUniqueViolation()'s 23505 check),

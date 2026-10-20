@@ -701,16 +701,17 @@ paths:
       - { $ref: '#/components/parameters/IdParam' }
     get:
       operationId: exportAgent
-      x-phase: 3
+      summary: YAML snapshot (name/description + latest version's spec/spec_version) of this agent, as an attachment download.
       responses:
         "200": { description: OK, content: { application/yaml: { schema: { type: string } } } }
+        "400": { description: Agent has no versions yet (nothing to export). }
   /agents/{id}/import:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }
       - { $ref: '#/components/parameters/IdParam' }
     post:
       operationId: importAgent
-      x-phase: 3
+      summary: Imports a YAML document (as produced by exportAgent) as a new draft version of this agent. name/description in the document are ignored - only spec/spec_version are applied.
       requestBody:
         content:
           application/yaml:
