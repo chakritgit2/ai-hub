@@ -29,6 +29,7 @@ from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
 from app.services.agent_spec import GuardrailsSpec, MemorySpec
 from app.services.agent_versions import resolve_agent_version
+from app.services.company_budget import check_monthly_budget_not_exceeded
 from app.services.compiler import BUILTIN_TOOL_TYPES, RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.conversations import get_or_create_conversation
@@ -575,8 +576,12 @@ async def run_deployment_agent(
     """Resolve `deployment_id`'s agent version, compile it live with the deployment's
     own `guardrail_overrides` layered on top (PRD §6.4), reserve quota before running and
     reconcile to actual usage after (PRD §6.3) - the gateway's counterpart to
-    `run_playground_agent`. Raises `QuotaExceededError` when rate-limited/over quota, same
-    "let it bubble to the caller" convention as resolution/compile/secret failures.
+    `run_playground_agent`. Also checks the company's monthly spend budget
+    (`app.services.company_budget`, phase 3) before the per-deployment daily quota -
+    cheaper to reject on a company-wide cap first than to size a per-deployment
+    reservation for a request that's going to be rejected anyway. Raises
+    `QuotaExceededError` when rate-limited/over either quota, same "let it bubble to the
+    caller" convention as resolution/compile/secret failures.
 
     `stream_handler`/`stream_mode` (PRD Goal #6, gateway streaming) are passed straight
     through to `execute_agent_run` - see its docstring. Quota reserve/reconcile is
@@ -597,6 +602,10 @@ async def run_deployment_agent(
     rate_limit = await check_rate_limit(deployment_id, deployment.rate_limit_per_min)
     if not rate_limit.allowed:
         raise QuotaExceededError("rate_limit", reset_at=None)
+
+    budget_check = await check_monthly_budget_not_exceeded(company_id)
+    if not budget_check.allowed:
+        raise QuotaExceededError(budget_check.reason or "monthly_budget", reset_at=budget_check.reset_at)
 
     model_name = compiled_definition["agent"]["llm"]["model"]
     max_tokens = compiled_definition["agent"]["llm"].get("max_tokens")

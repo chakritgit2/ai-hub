@@ -32,6 +32,7 @@ from dynamiq.runnables.base import RunnableConfig, RunnableStatus
 
 from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
+from app.services.company_budget import check_monthly_budget_not_exceeded
 from app.services.compiler import BUILTIN_TOOL_TYPES, RETRIEVAL_TOOL_TYPE, build_agent
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.deployments import resolve_deployment
@@ -264,8 +265,12 @@ async def run_deployment_workflow(
     `execute_workflow_run` doesn't build a `guardrails` argument at all yet (no guardrails
     concept exists for workflows this slice).
 
+    Also checks the company's monthly spend budget (`app.services.company_budget`, phase
+    3) before the per-deployment daily quota, same ordering/reasoning as
+    `run_deployment_agent`.
+
     Raises `ValueError` for a missing/disabled/non-workflow deployment and
-    `QuotaExceededError` when rate-limited/over quota, same conventions as
+    `QuotaExceededError` when rate-limited/over either quota, same conventions as
     `run_deployment_agent`.
     """
     deployment = await resolve_deployment(company_id, deployment_id)
@@ -279,6 +284,10 @@ async def run_deployment_workflow(
     rate_limit = await check_rate_limit(deployment_id, deployment.rate_limit_per_min)
     if not rate_limit.allowed:
         raise QuotaExceededError("rate_limit", reset_at=None)
+
+    budget_check = await check_monthly_budget_not_exceeded(company_id)
+    if not budget_check.allowed:
+        raise QuotaExceededError(budget_check.reason or "monthly_budget", reset_at=budget_check.reset_at)
 
     quota_check = await check_quota_not_exceeded(
         deployment_id, deployment.daily_token_limit, deployment.daily_cost_limit_usd
