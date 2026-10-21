@@ -202,6 +202,14 @@ class DeploymentsController extends ControllerBase
             if ($this->findPublishedAgentVersion($body['agent_version_id']) === null) {
                 return $this->jsonResponse(['error' => 'agent_version_not_published'], 400);
             }
+            // A deployment may only move between versions of the SAME agent (e.g.
+            // publishing v2) - without this, a request could silently repoint it at a
+            // completely different agent, since findPublishedAgentVersion only checks
+            // "exists and published", not "belongs to the agent this deployment already
+            // targets".
+            if ($this->agentIdForVersion($existing['agent_version_id']) !== $this->agentIdForVersion($body['agent_version_id'])) {
+                return $this->jsonResponse(['error' => 'agent_mismatch'], 400);
+            }
             $columns['agent_version_id'] = $body['agent_version_id'];
         }
         if (array_key_exists('workflow_version_id', $body)) {
@@ -213,6 +221,10 @@ class DeploymentsController extends ControllerBase
             }
             if ($this->findPublishedWorkflowVersion($body['workflow_version_id']) === null) {
                 return $this->jsonResponse(['error' => 'workflow_version_not_published'], 400);
+            }
+            // Same "same parent only" reasoning as agent_version_id above.
+            if ($this->workflowIdForVersion($existing['workflow_version_id']) !== $this->workflowIdForVersion($body['workflow_version_id'])) {
+                return $this->jsonResponse(['error' => 'workflow_mismatch'], 400);
             }
             $columns['workflow_version_id'] = $body['workflow_version_id'];
         }
@@ -570,6 +582,50 @@ class DeploymentsController extends ControllerBase
         );
 
         return empty($row) ? null : $row;
+    }
+
+    /**
+     * The agent a version belongs to - used by updateDeployment to reject switching
+     * agent_version_id to a version of a *different* agent than the one this deployment
+     * already targets. No is_published filter (unlike findPublishedAgentVersion): the
+     * deployment's current version must resolve regardless of whether it's still the
+     * published one, since publish state can change independently of this lookup.
+     */
+    private function agentIdForVersion(?string $agentVersionId): ?string
+    {
+        if ($agentVersionId === null) {
+            return null;
+        }
+
+        $row = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                'SELECT agent_id FROM console.agent_versions WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $agentVersionId]
+            )
+        );
+
+        return empty($row) ? null : $row['agent_id'];
+    }
+
+    /**
+     * Same reasoning as agentIdForVersion, for a workflow-targeting deployment.
+     */
+    private function workflowIdForVersion(?string $workflowVersionId): ?string
+    {
+        if ($workflowVersionId === null) {
+            return null;
+        }
+
+        $row = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                'SELECT workflow_id FROM console.workflow_versions WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $workflowVersionId]
+            )
+        );
+
+        return empty($row) ? null : $row['workflow_id'];
     }
 
     /**
