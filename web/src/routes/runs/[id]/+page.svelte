@@ -1,16 +1,25 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
-	import { getRun } from '$lib/api/console';
-	import type { Run } from '$lib/api/types';
+	import { getRun, listRunSteps } from '$lib/api/console';
+	import type { Run, RunStep } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 
 	type TabId = 'trace' | 'conversation' | 'guardrail';
 
 	let run = $state<Run | null>(null);
+	let steps = $state<RunStep[]>([]);
+	let stepsError = $state<string | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let activeTab = $state<TabId>('trace');
+
+	const STEP_TYPE_LABELS: Record<RunStep['step_type'], string> = {
+		guardrail_input: 'Guardrail (input)',
+		llm: 'LLM call',
+		tool_call: 'Tool call',
+		guardrail_output: 'Guardrail (output)'
+	};
 
 	async function load(id: string) {
 		loading = true;
@@ -21,6 +30,12 @@
 			error = e instanceof Error ? e.message : 'Failed to load this run.';
 		} finally {
 			loading = false;
+		}
+
+		try {
+			steps = await listRunSteps(id);
+		} catch (e) {
+			stepsError = e instanceof Error ? e.message : 'Failed to load the trace.';
 		}
 	}
 
@@ -84,10 +99,40 @@
 
 	<div class="mt-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
 		{#if activeTab === 'trace'}
-			<p class="text-sm text-neutral-500">
-				Step-by-step trace (guardrail → thought → tool_call → tool_result → retrieval → llm →
-				output guardrail → final) — wire up to <code>run_steps</code> once available.
-			</p>
+			{#if stepsError}
+				<p class="text-sm text-danger">{stepsError}</p>
+			{:else if steps.length === 0}
+				<p class="text-sm text-neutral-500">No steps recorded for this run.</p>
+			{:else}
+				<ol class="divide-y divide-neutral-200">
+					{#each steps as step (step.id)}
+						<li class="flex flex-wrap items-center gap-3 py-2 text-sm">
+							<span
+								class="rounded-full px-2 py-0.5 text-xs font-medium {step.status === 'error' ||
+								step.status === 'block'
+									? 'bg-danger/10 text-danger'
+									: 'bg-primary/10 text-primary-700'}"
+							>
+								{STEP_TYPE_LABELS[step.step_type]}
+							</span>
+							<span class="font-medium text-neutral-800">{step.name ?? '—'}</span>
+							<span class="text-neutral-400">{step.status}</span>
+							{#if step.latency_ms !== null}
+								<span class="text-neutral-500">{step.latency_ms} ms</span>
+							{/if}
+							{#if step.tokens_in !== null || step.tokens_out !== null}
+								<span class="text-neutral-500">{step.tokens_in ?? 0}/{step.tokens_out ?? 0} tok</span>
+							{/if}
+							{#if step.cost_usd !== null}
+								<span class="text-neutral-500">${step.cost_usd.toFixed(4)}</span>
+							{/if}
+							{#if step.error}
+								<span class="w-full text-xs text-danger">{step.error}</span>
+							{/if}
+						</li>
+					{/each}
+				</ol>
+			{/if}
 		{:else if activeTab === 'conversation'}
 			<p class="text-sm text-neutral-500">
 				Conversation view — calls <code>getRunConversation({run.id})</code> (PRD §6.2).

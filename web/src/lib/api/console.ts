@@ -34,6 +34,7 @@ import type {
 	Placeholder,
 	Run,
 	RuntimeTokenResponse,
+	RunStep,
 	Skill,
 	Tool,
 	Workflow,
@@ -227,6 +228,10 @@ export function getRunConversation(id: string): Promise<Placeholder> {
 
 export function listRunGuardrailEvents(id: string): Promise<Placeholder[]> {
 	return apiFetch<Placeholder[]>(`/runs/${id}/guardrail-events`);
+}
+
+export function listRunSteps(id: string): Promise<RunStep[]> {
+	return apiFetch<RunStep[]>(`/runs/${id}/steps`);
 }
 
 // ---- /dashboard ---------------------------------------------------------
@@ -522,6 +527,7 @@ export type {
 	Me,
 	Run,
 	RuntimeTokenResponse,
+	RunStep,
 	Skill,
 	Tool,
 	Workflow,

@@ -16,11 +16,12 @@ once per dataset item, same reasoning `resolve_and_compile` below already docume
 itself.
 """
 import asyncio
+import json
 import time
 from typing import Any
 from uuid import uuid4
 
-from dynamiq.callbacks.base import BaseCallbackHandler
+from dynamiq.callbacks.base import BaseCallbackHandler, get_run_id
 from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
 from dynamiq.runnables.base import RunnableConfig, RunnableStatus
 from dynamiq.types.streaming import StreamingConfig, StreamingEventMessage, StreamingMode
@@ -38,6 +39,7 @@ from app.services.egress_allowlist import list_egress_allowlist
 from app.services.guardrails import log_guardrail_events, run_checks
 from app.services.identity import DelegatedIdentityContext
 from app.services.quotas import QuotaExceededError, check_rate_limit, reconcile_quota, reserve_quota
+from app.services.run_steps import RunStep, guardrail_run_steps, log_run_steps
 from app.services.runs import RunUsage, log_run
 from app.services.tool_secrets import decrypt_tool_secret
 
@@ -65,6 +67,92 @@ class _UsageCollector(BaseCallbackHandler):
             tokens_in=sum(u.get("prompt_tokens") or 0 for u in self.usage) or None,
             tokens_out=sum(u.get("completion_tokens") or 0 for u in self.usage) or None,
             cost_usd=sum(u.get("total_tokens_cost_usd") or 0 for u in self.usage) or None,
+        )
+
+
+def _step_text(value: Any) -> str | None:
+    """Best-effort stringification of a node's input/output dict for `logs.run_steps`
+    (always a dict/BaseException from dynamiq, never already a plain string)."""
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, default=str)
+    except TypeError:
+        return str(value)
+
+
+class _StepCollector(BaseCallbackHandler):
+    """Collects one `RunStep` per LLM/tool node execution, in call order, for
+    `logs.run_steps` (PRD §6.8/§6.9 Trace tab). `on_node_start`/`on_node_end`/
+    `on_node_error` are the only hooks dynamiq fires identically for every node type -
+    LLM or Tool - verified against the installed dynamiq==0.65.0 source
+    (dynamiq/nodes/node.py's run_sync/_run_async_native call these for every `Node`
+    subclass, including tool nodes run via `Agent._run_tool`). `on_node_execute_run` is
+    read opportunistically to enrich LLM steps with `usage_data` the same way
+    `_UsageCollector` does, since only LLM nodes attach it.
+
+    The top-level Agent node itself (`serialized["group"] == "agents"`) is skipped - its
+    input/output/timing already duplicate `logs.runs`. Since `agent.run()` executes
+    synchronously in a single thread (the ReAct loop calls one node at a time), node
+    `on_node_end`/`on_node_error` calls arrive in true execution order, so `self.steps`
+    needs no re-sorting.
+    """
+
+    _STEP_GROUPS = {"llms": "llm", "tools": "tool_call"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.steps: list[RunStep] = []
+        self._pending: dict[Any, dict[str, Any]] = {}
+
+    def on_node_start(self, serialized: dict[str, Any], input_data: dict[str, Any], **kwargs: Any) -> None:
+        step_type = self._STEP_GROUPS.get(serialized.get("group"))
+        if step_type is None:
+            return
+        self._pending[get_run_id(kwargs)] = {
+            "step_type": step_type,
+            "name": serialized.get("name") or serialized.get("type"),
+            "input": _step_text(input_data),
+            "started": time.monotonic(),
+            "usage": None,
+        }
+
+    def on_node_execute_run(self, serialized: dict[str, Any], **kwargs: Any) -> None:
+        if serialized.get("group") != "llms":
+            return
+        pending = self._pending.get(get_run_id(kwargs))
+        usage_data = kwargs.get("usage_data")
+        if pending is not None and usage_data:
+            pending["usage"] = usage_data
+
+    def on_node_end(self, serialized: dict[str, Any], output_data: dict[str, Any], **kwargs: Any) -> None:
+        if serialized.get("group") not in self._STEP_GROUPS:
+            return
+        self._finish(get_run_id(kwargs), output=_step_text(output_data), error=None, status="success")
+
+    def on_node_error(self, serialized: dict[str, Any], error: BaseException, **kwargs: Any) -> None:
+        if serialized.get("group") not in self._STEP_GROUPS:
+            return
+        self._finish(get_run_id(kwargs), output=None, error=str(error), status="error")
+
+    def _finish(self, run_id: Any, *, output: str | None, error: str | None, status: str) -> None:
+        pending = self._pending.pop(run_id, None)
+        if pending is None:
+            return
+        usage = pending["usage"] or {}
+        self.steps.append(
+            RunStep(
+                step_type=pending["step_type"],
+                name=pending["name"],
+                status=status,
+                input_text=pending["input"],
+                output_text=output,
+                tokens_in=usage.get("prompt_tokens"),
+                tokens_out=usage.get("completion_tokens"),
+                cost_usd=usage.get("total_tokens_cost_usd"),
+                latency_ms=int((time.monotonic() - pending["started"]) * 1000),
+                error=error,
+            )
         )
 
 
@@ -288,6 +376,9 @@ async def _execute_agent_run_body(
             latency_ms=latency_ms,
         )
         await log_guardrail_events(company_id, run_id=run_id, events=input_outcome.events)
+        await log_run_steps(
+            company_id, run_id=run_id, steps=guardrail_run_steps(input_outcome.events, "guardrail_input")
+        )
         return {
             "output": input_outcome.fallback_message,
             "trace_id": trace_id,
@@ -389,7 +480,8 @@ async def _execute_agent_run_body(
     )
 
     usage_collector = _UsageCollector()
-    callbacks: list[BaseCallbackHandler] = [usage_collector]
+    step_collector = _StepCollector()
+    callbacks: list[BaseCallbackHandler] = [usage_collector, step_collector]
     # Live streaming is only safe when there's no output guardrail that could later
     # redact/block this text - see execute_agent_run's docstring. `agent.streaming` is a
     # plain mutable field on the already-built Node (dynamiq/nodes/node.py), so setting
@@ -448,6 +540,11 @@ async def _execute_agent_run_body(
             error=str(exc),
         )
         await log_guardrail_events(company_id, run_id=run_id, events=input_outcome.events)
+        await log_run_steps(
+            company_id,
+            run_id=run_id,
+            steps=[*guardrail_run_steps(input_outcome.events, "guardrail_input"), *step_collector.steps],
+        )
         # Surfaced to run_deployment_agent's quota reconciliation below - a run that burned
         # one or more real LLM calls before failing (e.g. a late tool-call error) must still
         # count that spend against the deployment's daily quota, not be refunded in full as
@@ -492,6 +589,15 @@ async def _execute_agent_run_body(
     )
     await log_guardrail_events(
         company_id, run_id=run_id, events=[*input_outcome.events, *output_outcome.events]
+    )
+    await log_run_steps(
+        company_id,
+        run_id=run_id,
+        steps=[
+            *guardrail_run_steps(input_outcome.events, "guardrail_input"),
+            *step_collector.steps,
+            *guardrail_run_steps(output_outcome.events, "guardrail_output"),
+        ],
     )
 
     return {

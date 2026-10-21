@@ -512,6 +512,24 @@ components:
         action: { type: string, enum: [block, mask, flag] }
         detail: { type: object, additionalProperties: true }
         created_at: { type: string, format: date-time }
+    RunStep:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        step_index: { type: integer }
+        step_type: { type: string, enum: [guardrail_input, llm, tool_call, guardrail_output] }
+        name: { type: string, nullable: true }
+        status: { type: string, enum: [success, error, block, mask, flag] }
+        input: { type: string, nullable: true }
+        output: { type: string, nullable: true }
+        tokens_in: { type: integer, nullable: true }
+        tokens_out: { type: integer, nullable: true }
+        cost_usd: { type: number, nullable: true }
+        latency_ms: { type: integer, nullable: true }
+        error: { type: string, nullable: true }
+        detail: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
     EgressAllowlistEntry:
       type: object
       properties:
@@ -985,6 +1003,16 @@ paths:
       operationId: listRunGuardrailEvents
       responses:
         "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/GuardrailEvent' } } } } }
+  /runs/{id}/steps:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: listRunSteps
+      summary: 'Step-by-step trace (PRD §6.8/§6.9 Trace tab) - reads logs.run_steps directly, ordered by step_index.'
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RunStep' } } } } }
+        "404": { description: not found }
 
   /dashboard:
     get:

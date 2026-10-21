@@ -9,9 +9,10 @@ use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
 
 /**
- * /runs — read-only run history (PRD §6.8/§6.9, §8.1 `logs.runs`/`logs.guardrail_events`,
- * `runtime.conversations` — all written by ai-runtime, read here directly since their RLS
- * policies have no `TO` clause and `console_app` now has a matching SELECT grant, PRD §8.1).
+ * /runs — read-only run history (PRD §6.8/§6.9, §8.1 `logs.runs`/`logs.guardrail_events`/
+ * `logs.run_steps`, `runtime.conversations` — all written by ai-runtime, read here directly
+ * since their RLS policies have no `TO` clause and `console_app` now has a matching SELECT
+ * grant, PRD §8.1).
  */
 class RunsController extends ControllerBase
 {
@@ -147,6 +148,31 @@ class RunsController extends ControllerBase
         return $this->jsonResponse(array_map([$this, 'formatGuardrailEvent'], $rows));
     }
 
+    public function listRunSteps(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
+        if ($this->findRun($id) === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $rows = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchAll(
+                'SELECT id, run_id, step_index, step_type, name, status, input, output,
+                        tokens_in, tokens_out, cost_usd, latency_ms, error, detail, created_at
+                 FROM logs.run_steps WHERE run_id = :run_id ORDER BY step_index',
+                Enum::FETCH_ASSOC,
+                ['run_id' => $id]
+            )
+        );
+
+        return $this->jsonResponse(array_map([$this, 'formatRunStep'], $rows));
+    }
+
     /**
      * @return array<string, mixed>|null
      */
@@ -204,6 +230,31 @@ class RunsController extends ControllerBase
             'stage' => $row['stage'],
             'check' => $row['check'],
             'action' => $row['action'],
+            'detail' => json_decode((string) $row['detail'], true),
+            'created_at' => $row['created_at'],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function formatRunStep(array $row): array
+    {
+        return [
+            'id' => $row['id'],
+            'run_id' => $row['run_id'],
+            'step_index' => (int) $row['step_index'],
+            'step_type' => $row['step_type'],
+            'name' => $row['name'],
+            'status' => $row['status'],
+            'input' => $row['input'],
+            'output' => $row['output'],
+            'tokens_in' => $row['tokens_in'] !== null ? (int) $row['tokens_in'] : null,
+            'tokens_out' => $row['tokens_out'] !== null ? (int) $row['tokens_out'] : null,
+            'cost_usd' => $row['cost_usd'] !== null ? (float) $row['cost_usd'] : null,
+            'latency_ms' => $row['latency_ms'] !== null ? (int) $row['latency_ms'] : null,
+            'error' => $row['error'],
             'detail' => json_decode((string) $row['detail'], true),
             'created_at' => $row['created_at'],
         ];

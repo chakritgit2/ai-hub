@@ -515,6 +515,27 @@ export interface Run {
 	created_at: string;
 }
 
+export type RunStepType = 'guardrail_input' | 'llm' | 'tool_call' | 'guardrail_output';
+export type RunStepStatus = 'success' | 'error' | 'block' | 'mask' | 'flag';
+
+export interface RunStep {
+	id: string;
+	run_id: string;
+	step_index: number;
+	step_type: RunStepType;
+	name: string | null;
+	status: RunStepStatus;
+	input: string | null;
+	output: string | null;
+	tokens_in: number | null;
+	tokens_out: number | null;
+	cost_usd: number | null;
+	latency_ms: number | null;
+	error: string | null;
+	detail: Record<string, unknown>;
+	created_at: string;
+}
+
 export interface DashboardSummary {
 	runs_today: number;
 	tokens_this_month: { in: number; out: number };

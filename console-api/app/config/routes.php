@@ -90,6 +90,7 @@ return function (Router $router): void {
     $admin('GET', '/runs/{id:[^/]+}', 'Runs', 'getRun');
     $admin('GET', '/runs/{id:[^/]+}/conversation', 'Runs', 'getRunConversation');
     $admin('GET', '/runs/{id:[^/]+}/guardrail-events', 'Runs', 'listRunGuardrailEvents');
+    $admin('GET', '/runs/{id:[^/]+}/steps', 'Runs', 'listRunSteps');
 
     // --- /dashboard ---------------------------------------------------------
     $admin('GET', '/dashboard', 'Dashboard', 'getDashboardSummary');

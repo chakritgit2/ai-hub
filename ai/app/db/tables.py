@@ -103,6 +103,28 @@ guardrail_events_table = sa.Table(
     schema="logs",
 )
 
+run_steps_table = sa.Table(
+    "run_steps",
+    _metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("company_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("run_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("step_index", sa.Integer(), nullable=False),
+    sa.Column("step_type", sa.String(length=32), nullable=False),
+    sa.Column("name", sa.String(length=255), nullable=True),
+    sa.Column("status", sa.String(length=16), nullable=False),
+    sa.Column("input", sa.Text(), nullable=True),
+    sa.Column("output", sa.Text(), nullable=True),
+    sa.Column("tokens_in", sa.Integer(), nullable=True),
+    sa.Column("tokens_out", sa.Integer(), nullable=True),
+    sa.Column("cost_usd", sa.Numeric(), nullable=True),
+    sa.Column("latency_ms", sa.Integer(), nullable=True),
+    sa.Column("error", sa.Text(), nullable=True),
+    sa.Column("detail", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    schema="logs",
+)
+
 kb_documents_table = sa.Table(
     "kb_documents",
     _metadata,
