@@ -18,6 +18,10 @@ use Throwable;
  * ai-runtime's `PUT /internal/v1/connections/{id}/secret`, which envelope-encrypts them
  * with the company's own DEK (PRD §7.7). createConnection/updateConnection only ever
  * touch metadata — a `secret` field in the request body is ignored.
+ *
+ * Every mutator is admin-only (PRD §9.1's role table scopes `/connections` to `admin`, not
+ * `developer`) — these hold or gate access to the provider credentials every agent in the
+ * company runs against, a step more sensitive than most other resources here.
  */
 class ConnectionsController extends ControllerBase
 {
@@ -47,7 +51,7 @@ class ConnectionsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
-        if (($error = $this->requireWriteRole()) !== null) {
+        if (($error = $this->requireAdminRole()) !== null) {
             return $error;
         }
 
@@ -118,7 +122,7 @@ class ConnectionsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
-        if (($error = $this->requireWriteRole()) !== null) {
+        if (($error = $this->requireAdminRole()) !== null) {
             return $error;
         }
         if (!$this->isUuid($id)) {
@@ -208,7 +212,7 @@ class ConnectionsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
-        if (($error = $this->requireWriteRole()) !== null) {
+        if (($error = $this->requireAdminRole()) !== null) {
             return $error;
         }
         if ($this->findConnection($id) === null) {
@@ -266,7 +270,7 @@ class ConnectionsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
-        if (($error = $this->requireWriteRole()) !== null) {
+        if (($error = $this->requireAdminRole()) !== null) {
             return $error;
         }
         if ($this->findConnection($id) === null) {
@@ -307,7 +311,7 @@ class ConnectionsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
-        if (($error = $this->requireWriteRole()) !== null) {
+        if (($error = $this->requireAdminRole()) !== null) {
             return $error;
         }
         if ($this->findConnection($id) === null) {

@@ -12,6 +12,11 @@ use Phalcon\Http\Response;
  * /settings/* — per-company members list and egress allowlist (PRD §7.4, §8.1
  * `egress_allowlist` table). The allowlist itself is only CRUD here — enforcement (ai-
  * runtime's `SafeHttpClient` checking it before outbound calls) is separate, unbuilt work.
+ *
+ * The allowlist's mutators are admin-only (PRD §9.1's role table scopes `/settings` to
+ * `admin`, not `developer`) — same reasoning as `/api-keys`: a wider allowlist entry
+ * (especially `allow_private_ip`) widens every tool/connection's egress surface for the
+ * whole company, not just the thing the caller is working on.
  */
 class SettingsController extends ControllerBase
 {
@@ -70,7 +75,7 @@ class SettingsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
-        if (($error = $this->requireWriteRole()) !== null) {
+        if (($error = $this->requireAdminRole()) !== null) {
             return $error;
         }
 
@@ -120,7 +125,7 @@ class SettingsController extends ControllerBase
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
-        if (($error = $this->requireWriteRole()) !== null) {
+        if (($error = $this->requireAdminRole()) !== null) {
             return $error;
         }
         if (!$this->isUuid($id)) {
