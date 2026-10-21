@@ -51,6 +51,7 @@ from app.core.redis import get_redis
 from app.services.agent_spec import AgentSpecDoc
 from app.services.agent_versions import resolve_agent_version
 from app.services.approvals import ApprovalAlreadyDecidedError, ApprovalNotFoundError, decide_approval
+from app.services.companies import get_company_status
 from app.services.deployments import DeploymentRow, resolve_deployment, resolve_deployment_id_by_slug
 from app.services.gateway_auth import get_jwks, mint_session_token, verify_session_token
 from app.services.quotas import QuotaExceededError
@@ -172,13 +173,26 @@ async def _resolve_session_token_identity(token: str, slug: str) -> GatewayIdent
     )
 
 
+async def _assert_company_active(company_id: str) -> None:
+    """PRD §7.3: "suspending a company makes its deployments return 403 immediately."
+    Checked once, right after identity resolution, so every gateway endpoint is covered
+    uniformly (including session-token calls, which `console.resolve_api_key` can't see
+    since they never call it - a session token only proves company_id/deployment_id at
+    mint time, PRD §7.5, so a company suspended after mint would otherwise keep working
+    until the token's own 5-minute expiry)."""
+    if await get_company_status(company_id) != "active":
+        raise HTTPException(status_code=403, detail="company_suspended")
+
+
 async def require_gateway_api_key(
     slug: str, request: Request, authorization: Annotated[str | None, Header()] = None
 ) -> GatewayIdentity:
     """API-key-only auth (PRD §7.5: session tokens are themselves minted via an API key,
     so minting a session token can't itself be authorized by a session token)."""
     token = _extract_bearer(authorization)
-    return await _resolve_api_key_identity(token, slug, request)
+    identity = await _resolve_api_key_identity(token, slug, request)
+    await _assert_company_active(identity.company_id)
+    return identity
 
 
 async def require_gateway_auth(
@@ -188,8 +202,11 @@ async def require_gateway_auth(
     key prefix (`ak_` by default), never by trying one and falling back to the other."""
     token = _extract_bearer(authorization)
     if token.startswith(get_settings().GATEWAY_API_KEY_PREFIX):
-        return await _resolve_api_key_identity(token, slug, request)
-    return await _resolve_session_token_identity(token, slug)
+        identity = await _resolve_api_key_identity(token, slug, request)
+    else:
+        identity = await _resolve_session_token_identity(token, slug)
+    await _assert_company_active(identity.company_id)
+    return identity
 
 
 def _enforce_cors(identity: GatewayIdentity, deployment: DeploymentRow, request: Request, response: Response) -> None:
