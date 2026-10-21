@@ -536,6 +536,27 @@ export interface RunStep {
 	created_at: string;
 }
 
+export interface RunConversation {
+	id: string;
+	deployment_id: string | null;
+	source: RunSource;
+	external_user_id: string;
+	last_message_at: string;
+	expires_at: string;
+}
+
+export type GuardrailStage = 'input' | 'output';
+
+export interface GuardrailEvent {
+	id: string;
+	run_id: string;
+	stage: GuardrailStage;
+	check: string;
+	action: GuardrailAction;
+	detail: Record<string, unknown>;
+	created_at: string;
+}
+
 export interface DashboardSummary {
 	runs_today: number;
 	tokens_this_month: { in: number; out: number };

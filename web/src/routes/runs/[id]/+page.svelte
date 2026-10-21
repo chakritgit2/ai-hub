@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
-	import { getRun, listRunSteps } from '$lib/api/console';
-	import type { Run, RunStep } from '$lib/api/types';
+	import { getRun, getRunConversation, listRunGuardrailEvents, listRunSteps } from '$lib/api/console';
+	import type { GuardrailEvent, Run, RunConversation, RunStep } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 
 	type TabId = 'trace' | 'conversation' | 'guardrail';
@@ -10,6 +10,11 @@
 	let run = $state<Run | null>(null);
 	let steps = $state<RunStep[]>([]);
 	let stepsError = $state<string | null>(null);
+	let conversation = $state<RunConversation | null>(null);
+	let conversationError = $state<string | null>(null);
+	let guardrailEvents = $state<GuardrailEvent[]>([]);
+	let guardrailError = $state<string | null>(null);
+	let guardrailLoading = $state(true);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let activeTab = $state<TabId>('trace');
@@ -19,6 +24,12 @@
 		llm: 'LLM call',
 		tool_call: 'Tool call',
 		guardrail_output: 'Guardrail (output)'
+	};
+
+	const GUARDRAIL_ACTION_LABELS: Record<GuardrailEvent['action'], string> = {
+		block: 'Blocked',
+		mask: 'Masked',
+		flag: 'Flagged'
 	};
 
 	async function load(id: string) {
@@ -32,10 +43,40 @@
 			loading = false;
 		}
 
-		try {
-			steps = await listRunSteps(id);
-		} catch (e) {
-			stepsError = e instanceof Error ? e.message : 'Failed to load the trace.';
+		if (run === null) return;
+
+		const hasConversation = run.conversation_id !== null && run.conversation_id !== undefined;
+
+		const [stepsResult, conversationResult, guardrailResult] = await Promise.allSettled([
+			listRunSteps(id),
+			hasConversation ? getRunConversation(id) : Promise.resolve(null),
+			listRunGuardrailEvents(id)
+		]);
+
+		if (stepsResult.status === 'fulfilled') {
+			steps = stepsResult.value;
+		} else {
+			stepsError =
+				stepsResult.reason instanceof Error ? stepsResult.reason.message : 'Failed to load the trace.';
+		}
+
+		if (conversationResult.status === 'fulfilled') {
+			conversation = conversationResult.value;
+		} else {
+			conversationError =
+				conversationResult.reason instanceof Error
+					? conversationResult.reason.message
+					: 'Failed to load the conversation.';
+		}
+
+		guardrailLoading = false;
+		if (guardrailResult.status === 'fulfilled') {
+			guardrailEvents = guardrailResult.value;
+		} else {
+			guardrailError =
+				guardrailResult.reason instanceof Error
+					? guardrailResult.reason.message
+					: 'Failed to load guardrail events.';
 		}
 	}
 
@@ -134,14 +175,55 @@
 				</ol>
 			{/if}
 		{:else if activeTab === 'conversation'}
-			<p class="text-sm text-neutral-500">
-				Conversation view — calls <code>getRunConversation({run.id})</code> (PRD §6.2).
-			</p>
+			{#if !run.conversation_id}
+				<p class="text-sm text-neutral-500">This run is not part of a multi-turn conversation.</p>
+			{:else if conversationError}
+				<p class="text-sm text-danger">{conversationError}</p>
+			{:else if !conversation}
+				<p class="text-sm text-neutral-500">Loading conversation…</p>
+			{:else}
+				<p class="mb-3 text-xs text-neutral-400">
+					Message content lives in the agent's own memory store and isn't exposed here — this is
+					the conversation session this run belongs to.
+				</p>
+				<dl class="grid grid-cols-2 gap-4 sm:grid-cols-3">
+					<div><dt class="text-xs text-neutral-400">Conversation ID</dt><dd class="font-mono text-sm text-neutral-800">{conversation.id}</dd></div>
+					<div><dt class="text-xs text-neutral-400">Source</dt><dd class="text-sm text-neutral-800">{conversation.source}</dd></div>
+					<div><dt class="text-xs text-neutral-400">External user (hashed)</dt><dd class="font-mono text-sm text-neutral-800">{conversation.external_user_id}</dd></div>
+					<div><dt class="text-xs text-neutral-400">Last message</dt><dd class="text-sm text-neutral-800">{new Date(conversation.last_message_at).toLocaleString()}</dd></div>
+					<div><dt class="text-xs text-neutral-400">Expires</dt><dd class="text-sm text-neutral-800">{new Date(conversation.expires_at).toLocaleString()}</dd></div>
+				</dl>
+			{/if}
+		{:else if guardrailError}
+			<p class="text-sm text-danger">{guardrailError}</p>
+		{:else if guardrailLoading}
+			<p class="text-sm text-neutral-500">Loading guardrail events…</p>
+		{:else if guardrailEvents.length === 0}
+			<p class="text-sm text-neutral-500">No guardrail checks were triggered for this run.</p>
 		{:else}
-			<p class="text-sm text-neutral-500">
-				Guardrail events — calls <code>listRunGuardrailEvents({run.id})</code> (PRD §6.4,
-				<code>logs.guardrail_events</code>).
-			</p>
+			<ol class="divide-y divide-neutral-200">
+				{#each guardrailEvents as event (event.id)}
+					<li class="py-2 text-sm">
+						<div class="flex flex-wrap items-center gap-3">
+							<span
+								class="rounded-full px-2 py-0.5 text-xs font-medium {event.action === 'block'
+									? 'bg-danger/10 text-danger'
+									: event.action === 'mask'
+										? 'bg-warning/10 text-warning'
+										: 'bg-primary/10 text-primary-700'}"
+							>
+								{GUARDRAIL_ACTION_LABELS[event.action]}
+							</span>
+							<span class="text-neutral-500">{event.stage}</span>
+							<span class="font-medium text-neutral-800">{event.check}</span>
+							<span class="text-neutral-400">{new Date(event.created_at).toLocaleString()}</span>
+						</div>
+						{#if event.detail && Object.keys(event.detail).length > 0}
+							<pre class="mt-1 overflow-x-auto rounded bg-neutral-50 p-2 text-xs text-neutral-600">{JSON.stringify(event.detail, null, 2)}</pre>
+						{/if}
+					</li>
+				{/each}
+			</ol>
 		{/if}
 	</div>
 {/if}

@@ -25,6 +25,7 @@ import type {
 	EvalResult,
 	EvalRun,
 	EvalRunComparison,
+	GuardrailEvent,
 	KbDocument,
 	KbImportResultItem,
 	KbSearchResult,
@@ -33,6 +34,7 @@ import type {
 	Me,
 	Placeholder,
 	Run,
+	RunConversation,
 	RuntimeTokenResponse,
 	RunStep,
 	Skill,
@@ -222,12 +224,12 @@ export function getRun(id: string): Promise<Run> {
 	return apiFetch<Run>(`/runs/${id}`);
 }
 
-export function getRunConversation(id: string): Promise<Placeholder> {
-	return apiFetch<Placeholder>(`/runs/${id}/conversation`);
+export function getRunConversation(id: string): Promise<RunConversation> {
+	return apiFetch<RunConversation>(`/runs/${id}/conversation`);
 }
 
-export function listRunGuardrailEvents(id: string): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>(`/runs/${id}/guardrail-events`);
+export function listRunGuardrailEvents(id: string): Promise<GuardrailEvent[]> {
+	return apiFetch<GuardrailEvent[]>(`/runs/${id}/guardrail-events`);
 }
 
 export function listRunSteps(id: string): Promise<RunStep[]> {
@@ -518,6 +520,7 @@ export type {
 	Connection,
 	DashboardSummary,
 	Deployment,
+	GuardrailEvent,
 	KbDocument,
 	KbImportResultItem,
 	KbSearchResult,
@@ -526,6 +529,7 @@ export type {
 	KnowledgeBaseInput,
 	Me,
 	Run,
+	RunConversation,
 	RuntimeTokenResponse,
 	RunStep,
 	Skill,
