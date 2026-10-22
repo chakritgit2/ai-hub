@@ -5,8 +5,6 @@
 	import { headerContent } from '$lib/stores/header';
 	import { companyId } from '$lib/stores/company';
 
-	headerContent.set({ menu: 'Deployments', title: 'Deployments' });
-
 	let deployments = $state<Deployment[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -28,7 +26,20 @@
 		$companyId;
 		load();
 	});
+
+	$effect(() => {
+		headerContent.set({ menu: 'Deployments', title: 'Deployments', actions: newDeploymentAction });
+	});
 </script>
+
+{#snippet newDeploymentAction()}
+	<a
+		href="/deployments/new"
+		class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+	>
+		+ New deployment
+	</a>
+{/snippet}
 
 {#if loading}
 	<p class="text-sm text-neutral-500" role="status">Loading deployments…</p>

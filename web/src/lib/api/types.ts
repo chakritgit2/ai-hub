@@ -454,10 +454,14 @@ export interface Deployment {
 	company_id: string;
 	slug: string;
 	environment: 'staging' | 'production';
-	agent_version_id: string;
+	// A deployment targets exactly one of these (PRD §6.3) - never both, never neither.
+	agent_version_id?: string | null;
+	workflow_version_id?: string | null;
 	rate_limit_per_min?: number;
-	daily_token_limit?: number;
-	daily_cost_limit_usd?: number;
+	// Both nullable server-side (console-api/app/controllers/admin/DeploymentsController.php's
+	// parseOptionalFields accepts int-or-null for both) - "no limit", not merely "unset".
+	daily_token_limit?: number | null;
+	daily_cost_limit_usd?: number | null;
 	allowed_origins?: string[];
 	guardrail_overrides?: Record<string, unknown>;
 	output_mode?: 'stream' | 'buffered';
