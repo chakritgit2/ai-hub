@@ -511,6 +511,7 @@ async def _execute_agent_run_body(
         tool_secrets=tool_secrets,
         run_id=run_id,
         allow_write_tools=allow_write_tools,
+        stream_handler=stream_handler,
     )
 
     usage_collector = _UsageCollector()

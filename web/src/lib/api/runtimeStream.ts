@@ -7,7 +7,12 @@
 // custom headers/body - this does a plain streaming fetch + manual SSE framing instead.
 
 import { PUBLIC_AI_RUNTIME_BASE_URL } from '$env/static/public';
-import type { PlaygroundStreamErrorEvent, PlaygroundStreamFinalEvent, PlaygroundStreamTokenEvent } from './types';
+import type {
+	PlaygroundStreamApprovalRequiredEvent,
+	PlaygroundStreamErrorEvent,
+	PlaygroundStreamFinalEvent,
+	PlaygroundStreamTokenEvent
+} from './types';
 
 export interface PlaygroundStreamRequest {
 	input: string;
@@ -18,6 +23,10 @@ export interface PlaygroundStreamHandlers {
 	onToken: (event: PlaygroundStreamTokenEvent) => void;
 	onFinal: (event: PlaygroundStreamFinalEvent) => void;
 	onError: (event: PlaygroundStreamErrorEvent) => void;
+	// PRD §6.5/§8.1 - optional since most callers don't need to show anything special;
+	// an unhandled approval_required event is otherwise silently dropped (see
+	// dispatchEvent below), which is a safe no-op, not a bug.
+	onApprovalRequired?: (event: PlaygroundStreamApprovalRequiredEvent) => void;
 }
 
 /**
@@ -89,4 +98,5 @@ function dispatchEvent(rawEvent: string, handlers: PlaygroundStreamHandlers): vo
 	if (eventType === 'token') handlers.onToken(payload);
 	else if (eventType === 'final') handlers.onFinal(payload);
 	else if (eventType === 'error') handlers.onError(payload);
+	else if (eventType === 'approval_required') handlers.onApprovalRequired?.(payload);
 }

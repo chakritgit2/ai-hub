@@ -4,6 +4,7 @@ import uuid
 import jwt
 import pytest
 import sqlalchemy as sa
+from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
 from dynamiq.connections.connections import Http
 from dynamiq.nodes.agents.exceptions import ToolExecutionException
 from dynamiq.nodes.tools.http_api_call import HttpApiCallInputSchema
@@ -163,6 +164,37 @@ async def test_execute_async_write_tool_gate_runs_before_the_request_is_ever_bui
 
     monkeypatch.setattr(SafeHttpApiCall, "_safe_request_kwargs", _fail_if_called)
     tool = _make_write_tool(company_ids())
+
+    with pytest.raises(ToolExecutionException, match="timed out waiting for human approval"):
+        await tool.execute_async(HttpApiCallInputSchema(body={"amount": 100}))
+
+
+@requires_postgres
+async def test_execute_async_pushes_approval_required_onto_the_stream_handler(monkeypatch, company_ids) -> None:
+    """PRD §6.5's SSE `approval_required` event - pushed the instant the `pending` row
+    exists, via `enforce_write_tool_gate_or_raise`'s `_notify_pending` closure. Drains the
+    real `AsyncStreamingIteratorCallbackHandler` queue to confirm the exact shape
+    `app.services.streaming_events.extract_approval_required_event` expects lands there."""
+    _shrink_approval_timeout(monkeypatch)
+    stream_handler = AsyncStreamingIteratorCallbackHandler(loop=asyncio.get_running_loop())
+    tool = _make_write_tool(company_ids(), stream_handler=stream_handler)
+
+    with pytest.raises(ToolExecutionException, match="timed out waiting for human approval"):
+        await tool.execute_async(HttpApiCallInputSchema(body={"amount": 100}))
+
+    event = await asyncio.wait_for(stream_handler.queue.get(), timeout=1)
+    assert event.data["dynamiq_console_event"] == "approval_required"
+    assert event.data["tool"] == tool.name
+    assert isinstance(event.data["approval_id"], str) and event.data["approval_id"]
+
+
+@requires_postgres
+async def test_execute_async_pushes_nothing_when_no_stream_handler_is_set(monkeypatch, company_ids) -> None:
+    """The run isn't being streamed at all (`stream_handler=None`, the default/non-
+    streaming case) - `_notify_pending` must be a silent no-op, not crash."""
+    _shrink_approval_timeout(monkeypatch)
+    tool = _make_write_tool(company_ids())
+    assert tool.stream_handler is None
 
     with pytest.raises(ToolExecutionException, match="timed out waiting for human approval"):
         await tool.execute_async(HttpApiCallInputSchema(body={"amount": 100}))

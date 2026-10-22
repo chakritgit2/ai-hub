@@ -25,7 +25,7 @@ export interface RuntimeTokenResponse {
 // POST /ai/v1/playground/stream SSE events (PRD Goal #6) - mirrors
 // ai/app/main_runtime.py::runPlaygroundStream's event_generator exactly, both the
 // no-output-guardrails live-token path and the buffered-fallback path emit the same
-// three event shapes.
+// event shapes.
 export interface PlaygroundStreamTokenEvent {
 	delta: string;
 }
@@ -43,6 +43,14 @@ export interface PlaygroundStreamFinalEvent {
 export interface PlaygroundStreamErrorEvent {
 	error: string;
 	detail?: string;
+}
+
+// PRD §6.5/§8.1: an access_level: write tool call created a pending runtime.tool_approvals
+// row and is waiting (up to 5 minutes) for a human to decide via the /approvals page -
+// purely informational, doesn't replace that decide flow.
+export interface PlaygroundStreamApprovalRequiredEvent {
+	approval_id: string;
+	tool: string;
 }
 
 export interface Connection {

@@ -9,8 +9,10 @@ list directly via its own `runtime.tool_approvals` SELECT grant (db/migrations/p
 `EvalsController::listEvalRuns`.
 """
 import asyncio
+import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -20,6 +22,8 @@ import sqlalchemy as sa
 from app.core.config import get_settings
 from app.core.db import get_company_session
 from app.db.tables import tool_approvals_table
+
+logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_SECONDS = 2
 
@@ -183,6 +187,7 @@ async def enforce_write_tool_gate(
     tool_id: str,
     allow_write_tools: bool,
     request: dict,
+    on_pending: Callable[[str], None] | None = None,
 ) -> None:
     """The actual human-approval gate for one `write`-access tool call (PRD §6.5/§8.1) -
     called from `SafeHttpApiCall`/`_SafeBuiltinSearchTool` before any real outbound
@@ -196,11 +201,27 @@ async def enforce_write_tool_gate(
     `app.services.runtime`) - checked first, before ever creating a `pending` row, since
     PRD states a write tool "must be allowed by the deployment" as a precondition
     separate from the human-approval decision itself.
+
+    `on_pending`, if given, is called once with the new `approval_id` right after the
+    `pending` row is created, before the wait starts - this module stays streaming/
+    dynamiq-agnostic (no import of either), so it has no idea what the callback actually
+    does; `app.integrations.write_tool_gate.enforce_write_tool_gate_or_raise` is the one
+    real caller, which uses it to push an `approval_required` SSE event onto the current
+    run's `stream_handler` (PRD §6.5's "`approval_required` event"). A failure in
+    `on_pending` itself (e.g. the stream's event loop already closed) is logged and
+    swallowed, never allowed to propagate - it's a best-effort notification, and letting
+    it escape here would abandon the row it was just notified about as permanently
+    `pending` (nothing left to ever call `wait_for_decision`/expire it).
     """
     if not allow_write_tools:
         raise WriteToolsNotAllowedError()
 
     approval_id = await create_pending_approval(company_id, run_id, tool_id, request)
+    if on_pending is not None:
+        try:
+            on_pending(approval_id)
+        except Exception:  # noqa: BLE001 - best-effort notification, must never abort the gate
+            logger.warning("on_pending callback failed for approval %s", approval_id, exc_info=True)
     status = await wait_for_decision(company_id, approval_id)
     if status == "approved":
         return

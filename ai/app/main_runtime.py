@@ -76,7 +76,7 @@ from app.services.knowledge_bases import (
     upsert_kb_document,
 )
 from app.services.runtime import attach_stream_completion, resolve_and_compile, run_playground_agent
-from app.services.streaming_events import extract_answer_delta
+from app.services.streaming_events import extract_answer_delta, extract_approval_required_event
 from app.services.tool_secrets import decrypt_tool_secret, delete_tool_secret, upsert_tool_secret
 from app.services.tools import resolve_tool
 
@@ -245,7 +245,11 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
     configured (see `execute_agent_run`'s docstring for why) - falls back to the existing
     buffer-then-guardrail-check flow (unchanged) and emits the already-redacted-if-needed
     text as a single `token` event otherwise, so the client always sees the same three
-    event types (`token`, `final`, `error`) regardless of which path actually ran.
+    event types (`token`, `final`, `error`) regardless of which path actually ran. Also
+    emits PRD §6.5's `approval_required` event (`{"approval_id": <id>, "tool": <name>}`)
+    the instant an `access_level: write` tool call creates a `pending`
+    `runtime.tool_approvals` row - see `app.main_gateway.streamDeployment`'s own docstring
+    for the full explanation, shared identically by both streams.
 
     Auth/validation are unaffected by streaming: `RuntimeAuth`'s `Depends` and
     `RunRequest`'s `conversation_id` validator both resolve before this function body ever
@@ -274,6 +278,10 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
         attach_stream_completion(run_task, stream_handler)
 
         async for event in stream_handler:
+            approval_event = extract_approval_required_event(event.data)
+            if approval_event:
+                yield {"event": "approval_required", "data": json.dumps(approval_event)}
+                continue
             delta = extract_answer_delta(event.data)
             if delta:
                 yield {"event": "token", "data": json.dumps({"delta": delta})}

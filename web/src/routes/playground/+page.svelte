@@ -4,7 +4,12 @@
 	import { companyId } from '$lib/stores/company';
 	import { issueRuntimeToken, listAgents, listAgentVersions } from '$lib/api/console';
 	import { streamPlaygroundRun } from '$lib/api/runtimeStream';
-	import type { Agent, AgentVersion, PlaygroundStreamFinalEvent } from '$lib/api/types';
+	import type {
+		Agent,
+		AgentVersion,
+		PlaygroundStreamApprovalRequiredEvent,
+		PlaygroundStreamFinalEvent
+	} from '$lib/api/types';
 
 	headerContent.set({ menu: 'Playground', title: 'Playground' });
 
@@ -34,6 +39,7 @@
 	let conversationId = $state<string | null>(null);
 	let runError = $state<string | null>(null);
 	let lastResult = $state<PlaygroundStreamFinalEvent | null>(null);
+	let pendingApproval = $state<PlaygroundStreamApprovalRequiredEvent | null>(null);
 	let abortController: AbortController | undefined;
 
 	// Full step-by-step trace (tool_call/tool_result/retrieval/guardrail events per run) is
@@ -97,6 +103,7 @@
 		}
 
 		runError = null;
+		pendingApproval = null;
 		messages.push({ role: 'user', content: text });
 		input = '';
 		runState = 'streaming';
@@ -119,6 +126,7 @@
 						messages[idx] = { ...messages[idx], content: messages[idx].content + event.delta };
 					},
 					onFinal: (event) => {
+						pendingApproval = null;
 						conversationId = event.conversation_id ?? conversationId;
 						lastResult = event;
 						messages[idx] = {
@@ -129,7 +137,11 @@
 						};
 					},
 					onError: (event) => {
+						pendingApproval = null;
 						runError = event.detail ? `${event.error}: ${event.detail}` : event.error;
+					},
+					onApprovalRequired: (event) => {
+						pendingApproval = event;
 					}
 				},
 				abortController.signal
@@ -141,6 +153,7 @@
 			}
 		} finally {
 			runState = 'done';
+			pendingApproval = null;
 			abortController = undefined;
 		}
 	}
@@ -155,6 +168,7 @@
 			messages[idx] = { ...messages[idx], content: `${messages[idx].content} [stopped]` };
 		}
 		runState = 'done';
+		pendingApproval = null;
 	}
 
 	function newConversation() {
@@ -167,6 +181,7 @@
 		conversationId = null;
 		lastResult = null;
 		runError = null;
+		pendingApproval = null;
 	}
 </script>
 
@@ -241,7 +256,12 @@
 					</div>
 				</div>
 			{/each}
-			{#if runState === 'streaming'}
+			{#if pendingApproval}
+				<p class="text-xs text-warning" role="status">
+					กำลังรอการอนุมัติจากแอดมินสำหรับ tool: <span class="font-mono">{pendingApproval.tool}</span>
+					(สูงสุด 5 นาที) — ไปที่หน้า <a href="/approvals" class="underline">Approvals</a> เพื่อกดอนุมัติ/ปฏิเสธ
+				</p>
+			{:else if runState === 'streaming'}
 				<p class="text-xs text-neutral-400" role="status">streaming…</p>
 			{/if}
 		</div>

@@ -195,3 +195,54 @@ async def test_enforce_write_tool_gate_raises_expired_when_nobody_decides_in_tim
 
     with pytest.raises(ApprovalExpiredError):
         await enforce_write_tool_gate(company_id, run_id, tool_id, allow_write_tools=True, request={})
+
+
+async def test_enforce_write_tool_gate_calls_on_pending_with_the_real_approval_id_before_waiting(
+    monkeypatch, company_ids
+) -> None:
+    """PRD §6.5's `approval_required` SSE event - pushed by
+    `app.integrations.write_tool_gate.enforce_write_tool_gate_or_raise`'s own `on_pending`
+    closure, but this module (dynamiq/streaming-agnostic by design) only needs to prove it
+    calls back with the right id at the right moment: after the row exists, before the
+    wait starts."""
+    _shrink_approval_timeout(monkeypatch, timeout_seconds=5)
+    company_id = company_ids()
+    run_id, tool_id = str(uuid.uuid4()), str(uuid.uuid4())
+    seen: list[str] = []
+
+    def _on_pending(approval_id: str) -> None:
+        seen.append(approval_id)
+
+    async def _approve_it_shortly_after_creation(*args, **kwargs):
+        approval_id = await create_pending_approval(*args, **kwargs)
+        await decide_approval(company_id, approval_id, "approved", decided_by="user-1")
+        return approval_id
+
+    monkeypatch.setattr(approvals_module, "create_pending_approval", _approve_it_shortly_after_creation)
+
+    await enforce_write_tool_gate(
+        company_id, run_id, tool_id, allow_write_tools=True, request={}, on_pending=_on_pending
+    )
+
+    assert len(seen) == 1
+    approval = await get_approval(company_id, seen[0])
+    assert approval is not None
+    assert approval.run_id == run_id
+    assert approval.tool_id == tool_id
+
+
+async def test_enforce_write_tool_gate_never_calls_on_pending_when_disallowed(monkeypatch, company_ids) -> None:
+    company_id = company_ids()
+    run_id, tool_id = str(uuid.uuid4()), str(uuid.uuid4())
+    called = False
+
+    def _on_pending(_approval_id: str) -> None:
+        nonlocal called
+        called = True
+
+    with pytest.raises(WriteToolsNotAllowedError):
+        await enforce_write_tool_gate(
+            company_id, run_id, tool_id, allow_write_tools=False, request={}, on_pending=_on_pending
+        )
+
+    assert called is False

@@ -21,6 +21,7 @@ import asyncio
 import importlib.metadata
 import logging
 
+from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
 from pydantic import ValidationError
 
 from app.integrations.dynamiq_adapter import build_embedder_node, build_llm, llm_type_for_connection_type
@@ -312,6 +313,7 @@ def _build_http_tool(
     secret: str | None = None,
     run_id: str | None = None,
     allow_write_tools: bool = True,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
 ):
     """Uses `SafeHttpApiCall`, not Dynamiq's own `HttpApiCall`, so every real request this
     tool makes is checked against the company's egress allowlist - see that class's
@@ -325,9 +327,9 @@ def _build_http_tool(
     routinely `None` even at real run time since a service-mode tool isn't required to
     have a secret configured at all (fail-open, unlike delegated's fail-closed identity).
 
-    `run_id`/`allow_write_tools` (PRD §6.5/§8.1) are only consumed when
+    `run_id`/`allow_write_tools`/`stream_handler` (PRD §6.5/§8.1) are only consumed when
     `tool_def["access_level"] == "write"` - see `SafeHttpApiCall._enforce_write_gate`.
-    Both default to values that make a `write` tool's gate a no-op at the self-proof
+    All default to values that make a `write` tool's gate a no-op at the self-proof
     call, same reasoning as `identity`/`secret` above (no real request is ever made
     there)."""
     from dynamiq.connections.connections import Http
@@ -353,6 +355,7 @@ def _build_http_tool(
         access_level=tool_def.get("access_level", "read"),
         run_id=run_id,
         allow_write_tools=allow_write_tools,
+        stream_handler=stream_handler,
         # See SafeHttpApiCall.loop's docstring - this is always the server's main loop,
         # since this function only ever runs from inside the already-async build_agent.
         loop=asyncio.get_running_loop(),
@@ -365,6 +368,7 @@ def _build_builtin_tool(
     secret: str | None = None,
     run_id: str | None = None,
     allow_write_tools: bool = True,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
 ):
     """Builds a `SafeTavilyTool`/`SafeExaTool` (PRD §6.5) - same never-a-real-call-at-
     compile-time rule as `_build_http_tool`'s `secret`: `None` at `compile_spec`'s own
@@ -396,6 +400,7 @@ def _build_builtin_tool(
             access_level=access_level,
             run_id=run_id,
             allow_write_tools=allow_write_tools,
+            stream_handler=stream_handler,
             loop=loop,
         )
     return SafeExaTool(
@@ -406,6 +411,7 @@ def _build_builtin_tool(
         access_level=access_level,
         run_id=run_id,
         allow_write_tools=allow_write_tools,
+        stream_handler=stream_handler,
         loop=loop,
     )
 
@@ -452,6 +458,7 @@ async def _build_tools(
     tool_secrets: dict[str, str] | None = None,
     run_id: str | None = None,
     allow_write_tools: bool = True,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
 ) -> list:
     """Constructs real Dynamiq tool/retrieval node instances from
     `compiled_definition["agent"]["tools"]`. `_resolve_tools`/`_resolve_knowledge` already
@@ -459,18 +466,24 @@ async def _build_tools(
     ever reach here - the explicit check below is a defensive backstop (matches this
     codebase's general defense-in-depth style), not the primary gate.
 
-    `run_id`/`allow_write_tools` (PRD §6.5/§8.1) are only ever read by a `write`-access
-    tool at call time - knowledge retrieval is always read-only, so `_build_knowledge_tool`
-    doesn't need either.
+    `run_id`/`allow_write_tools`/`stream_handler` (PRD §6.5/§8.1) are only ever read by a
+    `write`-access tool at call time - knowledge retrieval is always read-only, so
+    `_build_knowledge_tool` doesn't need any of them.
     """
     tools = []
     for tool_def in tool_defs:
         if tool_def["type"] == _HTTP_TOOL_TYPE:
             secret = (tool_secrets or {}).get(tool_def["id"])
-            tools.append(_build_http_tool(tool_def, company_id, identity, secret, run_id, allow_write_tools))
+            tools.append(
+                _build_http_tool(
+                    tool_def, company_id, identity, secret, run_id, allow_write_tools, stream_handler
+                )
+            )
         elif tool_def["type"] in BUILTIN_TOOL_TYPES:
             secret = (tool_secrets or {}).get(tool_def["id"])
-            tools.append(_build_builtin_tool(tool_def, company_id, secret, run_id, allow_write_tools))
+            tools.append(
+                _build_builtin_tool(tool_def, company_id, secret, run_id, allow_write_tools, stream_handler)
+            )
         elif tool_def["type"] == RETRIEVAL_TOOL_TYPE:
             tools.append(await _build_knowledge_tool(tool_def, company_id, knowledge_api_keys[tool_def["id"]]))
         else:
@@ -490,6 +503,7 @@ async def build_agent(
     tool_secrets: dict[str, str] | None = None,
     run_id: str | None = None,
     allow_write_tools: bool = True,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
 ):
     """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
     (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
@@ -525,7 +539,11 @@ async def build_agent(
     `run_id`/`allow_write_tools` (PRD §6.5/§8.1) feed every `access_level: write` tool's
     human-approval gate - `None`/`True` at `compile_spec`'s self-proof call, same as
     `identity`, since that call never reaches a tool's `execute()` (gating logic lives
-    there, not at build time).
+    there, not at build time). `stream_handler` (PRD Goal #6) is the current run's
+    live-streaming handle, used by that same gate to push the `approval_required` SSE
+    event - threaded through unconditionally whenever the caller has one (not gated on
+    whether dynamiq is actually live-streaming LLM tokens through it), since the SSE
+    consumer drains this same object either way.
     """
     from dynamiq.nodes.agents import Agent
     from dynamiq.skills.config import SkillsConfig
@@ -566,6 +584,7 @@ async def build_agent(
             tool_secrets,
             run_id,
             allow_write_tools,
+            stream_handler,
         ),
         memory=memory,
         skills=SkillsConfig(enabled=True, source=skill_registry) if skill_registry is not None else SkillsConfig(),

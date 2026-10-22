@@ -92,6 +92,31 @@ def extract_tool_step_event(event_data: Any) -> dict[str, Any] | None:
     return None
 
 
+def extract_approval_required_event(event_data: Any) -> dict[str, Any] | None:
+    """PRD §6.5/§8.1's `approval_required` event - unlike `extract_answer_delta`/
+    `extract_tool_step_event` above, this never comes from dynamiq itself: it's a
+    synthetic `StreamingEventMessage` this codebase pushes directly onto the run's
+    `stream_handler` the moment a `write`-access tool call creates a `pending`
+    `runtime.tool_approvals` row (`app.integrations.write_tool_gate.
+    enforce_write_tool_gate_or_raise`'s `_notify_pending`). The `dynamiq_console_event`
+    marker key is what tells the two apart - every real dynamiq chunk is always the
+    `{"choices": [{"delta": {...}}]}` wrapper the other two functions parse, never this
+    shape, so there's no ambiguity either way.
+
+    Reads `approval_id`/`tool` with `.get()`, same defensive style as `extract_answer_delta`/
+    `extract_tool_step_event` above - an unexpected/malformed marker must degrade to `None`
+    (silently dropped by the caller's `async for event in stream_handler:` loop) rather than
+    raise a `KeyError` that would abort the whole SSE response before `final`/`error` can
+    ever reach the client."""
+    if not isinstance(event_data, dict) or event_data.get("dynamiq_console_event") != "approval_required":
+        return None
+    approval_id = event_data.get("approval_id")
+    tool = event_data.get("tool")
+    if not isinstance(approval_id, str) or not isinstance(tool, str):
+        return None
+    return {"approval_id": approval_id, "tool": tool}
+
+
 _SOURCE_PATTERN = re.compile(r"^\[(.*?)\]\((.*?)\)")
 
 

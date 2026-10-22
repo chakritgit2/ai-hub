@@ -14,6 +14,7 @@ after a recompile.
 import asyncio
 import logging
 
+from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
 from dynamiq.nodes.agents.exceptions import ToolExecutionException
 from dynamiq.nodes.node import ensure_config
 from dynamiq.nodes.tools import HttpApiCall
@@ -48,6 +49,10 @@ class SafeHttpApiCall(HttpApiCall):
     access_level: str = "read"
     run_id: str | None = None
     allow_write_tools: bool = True
+    # The current run's live-streaming handle (PRD Goal #6) - `None` whenever the run
+    # isn't being streamed. Only read by `_enforce_write_gate` to push the PRD §6.5
+    # `approval_required` SSE event; unused for `access_level == "read"`.
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None
     # The event loop `app.services.compiler.build_agent` was running on when this tool was
     # built (always the server's main loop, real run or not). `list_egress_allowlist` goes
     # through `app.core.db`'s process-wide cached `AsyncEngine`, whose pooled asyncpg
@@ -130,6 +135,7 @@ class SafeHttpApiCall(HttpApiCall):
             self.tool_id,
             self.allow_write_tools,
             request={"tool_name": self.name, "input": input_data.model_dump(mode="json")},
+            stream_handler=self.stream_handler,
         )
 
     def _enforce_write_gate_from_thread(self, input_data: HttpApiCallInputSchema) -> None:

@@ -101,6 +101,44 @@ def fake_streaming_agent(monkeypatch):
     return _FakeStreamingAgent
 
 
+class _FakeAgentPushingApprovalRequired:
+    """Simulates what a real `access_level: write` tool call does mid-run (push PRD
+    §6.5's `approval_required` marker onto `stream_handler` via `send_to_queue`,
+    `app.integrations.write_tool_gate.enforce_write_tool_gate_or_raise`'s
+    `_notify_pending`) - without needing a real LLM to actually decide to invoke a write
+    tool (that path is covered directly, with a real `SafeHttpApiCall`, by
+    test_safe_http_tool.py). Only the SSE-emitting side - `streamDeployment`'s event loop
+    turning this queued marker into a real `approval_required` SSE line via
+    `extract_approval_required_event` - is what this test exercises."""
+
+    def __init__(self, **kwargs) -> None:
+        self.memory = kwargs.get("memory")
+
+    def run(self, input_data: dict, config=None, **_kwargs) -> SimpleNamespace:
+        if config is not None:
+            for callback in config.callbacks:
+                if not hasattr(callback, "on_node_execute_stream"):
+                    continue
+                callback.on_node_execute_stream(
+                    {},
+                    chunk={
+                        "dynamiq_console_event": "approval_required",
+                        "approval_id": "approval-1",
+                        "tool": "create-order",
+                    },
+                    run_id=config.run_id,
+                )
+        return SimpleNamespace(output={"content": "fake gateway reply"}, status=RunnableStatus.SUCCESS)
+
+
+@pytest.fixture
+def fake_agent_pushing_approval_required(monkeypatch):
+    import dynamiq.nodes.agents
+
+    monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _FakeAgentPushingApprovalRequired)
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
+
+
 @pytest.fixture
 async def gateway_async_client():
     """Same event-loop-sharing fix test_gateway_run.py's own fixture of the same name
@@ -346,3 +384,29 @@ async def test_stream_emits_quota_exceeded_error_event_when_rate_limited(
     assert events[0][0] == "error"
     assert events[0][1]["error"] == "quota_exceeded"
     assert events[0][1]["reason"] == "rate_limit"
+
+
+@requires_postgres
+async def test_stream_emits_approval_required_before_final(
+    fake_agent_pushing_approval_required, gateway_async_client, company_ids, make_company, resolvable_agent_version,
+    make_deployment, make_api_key
+) -> None:
+    company_id = company_ids()
+    make_company(company_id)
+    version_id = await resolvable_agent_version(company_id)
+    deployment_id, slug = make_deployment(company_id, version_id)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/stream", json={"input": "hi"}, headers={"Authorization": f"Bearer {full_key}"}
+    )
+
+    assert resp.status_code == 200
+    events = _parse_sse_events(resp.text)
+    approval_events = [e for e in events if e[0] == "approval_required"]
+    assert len(approval_events) == 1
+    assert approval_events[0][1] == {"approval_id": "approval-1", "tool": "create-order"}
+
+    final_events = [e for e in events if e[0] == "final"]
+    assert len(final_events) == 1
+    assert events.index(approval_events[0]) < events.index(final_events[0])

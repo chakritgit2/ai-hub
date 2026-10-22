@@ -59,7 +59,11 @@ from app.services.deployments import DeploymentRow, resolve_deployment, resolve_
 from app.services.gateway_auth import get_jwks, mint_session_token, verify_session_token
 from app.services.quotas import QuotaExceededError
 from app.services.runtime import attach_stream_completion, run_deployment_agent
-from app.services.streaming_events import extract_answer_delta, extract_tool_step_event
+from app.services.streaming_events import (
+    extract_answer_delta,
+    extract_approval_required_event,
+    extract_tool_step_event,
+)
 from app.services.workflow_runtime import run_deployment_workflow
 from app.services.workflow_versions import resolve_workflow_identity
 
@@ -380,6 +384,13 @@ async def streamDeployment(slug: str, body: RunRequest, identity: GatewayAuth, r
     `extract_tool_step_event`) - never guessed for a generic `kind: http` tool, so a
     caller can never be shown a wrong/misleading "source" link.
 
+    **Also streams PRD §6.5's `approval_required` event** (`{"approval_id": <id>,
+    "tool": <name>}`) the instant an `access_level: write` tool call creates a `pending`
+    `runtime.tool_approvals` row - a synthetic event this codebase pushes itself (not a
+    dynamiq-native chunk), parsed by `extract_approval_required_event`. Shared with
+    Playground's own stream too (not gateway-only like `step` above) since the
+    write-tool gate itself applies identically to both.
+
     A workflow-backed deployment stays a 501 stub here - scoped out with the user:
     dynamiq's `GraphOrchestrator` streaming behavior was never researched (unlike the
     plain `Agent` streaming this reuses, which already went through that research for
@@ -447,6 +458,10 @@ async def streamDeployment(slug: str, body: RunRequest, identity: GatewayAuth, r
         attach_stream_completion(run_task, stream_handler)
 
         async for event in stream_handler:
+            approval_event = extract_approval_required_event(event.data)
+            if approval_event:
+                yield {"event": "approval_required", "data": json.dumps(approval_event)}
+                continue
             delta = extract_answer_delta(event.data)
             if delta:
                 yield {"event": "token", "data": json.dumps({"delta": delta})}

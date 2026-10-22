@@ -15,6 +15,7 @@ helpers (`_build_search_payload`, `_format_tavily_result`/`_format_search_respon
 """
 import asyncio
 
+from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
 from dynamiq.nodes.node import ensure_config
 from dynamiq.nodes.tools.exa_search import ExaInputSchema, ExaTool
 from dynamiq.nodes.tools.tavily import TavilyInputSchema, TavilyTool
@@ -39,6 +40,9 @@ class _SafeBuiltinSearchTool:
     access_level: str = "read"
     run_id: str | None = None
     allow_write_tools: bool = True
+    # See `app.integrations.safe_http_tool.SafeHttpApiCall.stream_handler`'s docstring -
+    # same role, only read by `_enforce_write_gate` to push the `approval_required` event.
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None
     # See `app.integrations.safe_http_tool.SafeHttpApiCall.loop`'s docstring - same
     # cross-loop asyncpg hazard, same fix: route the egress-allowlist DB call back onto
     # the loop its pooled connections actually belong to instead of spinning up a new one.
@@ -56,6 +60,7 @@ class _SafeBuiltinSearchTool:
             self.tool_id,
             self.allow_write_tools,
             request={"tool_name": self.name, "input": payload},
+            stream_handler=self.stream_handler,
         )
 
     def _enforce_write_gate_from_thread(self, payload: dict) -> None:

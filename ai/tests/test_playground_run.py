@@ -101,6 +101,40 @@ def fake_streaming_agent(monkeypatch):
     return _FakeStreamingAgent
 
 
+class _FakeAgentPushingApprovalRequired:
+    """See test_gateway_stream.py's class of the same name - simulates a write-tool call
+    mid-run pushing PRD §6.5's `approval_required` marker onto `stream_handler`, to test
+    the SSE-emitting side (`runPlaygroundStream`'s event loop /
+    `extract_approval_required_event`) without needing a real LLM to decide to invoke a
+    real write tool (covered directly in test_safe_http_tool.py instead)."""
+
+    def __init__(self, **kwargs) -> None:
+        self.memory = kwargs.get("memory")
+
+    def run(self, input_data: dict, config=None, **_kwargs) -> SimpleNamespace:
+        if config is not None:
+            for callback in config.callbacks:
+                if isinstance(callback, BaseStreamingCallbackHandler):
+                    callback.on_node_execute_stream(
+                        {},
+                        chunk={
+                            "dynamiq_console_event": "approval_required",
+                            "approval_id": "approval-1",
+                            "tool": "create-order",
+                        },
+                        run_id=config.run_id,
+                    )
+        return SimpleNamespace(output={"content": "fake reply"}, status=RunnableStatus.SUCCESS)
+
+
+@pytest.fixture
+def fake_agent_pushing_approval_required(monkeypatch):
+    import dynamiq.nodes.agents
+
+    monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _FakeAgentPushingApprovalRequired)
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
+
+
 async def _drain_with_timeout(
     handler: AsyncStreamingIteratorCallbackHandler, timeout: float = 5.0
 ) -> list[str]:
@@ -411,5 +445,31 @@ async def test_playground_stream_emits_tokens_then_final(
         assert events[-1] == final_events[0]
         assert "".join(e[1]["delta"] for e in token_events) == "fake reply"
         assert final_events[0][1]["output"] == "fake reply"
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+@requires_postgres
+async def test_playground_stream_emits_approval_required_before_final(
+    fake_agent_pushing_approval_required, company_ids, resolvable_agent_version
+) -> None:
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(
+        company_id, agent_version_id=version_id
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            resp = await client.post("/ai/v1/playground/stream", json={"input": "hi"})
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+
+        approval_events = [e for e in events if e[0] == "approval_required"]
+        assert len(approval_events) == 1
+        assert approval_events[0][1] == {"approval_id": "approval-1", "tool": "create-order"}
+
+        final_events = [e for e in events if e[0] == "final"]
+        assert len(final_events) == 1
+        assert events.index(approval_events[0]) < events.index(final_events[0])
     finally:
         runtime_app.dependency_overrides.pop(require_runtime_auth, None)

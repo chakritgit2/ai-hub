@@ -153,7 +153,8 @@ paths:
       operationId: runPlaygroundStream
       summary: >
         Run a given agent version over SSE. Events: token, step (thought/tool_call/tool_result),
-        guardrail, final, error, usage; heartbeat every 15s (PRD §6.2).
+        guardrail, approval_required (write-tool call awaiting human decision, PRD §6.5 -
+        {"approval_id", "tool"}), final, error, usage; heartbeat every 15s (PRD §6.2).
       security: [{ runtimeToken: [] }]
       requestBody:
         content:
@@ -201,11 +202,12 @@ paths:
       summary: >-
         SSE run, from a server or directly from an end-user browser using a session token
         (PRD §4.4-C). Events: token (answer text, incremental), step (tool_call/tool_result,
-        with sources when the tool is a web-search type like Tavily/Exa), final, error.
-        Agent-backed deployments only - a workflow-backed deployment returns 501 here (use
-        the synchronous /run instead); QuotaExceededError and an upstream run failure are
-        both delivered as an error event, not an HTTP status, since the stream has already
-        started by the time either can be detected.
+        with sources when the tool is a web-search type like Tavily/Exa), approval_required
+        (write-tool call awaiting human decision, PRD §6.5 - {"approval_id", "tool"}, up to
+        a 5-minute wait), final, error. Agent-backed deployments only - a workflow-backed
+        deployment returns 501 here (use the synchronous /run instead); QuotaExceededError
+        and an upstream run failure are both delivered as an error event, not an HTTP
+        status, since the stream has already started by the time either can be detected.
       security: [{ gatewayApiKey: [] }, { sessionToken: [] }]
       requestBody:
         content:
