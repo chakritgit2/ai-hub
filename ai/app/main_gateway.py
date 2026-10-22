@@ -15,9 +15,12 @@ deployment - a workflow-backed one still gets a 501 there (dynamiq's `GraphOrche
 streaming behavior was never researched, unlike the plain `Agent` streaming this reuses,
 and nobody has asked for it). `decideApproval` is real too - the app-side counterpart to
 console-api's own `decideApproval` (PRD §6.5), both forwarding to the same
-`app.services.approvals.decide_approval`. Nothing yet creates a `pending`
-`runtime.tool_approvals` row (that requires hooking the write-tool call path itself,
-deliberately deferred), so this is reachable today only against a row inserted by hand.
+`app.services.approvals.decide_approval`. A real `access_level: write` tool call now
+creates its own `pending` `runtime.tool_approvals` row end to end
+(`SafeHttpApiCall`/`_SafeBuiltinSearchTool._enforce_write_gate` ->
+`app.services.approvals.enforce_write_tool_gate`, hooked into the write-tool call path
+itself) and blocks on this same `decideApproval` to resolve it - no longer only reachable
+against a hand-inserted row.
 
 A deployment targets exactly one of a published agent version or a published workflow
 version (PRD §6.3/§6.9 phase 4) - `runDeployment`/`getDeploymentInfo` branch on

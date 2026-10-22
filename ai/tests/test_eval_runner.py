@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from types import SimpleNamespace
 from typing import ClassVar
@@ -11,8 +12,9 @@ from app.db.tables import eval_results_table
 from app.main_runtime import app as runtime_app
 from app.main_runtime import require_internal_auth
 from app.services import eval_runner as eval_runner_module
-from app.services.datasets import list_dataset_items, resolve_dataset
-from app.services.eval_runner import _tokens_for_item, estimate_eval_cost, run_eval
+from app.services.agent_spec import GuardrailsSpec
+from app.services.datasets import DatasetItemRow, list_dataset_items, resolve_dataset
+from app.services.eval_runner import _run_item, _tokens_for_item, estimate_eval_cost, run_eval
 from app.services.eval_runs import create_eval_run, get_eval_run
 from app.services.model_pricing import get_model_pricing
 
@@ -187,6 +189,27 @@ def test_tokens_for_item_treats_empty_string_answer_as_zero_length():
     with_empty_context = _tokens_for_item("Q", "A", "", judge_calls=1)
     with_missing_context = _tokens_for_item("Q", "A", None, judge_calls=1)
     assert with_empty_context.judge_input == with_missing_context.judge_input
+
+
+async def test_run_item_disallows_write_tools(monkeypatch) -> None:
+    """An eval run is unattended - no human is watching to approve/reject a write-tool
+    call - so `_run_item` must pass `allow_write_tools=False` to `execute_agent_run`
+    (fails the tool call immediately, same as a deployment that disallows write tools)
+    rather than the `True` default Playground/an allowing deployment get, which would
+    create a `pending` runtime.tool_approvals row that's guaranteed to sit unapproved
+    until it expires after the full 5-minute PRD window."""
+    captured: dict = {}
+
+    async def _fake_execute_agent_run(*_args, **kwargs):
+        captured["allow_write_tools"] = kwargs.get("allow_write_tools")
+        return {"output": "fake answer", "cost_usd": 0.0}
+
+    monkeypatch.setattr(eval_runner_module, "execute_agent_run", _fake_execute_agent_run)
+
+    item = DatasetItemRow(id="item-1", question="Q", expected_answer=None, context=None, tags=[])
+    await _run_item(asyncio.Semaphore(1), {}, GuardrailsSpec(), "company-1", "agent-version-1", item)
+
+    assert captured["allow_write_tools"] is False
 
 
 async def test_estimate_eval_cost_happy_path(

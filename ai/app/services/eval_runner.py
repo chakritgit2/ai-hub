@@ -405,6 +405,13 @@ async def _run_item(
                 conversation_id=None,
                 deployment_id=None,
                 run_id=run_id,
+                # An eval run is unattended (no human watching to approve/reject) - unlike
+                # Playground/a deployment with allow_write_tools=True, a write-access tool
+                # call here must fail immediately (WriteToolsNotAllowedError) rather than
+                # create a pending runtime.tool_approvals row that's guaranteed to sit
+                # until it expires after the full 5-minute PRD window, turning one dataset
+                # item into a 5-minute wait before it fails anyway.
+                allow_write_tools=False,
             )
             return _ItemRun(
                 dataset_item_id=item.id,
