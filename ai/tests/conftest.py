@@ -73,8 +73,8 @@ async def _fresh_redis():
 @pytest.fixture
 async def company_ids():
     """Hands out fresh company ids and, after the test, deletes every
-    runtime.conversations / runtime.agent_memory / logs.guardrail_events / logs.runs /
-    logs.eval_results / runtime.eval_runs / runtime.connection_secrets /
+    runtime.conversations / runtime.agent_memory / logs.guardrail_events / logs.run_steps /
+    logs.runs / logs.eval_results / runtime.eval_runs / runtime.connection_secrets /
     runtime.company_keys / runtime.kb_documents / runtime.tool_approvals row created under
     them - the full set of runtime.*/logs.* tables any Playground-resolution test
     (resolvable_agent_version, run_playground_agent), KB test, eval test, or approval test
@@ -82,9 +82,12 @@ async def company_ids():
 
     Only touches the DB during teardown, and only if an id was handed out,
     so tests that never use it don't need Postgres. guardrail_events/eval_results/
-    tool_approvals are deleted before runs - their run_id references a runs row (not
-    DB-enforced, but keeps the same logical child-before-parent order the real FK below
-    (runs_table) establishes).
+    tool_approvals/run_steps are deleted before runs - run_steps has a real
+    run_steps_run_id_fkey FK onto logs.runs (added by `logs.run_steps`, PRD §6.8/§6.9 -
+    deleting runs first fails with a ForeignKeyViolationError, confirmed live the hard
+    way: every test that goes through `app.services.run_steps.log_run_steps` errored at
+    teardown before this was added, even though the test body itself had already passed);
+    the others have no DB-enforced FK but keep the same logical child-before-parent order.
     """
     from app.core.db import get_company_session
     from app.db.tables import (
@@ -95,6 +98,7 @@ async def company_ids():
         eval_runs_table,
         guardrail_events_table,
         kb_documents_table,
+        run_steps_table,
         runs_table,
         tool_approvals_table,
     )
@@ -130,6 +134,9 @@ async def company_ids():
             )
             await session.execute(
                 tool_approvals_table.delete().where(tool_approvals_table.c.company_id == company_uuid)
+            )
+            await session.execute(
+                run_steps_table.delete().where(run_steps_table.c.company_id == company_uuid)
             )
             await session.execute(runs_table.delete().where(runs_table.c.company_id == company_uuid))
             await session.execute(
@@ -202,7 +209,9 @@ def make_company():
     own "every table with company_id" comment). `company_ids()` alone never creates a real
     row here, only hands out a bare uuid for RLS-scoped runtime.*/logs.* tables - tests
     that need `app.services.company_budget.check_monthly_budget_not_exceeded` to see a
-    real `monthly_budget_usd` must use this fixture too, with the same id."""
+    real `monthly_budget_usd` must use this fixture too, with the same id. `status`
+    defaults to the column's own default ('active') - pass 'suspended' for a test of
+    db/migrations/post/026_resolve_api_key_requires_active_company.sql's gate."""
     settings = get_settings()
     created: list[str] = []
 
@@ -215,12 +224,12 @@ def make_company():
             password="changeme_local_dev_only",
         )
 
-    def _make(company_id: str, monthly_budget_usd: float | None = None) -> str:
+    def _make(company_id: str, monthly_budget_usd: float | None = None, status: str = "active") -> str:
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO console.companies (id, code, name, monthly_budget_usd) "
-                "VALUES (%s, %s, %s, %s)",
-                (company_id, f"test-{company_id[:8]}", "Test Co", monthly_budget_usd),
+                "INSERT INTO console.companies (id, code, name, monthly_budget_usd, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (company_id, f"test-{company_id[:8]}", "Test Co", monthly_budget_usd, status),
             )
             conn.commit()
         created.append(company_id)

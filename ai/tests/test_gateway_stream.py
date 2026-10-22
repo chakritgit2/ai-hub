@@ -143,9 +143,10 @@ def test_stream_with_unknown_api_key_is_404() -> None:
 
 @requires_postgres
 async def test_stream_malformed_conversation_id_is_422(
-    gateway_async_client, company_ids, resolvable_agent_version, make_deployment, make_api_key
+    gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment, make_api_key
 ) -> None:
     company_id = company_ids()
+    make_company(company_id)
     version_id = await resolvable_agent_version(company_id)
     deployment_id, slug = make_deployment(company_id, version_id)
     _key_id, full_key = make_api_key(company_id, [deployment_id])
@@ -160,12 +161,13 @@ async def test_stream_malformed_conversation_id_is_422(
 
 @requires_postgres
 async def test_stream_workflow_deployment_is_not_implemented(
-    gateway_async_client, company_ids, make_workflow_version, make_deployment, make_api_key
+    gateway_async_client, company_ids, make_company, make_workflow_version, make_deployment, make_api_key
 ) -> None:
     """Scoped out with the user: dynamiq's GraphOrchestrator streaming behavior was never
     researched, unlike the plain Agent streaming this endpoint reuses for an
     agent-backed deployment."""
     company_id = company_ids()
+    make_company(company_id)
     workflow_version_id = make_workflow_version(company_id, {})
     deployment_id, slug = make_deployment(company_id, workflow_version_id=workflow_version_id)
     _key_id, full_key = make_api_key(company_id, [deployment_id])
@@ -180,9 +182,11 @@ async def test_stream_workflow_deployment_is_not_implemented(
 
 @requires_postgres
 async def test_stream_happy_path_emits_tokens_then_final(
-    fake_streaming_agent, gateway_async_client, company_ids, resolvable_agent_version, make_deployment, make_api_key
+    fake_streaming_agent, gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment,
+    make_api_key
 ) -> None:
     company_id = company_ids()
+    make_company(company_id)
     version_id = await resolvable_agent_version(company_id)
     deployment_id, slug = make_deployment(company_id, version_id)
     _key_id, full_key = make_api_key(company_id, [deployment_id])
@@ -210,13 +214,14 @@ async def test_stream_happy_path_emits_tokens_then_final(
 
 @requires_postgres
 async def test_stream_workflow_deployment_rejects_disallowed_origin_before_not_implemented(
-    gateway_async_client, company_ids, make_workflow_version, make_deployment
+    gateway_async_client, company_ids, make_company, make_workflow_version, make_deployment
 ) -> None:
     """CORS must be enforced before branching on workflow-vs-agent, same order
     runDeployment already uses - otherwise a disallowed-origin browser call would learn a
     workflow-backed deployment exists (via a 501 body) without ever passing the CORS
     check every other response is gated behind."""
     company_id = company_ids()
+    make_company(company_id)
     workflow_version_id = make_workflow_version(company_id, {})
     deployment_id, slug = make_deployment(
         company_id, workflow_version_id=workflow_version_id, allowed_origins=["https://example.com"]
@@ -234,13 +239,15 @@ async def test_stream_workflow_deployment_rejects_disallowed_origin_before_not_i
 
 @requires_postgres
 async def test_stream_emits_tool_call_and_tool_result_step_events_with_sources(
-    fake_streaming_agent, gateway_async_client, company_ids, resolvable_agent_version, make_deployment, make_api_key
+    fake_streaming_agent, gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment,
+    make_api_key
 ) -> None:
     """The structured pre-tool-call reasoning event becomes a `tool_call` step; the
     matching tool-result event becomes a `tool_result` step with `sources` parsed from
     the Tavily-shaped `sources_with_url` markdown links - PRD Goal #6 follow-up, gateway
     only (Playground stays on StreamingMode.FINAL, unaffected)."""
     company_id = company_ids()
+    make_company(company_id)
     version_id = await resolvable_agent_version(company_id)
     deployment_id, slug = make_deployment(company_id, version_id)
     _key_id, full_key = make_api_key(company_id, [deployment_id])
@@ -272,9 +279,10 @@ async def test_stream_emits_tool_call_and_tool_result_step_events_with_sources(
 
 @requires_postgres
 async def test_stream_rejects_session_token_from_disallowed_origin(
-    fake_streaming_agent, gateway_async_client, company_ids, resolvable_agent_version, make_deployment
+    fake_streaming_agent, gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment
 ) -> None:
     company_id = company_ids()
+    make_company(company_id)
     version_id = await resolvable_agent_version(company_id)
     deployment_id, slug = make_deployment(company_id, version_id, allowed_origins=["https://example.com"])
     session_token, _ = mint_session_token(company_id, deployment_id, "user-1")
@@ -290,9 +298,10 @@ async def test_stream_rejects_session_token_from_disallowed_origin(
 
 @requires_postgres
 async def test_stream_allows_session_token_from_allowed_origin(
-    fake_streaming_agent, gateway_async_client, company_ids, resolvable_agent_version, make_deployment
+    fake_streaming_agent, gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment
 ) -> None:
     company_id = company_ids()
+    make_company(company_id)
     version_id = await resolvable_agent_version(company_id)
     deployment_id, slug = make_deployment(company_id, version_id, allowed_origins=["https://example.com"])
     session_token, _ = mint_session_token(company_id, deployment_id, "user-1")
@@ -313,12 +322,14 @@ async def test_stream_allows_session_token_from_allowed_origin(
 @requires_postgres
 @requires_redis
 async def test_stream_emits_quota_exceeded_error_event_when_rate_limited(
-    fake_streaming_agent, gateway_async_client, company_ids, resolvable_agent_version, make_deployment, make_api_key
+    fake_streaming_agent, gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment,
+    make_api_key
 ) -> None:
     """QuotaExceededError can't become an HTTP 429 anymore once the SSE response has
     started - it surfaces as an `error` event instead (see streamDeployment's own
     docstring for why)."""
     company_id = company_ids()
+    make_company(company_id)
     version_id = await resolvable_agent_version(company_id)
     deployment_id, slug = make_deployment(company_id, version_id, rate_limit_per_min=1)
     _key_id, full_key = make_api_key(company_id, [deployment_id])
