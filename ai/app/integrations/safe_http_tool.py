@@ -22,6 +22,7 @@ from dynamiq.runnables import RunnableConfig
 from dynamiq.types.cancellation import check_cancellation
 
 from app.integrations.safe_http_client import SafeHttpClient, SafeHttpClientError
+from app.integrations.write_tool_gate import enforce_write_tool_gate_or_raise
 from app.services.egress_allowlist import list_egress_allowlist
 from app.services.identity import DelegatedIdentityContext, mint_delegated_token
 
@@ -38,6 +39,15 @@ class SafeHttpApiCall(HttpApiCall):
     audience: str | None = None
     identity: DelegatedIdentityContext | None = None
     secret: str | None = None
+    # PRD §6.5/§8.1: human-approval gate for `access_level: write` tools. `tool_id`/
+    # `run_id` key the `runtime.tool_approvals` row this call creates; `allow_write_tools`
+    # is the calling deployment's own flag (always True for Playground/eval, which have no
+    # deployment to disallow it). All four are unused (no gate at all) when
+    # `access_level == "read"`, the common case.
+    tool_id: str = ""
+    access_level: str = "read"
+    run_id: str | None = None
+    allow_write_tools: bool = True
     # The event loop `app.services.compiler.build_agent` was running on when this tool was
     # built (always the server's main loop, real run or not). `list_egress_allowlist` goes
     # through `app.core.db`'s process-wide cached `AsyncEngine`, whose pooled asyncpg
@@ -105,10 +115,38 @@ class SafeHttpApiCall(HttpApiCall):
             return asyncio.run_coroutine_threadsafe(self._run_safe_request(request_kwargs), self.loop).result()
         return asyncio.run(self._run_safe_request(request_kwargs))
 
+    async def _enforce_write_gate(self, input_data: HttpApiCallInputSchema) -> None:
+        """The human-approval gate (PRD §6.5/§8.1) for `access_level == "write"` - called
+        from `execute`/`execute_async` *before* `_safe_request_kwargs` builds the real
+        outbound request, never after: that's the step that attaches a `service`-mode
+        secret or mints a `delegated` JWT into `request_kwargs["headers"]`, and the
+        `request` this stores into `runtime.tool_approvals` (readable by the company's own
+        console users) must never carry either. `input_data.model_dump(mode="json")` is
+        exactly what the LLM chose to call this tool with - nothing more."""
+        await enforce_write_tool_gate_or_raise(
+            self.name,
+            self.company_id,
+            self.run_id,
+            self.tool_id,
+            self.allow_write_tools,
+            request={"tool_name": self.name, "input": input_data.model_dump(mode="json")},
+        )
+
+    def _enforce_write_gate_from_thread(self, input_data: HttpApiCallInputSchema) -> None:
+        """Sync counterpart of `_enforce_write_gate`, same dispatch pattern as
+        `_run_safe_request_from_thread` - see that method's docstring."""
+        if self.loop is not None:
+            asyncio.run_coroutine_threadsafe(self._enforce_write_gate(input_data), self.loop).result()
+        else:
+            asyncio.run(self._enforce_write_gate(input_data))
+
     def execute(self, input_data: HttpApiCallInputSchema, config: RunnableConfig = None, **kwargs):
         config = ensure_config(config)
         check_cancellation(config)
         self.run_on_node_execute_run(config.callbacks, **kwargs)
+
+        if self.access_level == "write":
+            self._enforce_write_gate_from_thread(input_data)
 
         request_kwargs = self._safe_request_kwargs(input_data)
         try:
@@ -125,6 +163,9 @@ class SafeHttpApiCall(HttpApiCall):
     async def execute_async(self, input_data: HttpApiCallInputSchema, config: RunnableConfig = None, **kwargs):
         config = ensure_config(config)
         self.run_on_node_execute_run(config.callbacks, **kwargs)
+
+        if self.access_level == "write":
+            await self._enforce_write_gate(input_data)
 
         request_kwargs = self._safe_request_kwargs(input_data)
         try:

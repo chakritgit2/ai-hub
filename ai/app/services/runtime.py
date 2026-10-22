@@ -156,6 +156,28 @@ class _StepCollector(BaseCallbackHandler):
         )
 
 
+def _effective_run_timeout(agent_def: dict, settings) -> int:
+    """`Settings.RUN_TIMEOUT_SECONDS`, extended by one `Settings.APPROVAL_TIMEOUT_SECONDS`
+    window when `agent_def` has at least one `access_level: write` tool attached - a
+    write-tool call can pause the whole synchronous `agent.run()` for up to that long
+    waiting on a human decision (`SafeHttpApiCall._enforce_write_gate`, PRD §6.5), and the
+    plain `RUN_TIMEOUT_SECONDS` alone would cut that wait short well before the full
+    window. A run with no write tool attached gets exactly `RUN_TIMEOUT_SECONDS`,
+    unchanged from before this feature existed. Pulled out of `_execute_agent_run_body` as
+    its own pure function purely so it's unit-testable without mocking `asyncio.wait_for`.
+
+    Known limitation: only one approval window is budgeted, regardless of how many
+    write-tool calls (same tool retried, or several different ones) actually happen
+    during the run - a second approval wait in the same run can still be cut off by this
+    timeout if the first one already used up most of it. Rejected a per-call-count budget
+    (`max_loops * APPROVAL_TIMEOUT_SECONDS`) as the fix here: with the default `max_loops`
+    of 8 that's up to 40 extra minutes a stuck run could tie up a worker thread for, to
+    cover a rare compound case - not a trade worth making in this slice.
+    """
+    has_write_tool = any(tool_def.get("access_level") == "write" for tool_def in agent_def.get("tools", []))
+    return settings.RUN_TIMEOUT_SECONDS + (settings.APPROVAL_TIMEOUT_SECONDS if has_write_tool else 0)
+
+
 async def resolve_and_compile(company_id: str, agent_version_id: str, role: str) -> dict:
     """Resolves `agent_version_id` within `company_id` and compiles its *current* spec
     live (PRD §4.4-B) - never the `compiled_definition` a Publish may have snapshotted,
@@ -208,6 +230,7 @@ async def execute_agent_run(
     run_id: str | None = None,
     stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
     stream_mode: StreamingMode = StreamingMode.FINAL,
+    allow_write_tools: bool = True,
 ) -> dict:
     """Shared core: guardrail checks, memory, build+run the real Agent, usage tracking,
     `logs.runs`/`logs.guardrail_events` writes. Raises on resolution-adjacent failures
@@ -246,6 +269,13 @@ async def execute_agent_run(
     `app.main_gateway.streamDeployment`'s own docstring for how it turns those into
     `step` SSE events. Has no effect at all when `streamed_live` is false.
 
+    `allow_write_tools` (PRD §6.5/§8.1) gates every `access_level: write` tool this run's
+    agent has attached - `False` rejects a write-tool call outright (no human-approval row
+    is ever created), `True` (the default - every caller except `run_deployment_agent`)
+    lets it through to the approval gate itself. `run_deployment_agent` passes its own
+    deployment's `allow_write_tools` flag; Playground/eval have no deployment to disallow
+    it, so they always reach the approval gate.
+
     Returns `{"output": str, "trace_id": str, "latency_ms": int,
     "conversation_id": str | None, "guardrail_events": list, "tokens_in": int | None,
     "tokens_out": int | None, "cost_usd": float | None, "streamed_live": bool}`.
@@ -271,6 +301,7 @@ async def execute_agent_run(
             started=started,
             stream_handler=stream_handler,
             stream_mode=stream_mode,
+            allow_write_tools=allow_write_tools,
         )
     finally:
         if stream_handler is not None:
@@ -333,6 +364,7 @@ async def _execute_agent_run_body(
     started: float,
     stream_handler: AsyncStreamingIteratorCallbackHandler | None,
     stream_mode: StreamingMode,
+    allow_write_tools: bool,
 ) -> dict:
     """The actual body of `execute_agent_run`, split out only so the `try/finally` that
     guarantees `stream_handler.done_event` gets set (see `execute_agent_run`'s docstring)
@@ -477,6 +509,8 @@ async def _execute_agent_run_body(
         knowledge_api_keys=knowledge_api_keys,
         identity=identity_context,
         tool_secrets=tool_secrets,
+        run_id=run_id,
+        allow_write_tools=allow_write_tools,
     )
 
     usage_collector = _UsageCollector()
@@ -500,6 +534,7 @@ async def _execute_agent_run_body(
     # input_data.user_id/session_id into the metadata it hands memory.add()
     # itself - verified against the installed dynamiq==0.65.0 source, no
     # separate `metadata={...}` duplication is needed here.
+    run_timeout = _effective_run_timeout(agent_def, get_settings())
     try:
         result = await asyncio.wait_for(
             asyncio.to_thread(
@@ -511,7 +546,7 @@ async def _execute_agent_run_body(
                 },
                 config=RunnableConfig(callbacks=callbacks),
             ),
-            timeout=get_settings().RUN_TIMEOUT_SECONDS,
+            timeout=run_timeout,
         )
         # Agent.run() does NOT raise on an LLM/tool failure (e.g. a rejected API key) -
         # it returns a RunnableResult with status=FAILURE and the error captured in
@@ -689,6 +724,11 @@ async def run_deployment_agent(
     `QuotaExceededError` when rate-limited/over either quota, same "let it bubble to the
     caller" convention as resolution/compile/secret failures.
 
+    `deployment.allow_write_tools` (PRD §6.5/§8.1) is passed straight through to
+    `execute_agent_run` as `allow_write_tools` - the only caller that ever passes anything
+    other than the default `True`, since a deployment is the only context with its own
+    disallow flag (Playground/eval have no deployment to check).
+
     `stream_handler`/`stream_mode` (PRD Goal #6, gateway streaming) are passed straight
     through to `execute_agent_run` - see its docstring. Quota reserve/reconcile is
     unaffected either way: reservation happens before the run starts and reconciliation
@@ -737,6 +777,7 @@ async def run_deployment_agent(
             identity_claims=claims,
             stream_handler=stream_handler,
             stream_mode=stream_mode,
+            allow_write_tools=deployment.allow_write_tools,
         )
         return result
     except Exception as exc:

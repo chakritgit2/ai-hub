@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     MAX_MAX_LOOPS: int = 20
     RUN_TIMEOUT_SECONDS: int = 120
     CONVERSATION_TTL_DAYS: int = 30
+    # PRD §6.5/§8.1: how long a `write`-access tool call waits for a human decision in
+    # runtime.tool_approvals before it's marked "expired" - single source of truth for
+    # both app.services.approvals.wait_for_decision's own poll cutoff and
+    # app.services.runtime's run-timeout extension for runs that have a write tool
+    # attached (RUN_TIMEOUT_SECONDS alone would cut the wait short otherwise).
+    APPROVAL_TIMEOUT_SECONDS: int = 300
 
     # --- Object storage (PRD §6.6/§7.7: OKF files on disk under kb/{company_id}/{kb_id}/...)
     # - a plain local/PVC-mounted directory, not an object store (no licensing/cost concern,

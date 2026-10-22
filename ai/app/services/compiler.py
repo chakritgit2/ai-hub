@@ -270,6 +270,7 @@ def _build_compiled_definition(
                     "config": tool.config,
                     "auth_mode": tool.auth_mode,
                     "audience": tool.audience,
+                    "access_level": tool.access_level,
                 }
                 for tool in tools
             ]
@@ -309,6 +310,8 @@ def _build_http_tool(
     company_id: str,
     identity: DelegatedIdentityContext | None = None,
     secret: str | None = None,
+    run_id: str | None = None,
+    allow_write_tools: bool = True,
 ):
     """Uses `SafeHttpApiCall`, not Dynamiq's own `HttpApiCall`, so every real request this
     tool makes is checked against the company's egress allowlist - see that class's
@@ -320,7 +323,13 @@ def _build_http_tool(
     run's decrypted `runtime.tool_secrets` value for this tool, consumed only when
     `tool_def["auth_mode"] == "service"` - also `None` at the self-proof call, and
     routinely `None` even at real run time since a service-mode tool isn't required to
-    have a secret configured at all (fail-open, unlike delegated's fail-closed identity)."""
+    have a secret configured at all (fail-open, unlike delegated's fail-closed identity).
+
+    `run_id`/`allow_write_tools` (PRD §6.5/§8.1) are only consumed when
+    `tool_def["access_level"] == "write"` - see `SafeHttpApiCall._enforce_write_gate`.
+    Both default to values that make a `write` tool's gate a no-op at the self-proof
+    call, same reasoning as `identity`/`secret` above (no real request is ever made
+    there)."""
     from dynamiq.connections.connections import Http
 
     from app.integrations.safe_http_tool import SafeHttpApiCall
@@ -340,33 +349,65 @@ def _build_http_tool(
         audience=tool_def.get("audience"),
         identity=identity,
         secret=secret,
+        tool_id=tool_def["id"],
+        access_level=tool_def.get("access_level", "read"),
+        run_id=run_id,
+        allow_write_tools=allow_write_tools,
         # See SafeHttpApiCall.loop's docstring - this is always the server's main loop,
         # since this function only ever runs from inside the already-async build_agent.
         loop=asyncio.get_running_loop(),
     )
 
 
-def _build_builtin_tool(tool_def: dict, company_id: str, secret: str | None = None):
+def _build_builtin_tool(
+    tool_def: dict,
+    company_id: str,
+    secret: str | None = None,
+    run_id: str | None = None,
+    allow_write_tools: bool = True,
+):
     """Builds a `SafeTavilyTool`/`SafeExaTool` (PRD §6.5) - same never-a-real-call-at-
     compile-time rule as `_build_http_tool`'s `secret`: `None` at `compile_spec`'s own
     self-proof call (substituted with the same placeholder as the LLM/embedder keys, just
     to prove the node is constructible), always a real decrypted `runtime.tool_secrets`
     value at real run time - `app.services.runtime` fails closed before ever calling
     `build_agent` if a builtin tool has no stored secret, unlike `kind: "http"` service-mode
-    tools where a missing secret is a normal, fail-open case."""
+    tools where a missing secret is a normal, fail-open case.
+
+    `run_id`/`allow_write_tools` - see `_build_http_tool`'s docstring, same reasoning,
+    consumed only when `tool_def["access_level"] == "write"` (unusual for a search tool,
+    but `console.tools.access_level` isn't restricted by kind - see
+    `_SafeBuiltinSearchTool._enforce_write_gate`)."""
     from dynamiq.connections import Exa, Tavily
 
     from app.integrations.safe_builtin_tools import SafeExaTool, SafeTavilyTool
 
     api_key = secret or _COMPILE_TIME_PLACEHOLDER_API_KEY
+    access_level = tool_def.get("access_level", "read")
     # See SafeHttpApiCall.loop's docstring - same reasoning applies to these tools' own
     # egress-allowlist DB call.
     loop = asyncio.get_running_loop()
     if tool_def["type"] == TAVILY_TOOL_TYPE:
         return SafeTavilyTool(
-            name=tool_def["name"], connection=Tavily(api_key=api_key), company_id=company_id, loop=loop
+            name=tool_def["name"],
+            connection=Tavily(api_key=api_key),
+            company_id=company_id,
+            tool_id=tool_def["id"],
+            access_level=access_level,
+            run_id=run_id,
+            allow_write_tools=allow_write_tools,
+            loop=loop,
         )
-    return SafeExaTool(name=tool_def["name"], connection=Exa(api_key=api_key), company_id=company_id, loop=loop)
+    return SafeExaTool(
+        name=tool_def["name"],
+        connection=Exa(api_key=api_key),
+        company_id=company_id,
+        tool_id=tool_def["id"],
+        access_level=access_level,
+        run_id=run_id,
+        allow_write_tools=allow_write_tools,
+        loop=loop,
+    )
 
 
 async def _build_knowledge_tool(tool_def: dict, company_id: str, api_key: str):
@@ -409,21 +450,27 @@ async def _build_tools(
     knowledge_api_keys: dict[str, str],
     identity: DelegatedIdentityContext | None = None,
     tool_secrets: dict[str, str] | None = None,
+    run_id: str | None = None,
+    allow_write_tools: bool = True,
 ) -> list:
     """Constructs real Dynamiq tool/retrieval node instances from
     `compiled_definition["agent"]["tools"]`. `_resolve_tools`/`_resolve_knowledge` already
     guarantee only `_HTTP_TOOL_TYPE`/`BUILTIN_TOOL_TYPES`/`RETRIEVAL_TOOL_TYPE` entries
     ever reach here - the explicit check below is a defensive backstop (matches this
     codebase's general defense-in-depth style), not the primary gate.
+
+    `run_id`/`allow_write_tools` (PRD §6.5/§8.1) are only ever read by a `write`-access
+    tool at call time - knowledge retrieval is always read-only, so `_build_knowledge_tool`
+    doesn't need either.
     """
     tools = []
     for tool_def in tool_defs:
         if tool_def["type"] == _HTTP_TOOL_TYPE:
             secret = (tool_secrets or {}).get(tool_def["id"])
-            tools.append(_build_http_tool(tool_def, company_id, identity, secret))
+            tools.append(_build_http_tool(tool_def, company_id, identity, secret, run_id, allow_write_tools))
         elif tool_def["type"] in BUILTIN_TOOL_TYPES:
             secret = (tool_secrets or {}).get(tool_def["id"])
-            tools.append(_build_builtin_tool(tool_def, company_id, secret))
+            tools.append(_build_builtin_tool(tool_def, company_id, secret, run_id, allow_write_tools))
         elif tool_def["type"] == RETRIEVAL_TOOL_TYPE:
             tools.append(await _build_knowledge_tool(tool_def, company_id, knowledge_api_keys[tool_def["id"]]))
         else:
@@ -441,6 +488,8 @@ async def build_agent(
     knowledge_api_keys: dict[str, str] | None = None,
     identity: DelegatedIdentityContext | None = None,
     tool_secrets: dict[str, str] | None = None,
+    run_id: str | None = None,
+    allow_write_tools: bool = True,
 ):
     """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
     (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
@@ -472,6 +521,11 @@ async def build_agent(
     and `knowledge_api_keys` (so a secret can be rotated without recompiling/republishing
     the agent), but unlike those two, a missing entry is a normal, fail-open outcome, not
     an error - plenty of `service`-mode tools have no secret configured at all.
+
+    `run_id`/`allow_write_tools` (PRD §6.5/§8.1) feed every `access_level: write` tool's
+    human-approval gate - `None`/`True` at `compile_spec`'s self-proof call, same as
+    `identity`, since that call never reaches a tool's `execute()` (gating logic lives
+    there, not at build time).
     """
     from dynamiq.nodes.agents import Agent
     from dynamiq.skills.config import SkillsConfig
@@ -505,7 +559,13 @@ async def build_agent(
         role=agent_def["role"],
         max_loops=agent_def["max_loops"],
         tools=await _build_tools(
-            agent_def.get("tools", []), company_id, knowledge_api_keys or {}, identity, tool_secrets
+            agent_def.get("tools", []),
+            company_id,
+            knowledge_api_keys or {},
+            identity,
+            tool_secrets,
+            run_id,
+            allow_write_tools,
         ),
         memory=memory,
         skills=SkillsConfig(enabled=True, source=skill_registry) if skill_registry is not None else SkillsConfig(),

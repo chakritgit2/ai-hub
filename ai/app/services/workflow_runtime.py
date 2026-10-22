@@ -40,11 +40,10 @@ from app.services.egress_allowlist import list_egress_allowlist
 from app.services.quotas import QuotaExceededError, check_quota_not_exceeded, check_rate_limit, record_actual_usage
 from app.services.runs import RunUsage, log_run
 
-# Reused as-is rather than duplicated - a small, pure usage-aggregation utility with no
-# workflow-specific assumptions (see runtime.py's own docstring on how it threads through
-# RunnableConfig.callbacks); duplicating it would risk the two copies drifting apart on
-# how tokens/cost are summed.
-from app.services.runtime import _UsageCollector
+# Reused as-is rather than duplicated - small, pure utilities with no workflow-specific
+# assumptions (see runtime.py's own docstrings); duplicating either would risk the two
+# copies drifting apart.
+from app.services.runtime import _effective_run_timeout, _UsageCollector
 from app.services.tool_secrets import decrypt_tool_secret
 from app.services.workflow_compiler import build_manager, compile_workflow_spec, wire_orchestrator_states
 from app.services.workflow_versions import resolve_workflow_version
@@ -68,14 +67,22 @@ async def resolve_and_compile_workflow(company_id: str, workflow_version_id: str
     return result["compiled_definition"]
 
 
-async def _resolve_state_agent(agent_compiled: dict, company_id: str):
+async def _resolve_state_agent(
+    agent_compiled: dict, company_id: str, run_id: str | None = None, allow_write_tools: bool = True
+):
     """Replicates, for one workflow state's embedded agent `compiled_definition`, the
     same live secret/skill/egress resolution `runtime.execute_agent_run` already does for
     a lone agent (its steps for connection secret, skill registry scoping, egress
     allowlist, knowledge-base secrets, and tool secrets) - inlined here rather than
     shared, since secret-handling logic is exactly the kind of code this project prefers
     to keep duplicated-but-simple over abstracted-but-riskier (see this module's own
-    docstring)."""
+    docstring).
+
+    `run_id`/`allow_write_tools` (PRD §6.5/§8.1) are threaded straight into `build_agent`,
+    same reasoning as `app.services.runtime`'s own call - without this, a state's
+    `access_level: write` tool would always see `run_id=None` (crashing
+    `enforce_write_tool_gate`'s `uuid.UUID(run_id)`) and `allow_write_tools=True`
+    regardless of the workflow deployment's own flag."""
     agent_def = agent_compiled["agent"]
     connection_id = agent_def["llm"]["connection"]["connection_id"]
 
@@ -125,6 +132,8 @@ async def _resolve_state_agent(agent_compiled: dict, company_id: str):
         tool_secrets=tool_secrets,
         skill_registry=skill_registry,
         egress_allowlist=egress_allowlist,
+        run_id=run_id,
+        allow_write_tools=allow_write_tools,
     )
 
 
@@ -135,12 +144,17 @@ async def execute_workflow_run(
     input_text: str,
     source: str = "playground",
     deployment_id: str | None = None,
+    allow_write_tools: bool = True,
 ) -> dict:
     """Resolves `workflow_version_id`, compiles it live, builds a real `GraphOrchestrator`
     from real decrypted secrets (manager + every state's agent), and runs it.
     `deployment_id` is `None` for Playground calls (the default) and the real deployment id
     for a gateway call via `run_deployment_workflow`, threaded into `logs.runs` exactly
     like `runtime.execute_agent_run`'s own `deployment_id` param.
+
+    `allow_write_tools` (PRD §6.5/§8.1) mirrors `runtime.execute_agent_run`'s own param -
+    `run_deployment_workflow` passes its deployment's own flag; Playground (the default)
+    always reaches the approval gate itself, same reasoning as the single-agent path.
 
     Returns `{"output", "trace_id", "latency_ms", "tokens_in", "tokens_out", "cost_usd"}`
     - no `conversation_id` (no memory this slice).
@@ -173,12 +187,22 @@ async def execute_workflow_run(
     agents_by_state_id = {}
     for state_def in workflow_def["states"]:
         agents_by_state_id[state_def["id"]] = await _resolve_state_agent(
-            state_def["agent_compiled_definition"], company_id
+            state_def["agent_compiled_definition"], company_id, run_id=run_id, allow_write_tools=allow_write_tools
         )
     wire_orchestrator_states(orchestrator, workflow_def, agents_by_state_id)
 
     usage_collector = _UsageCollector()
 
+    # Same reasoning as runtime._execute_agent_run_body's own run_timeout: a write-tool
+    # call inside ANY state can pause this whole run for up to
+    # Settings.APPROVAL_TIMEOUT_SECONDS waiting on a human decision - checked across every
+    # state's tools, not just one, since the orchestrator can visit any of them.
+    all_state_tools = [
+        tool_def
+        for state_def in workflow_def["states"]
+        for tool_def in state_def["agent_compiled_definition"]["agent"].get("tools", [])
+    ]
+    run_timeout = _effective_run_timeout({"tools": all_state_tools}, get_settings())
     try:
         result = await asyncio.wait_for(
             asyncio.to_thread(
@@ -186,7 +210,7 @@ async def execute_workflow_run(
                 input_data={"input": input_text},
                 config=RunnableConfig(callbacks=[usage_collector]),
             ),
-            timeout=get_settings().RUN_TIMEOUT_SECONDS,
+            timeout=run_timeout,
         )
         if result.status != RunnableStatus.SUCCESS:
             message = result.error.message if result.error else f"workflow run ended with status {result.status}"
@@ -305,6 +329,7 @@ async def run_deployment_workflow(
             input_text,
             source="api",
             deployment_id=deployment_id,
+            allow_write_tools=deployment.allow_write_tools,
         )
         return result
     except Exception as exc:

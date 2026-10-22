@@ -419,6 +419,24 @@ async def test_compile_attaches_auth_mode_and_audience_to_http_tool_def(make_con
 
 
 @requires_postgres
+async def test_compile_attaches_access_level_to_http_tool_def(make_connection, make_tool):
+    """PRD §6.5/§8.1: the write-tool human-approval gate (app.integrations.safe_http_tool.
+    SafeHttpApiCall._enforce_write_gate) reads access_level straight off the compiled
+    tool def at run time - it must survive compilation, not just live in console.tools."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(
+        company_id, kind="http", access_level="write", config={"url": "https://api.example.com/orders"}
+    )
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    assert result["compiled_definition"]["agent"]["tools"][0]["access_level"] == "write"
+
+
+@requires_postgres
 async def test_build_agent_threads_tool_secret_into_service_mode_http_tool(make_connection, make_tool):
     company_id = str(uuid.uuid4())
     connection_id = make_connection(company_id)

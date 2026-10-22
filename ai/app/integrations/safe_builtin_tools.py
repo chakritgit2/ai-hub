@@ -22,20 +22,47 @@ from dynamiq.runnables import RunnableConfig
 from dynamiq.types.cancellation import check_cancellation
 
 from app.integrations.safe_http_client import SafeHttpClient
+from app.integrations.write_tool_gate import enforce_write_tool_gate_or_raise
 from app.services.egress_allowlist import list_egress_allowlist
 
 
 class _SafeBuiltinSearchTool:
     """Shared by `SafeTavilyTool`/`SafeExaTool` - not a `ConnectionNode` itself (that base
-    class differs per provider), just the one piece of behavior both need identically:
-    sending a request through `SafeHttpClient` instead of the parent's own
-    `self.client`/`self.get_async_client()`."""
+    class differs per provider), just the behavior both need identically: sending a
+    request through `SafeHttpClient` instead of the parent's own
+    `self.client`/`self.get_async_client()`, and the `access_level: write` human-approval
+    gate (PRD §6.5/§8.1 - unusual for a search tool, but `console.tools.access_level`
+    isn't restricted by kind)."""
 
     company_id: str
+    tool_id: str = ""
+    access_level: str = "read"
+    run_id: str | None = None
+    allow_write_tools: bool = True
     # See `app.integrations.safe_http_tool.SafeHttpApiCall.loop`'s docstring - same
     # cross-loop asyncpg hazard, same fix: route the egress-allowlist DB call back onto
     # the loop its pooled connections actually belong to instead of spinning up a new one.
     loop: asyncio.AbstractEventLoop | None = None
+
+    async def _enforce_write_gate(self, payload: dict) -> None:
+        """Same gate as `SafeHttpApiCall._enforce_write_gate` - see that docstring for why
+        this must run before any real request is built. `payload` here is already just
+        the search query/params the LLM supplied (`_build_search_payload`'s own output),
+        never anything with a credential attached."""
+        await enforce_write_tool_gate_or_raise(
+            self.name,
+            self.company_id,
+            self.run_id,
+            self.tool_id,
+            self.allow_write_tools,
+            request={"tool_name": self.name, "input": payload},
+        )
+
+    def _enforce_write_gate_from_thread(self, payload: dict) -> None:
+        if self.loop is not None:
+            asyncio.run_coroutine_threadsafe(self._enforce_write_gate(payload), self.loop).result()
+        else:
+            asyncio.run(self._enforce_write_gate(payload))
 
     async def _run_safe_request(self, method: str, url: str, json: dict, headers: dict | None = None):
         allowlist = await list_egress_allowlist(self.company_id)
@@ -54,6 +81,9 @@ class SafeTavilyTool(_SafeBuiltinSearchTool, TavilyTool):
         config = ensure_config(config)
         check_cancellation(config)
         self.run_on_node_execute_run(config.callbacks, **kwargs)
+
+        if self.access_level == "write":
+            self._enforce_write_gate_from_thread(input_data.model_dump(mode="json"))
 
         request_payload, connection_url = self._build_search_payload(input_data)
         try:
@@ -75,6 +105,9 @@ class SafeTavilyTool(_SafeBuiltinSearchTool, TavilyTool):
         check_cancellation(config)
         self.run_on_node_execute_run(config.callbacks, **kwargs)
 
+        if self.access_level == "write":
+            await self._enforce_write_gate(input_data.model_dump(mode="json"))
+
         request_payload, connection_url = self._build_search_payload(input_data)
         try:
             response = await self._run_safe_request(
@@ -94,6 +127,9 @@ class SafeExaTool(_SafeBuiltinSearchTool, ExaTool):
         check_cancellation(config)
         self.run_on_node_execute_run(config.callbacks, **kwargs)
 
+        if self.access_level == "write":
+            self._enforce_write_gate_from_thread(input_data.model_dump(mode="json"))
+
         payload, connection_url = self._build_search_payload(input_data)
         try:
             response = self._run_safe_request_from_thread(
@@ -110,6 +146,9 @@ class SafeExaTool(_SafeBuiltinSearchTool, ExaTool):
         config = ensure_config(config)
         check_cancellation(config)
         self.run_on_node_execute_run(config.callbacks, **kwargs)
+
+        if self.access_level == "write":
+            await self._enforce_write_gate(input_data.model_dump(mode="json"))
 
         payload, connection_url = self._build_search_payload(input_data)
         try:

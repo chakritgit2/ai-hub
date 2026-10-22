@@ -10,7 +10,7 @@ import pytest
 from dynamiq.runnables.base import RunnableStatus
 
 from app.services import runtime as runtime_module
-from app.services.runtime import run_deployment_agent, run_playground_agent
+from app.services.runtime import _effective_run_timeout, run_deployment_agent, run_playground_agent
 
 from .markers import requires_postgres
 
@@ -39,6 +39,17 @@ def _capture_tool_secrets(monkeypatch) -> dict:
 
     async def _fake_build_agent(compiled_definition, api_key, company_id, **kwargs):
         captured["tool_secrets"] = kwargs.get("tool_secrets")
+        return _FakeAgent()
+
+    monkeypatch.setattr(runtime_module, "build_agent", _fake_build_agent)
+    return captured
+
+
+def _capture_allow_write_tools(monkeypatch) -> dict:
+    captured: dict = {}
+
+    async def _fake_build_agent(compiled_definition, api_key, company_id, **kwargs):
+        captured["allow_write_tools"] = kwargs.get("allow_write_tools")
         return _FakeAgent()
 
     monkeypatch.setattr(runtime_module, "build_agent", _fake_build_agent)
@@ -87,6 +98,60 @@ async def test_run_playground_agent_marks_playground_claim_and_falls_back_sub(
     assert identity.claims == {"playground": True}
     assert identity.act == f"agent_version:{version_id}"
     assert identity.run_id
+
+
+@requires_postgres
+async def test_run_deployment_agent_threads_deployments_own_allow_write_tools_flag(
+    monkeypatch, company_ids, resolvable_agent_version, make_deployment
+) -> None:
+    """PRD §6.5/§8.1: a write tool "must be allowed by the deployment" -
+    deployments.allow_write_tools defaults to False (console-api/db/migrations/
+    20260925000007_create_deployments_table.php), and `make_deployment` doesn't override
+    it, so this deployment is a real "disallows write tools" one."""
+    captured = _capture_allow_write_tools(monkeypatch)
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+    deployment_id, _slug = make_deployment(company_id, version_id)
+
+    await run_deployment_agent(company_id, deployment_id, "developer", "hi", external_user_id="ext-1")
+
+    assert captured["allow_write_tools"] is False
+
+
+@requires_postgres
+async def test_run_playground_agent_always_allows_write_tools(
+    monkeypatch, company_ids, resolvable_agent_version
+) -> None:
+    """Playground has no deployment-level allow_write_tools flag to check (PRD §6.5) - a
+    write-tool call there always reaches the human-approval gate itself instead of being
+    rejected outright."""
+    captured = _capture_allow_write_tools(monkeypatch)
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+
+    await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
+
+    assert captured["allow_write_tools"] is True
+
+
+_FAKE_SETTINGS = SimpleNamespace(RUN_TIMEOUT_SECONDS=120, APPROVAL_TIMEOUT_SECONDS=300)
+
+
+def test_effective_run_timeout_unchanged_with_no_write_tool() -> None:
+    agent_def = {"tools": [{"access_level": "read"}]}
+
+    assert _effective_run_timeout(agent_def, _FAKE_SETTINGS) == 120
+
+
+def test_effective_run_timeout_unchanged_with_no_tools_at_all() -> None:
+    assert _effective_run_timeout({"tools": []}, _FAKE_SETTINGS) == 120
+    assert _effective_run_timeout({}, _FAKE_SETTINGS) == 120
+
+
+def test_effective_run_timeout_extended_when_any_tool_is_write() -> None:
+    agent_def = {"tools": [{"access_level": "read"}, {"access_level": "write"}]}
+
+    assert _effective_run_timeout(agent_def, _FAKE_SETTINGS) == 120 + 300
 
 
 @requires_postgres
