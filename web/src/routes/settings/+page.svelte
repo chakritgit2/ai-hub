@@ -93,6 +93,21 @@
 	let auditTo = $state('');
 	let auditExpandedId = $state<string | null>(null);
 
+	const AUDIT_LOG_ERROR_MESSAGES: Record<string, string> = {
+		invalid_from: 'The "From" date is not valid.',
+		invalid_to: 'The "To" date is not valid.',
+		invalid_limit: 'The page size is not valid.',
+		invalid_offset: 'The page offset is not valid.',
+		forbidden: 'You no longer have permission to view audit logs.'
+	};
+
+	function describeAuditError(e: unknown, fallback: string): string {
+		if (e instanceof ApiError) {
+			return AUDIT_LOG_ERROR_MESSAGES[e.message] ?? e.message;
+		}
+		return e instanceof Error ? e.message : fallback;
+	}
+
 	async function loadAuditLogs(reset: boolean) {
 		const offset = reset ? 0 : auditOffset;
 		auditLoading = true;
@@ -108,7 +123,7 @@
 			auditHasMore = response.has_more;
 			auditOffset = offset + response.items.length;
 		} catch (e) {
-			auditError = e instanceof Error ? e.message : 'Failed to load audit logs.';
+			auditError = describeAuditError(e, 'Failed to load audit logs.');
 		} finally {
 			auditLoading = false;
 		}

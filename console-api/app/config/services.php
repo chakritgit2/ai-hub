@@ -14,6 +14,25 @@ use Phalcon\Mvc\Dispatcher;
 use Phalcon\Mvc\Router;
 use Phalcon\Mvc\Url as UrlResolver;
 
+/**
+ * Both `db` and `dbPlatform` point at the same Postgres database, differing only in which
+ * role authenticates the connection — keep their host/port/dbname/options construction
+ * here in one place so the two can never drift apart.
+ */
+function makeConsoleApiPgConnection(\Phalcon\Config\Config $dbConfig, string $username, string $password): PdoPostgresql
+{
+    return new PdoPostgresql([
+        'host' => $dbConfig->host,
+        'port' => (string) $dbConfig->port,
+        'dbname' => $dbConfig->dbname,
+        'username' => $username,
+        'password' => $password,
+        'options' => [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        ],
+    ]);
+}
+
 $di = new FactoryDefault();
 
 $di->setShared('config', function () {
@@ -26,37 +45,19 @@ $di->setShared('db', function () {
     /** @var \Phalcon\Config\Config $config */
     $config = $this->getShared('config')->database;
 
-    return new PdoPostgresql([
-        'host' => $config->host,
-        'port' => (string) $config->port,
-        'dbname' => $config->dbname,
-        'username' => $config->username,
-        'password' => $config->password,
-        'options' => [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        ],
-    ]);
+    return makeConsoleApiPgConnection($config, $config->username, $config->password);
 });
 
-// Same connection as `db`, but authenticated as `console_platform` instead of
-// `console_app` — the only role `platform_admin_read_all` (db/migrations/post/
-// 002_rls_policies.sql) grants cross-company SELECT to, including audit_logs rows with
-// company_id IS NULL. Used only by AuditLogsController; every other platform_admin
-// endpoint (Tenants/Companies) queries tables with no RLS at all via `db`.
+// Same database as `db`, but authenticated as `console_platform` instead of `console_app`
+// — the only role `platform_admin_read_all` (db/migrations/post/002_rls_policies.sql)
+// grants cross-company SELECT to, including audit_logs rows with company_id IS NULL. Used
+// only by AuditLogsController; every other platform_admin endpoint (Tenants/Companies)
+// queries tables with no RLS at all via `db`.
 $di->setShared('dbPlatform', function () {
     /** @var \Phalcon\Config\Config $config */
     $config = $this->getShared('config')->database;
 
-    return new PdoPostgresql([
-        'host' => $config->host,
-        'port' => (string) $config->port,
-        'dbname' => $config->dbname,
-        'username' => $config->platformUsername,
-        'password' => $config->platformPassword,
-        'options' => [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        ],
-    ]);
+    return makeConsoleApiPgConnection($config, $config->platformUsername, $config->platformPassword);
 });
 
 $di->setShared('router', function () {

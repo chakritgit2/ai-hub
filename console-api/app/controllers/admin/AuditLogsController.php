@@ -21,6 +21,7 @@ class AuditLogsController extends ControllerBase
 {
     private const DEFAULT_LIMIT = 50;
     private const MAX_LIMIT = 200;
+    private const MAX_OFFSET = 100_000;
 
     private const LIST_SQL = "SELECT l.id, l.company_id, c.code AS company_code, c.name AS company_name,
                 l.user_id, u.email AS user_email, l.action, l.entity, l.entity_id, l.diff, l.created_at
@@ -56,7 +57,7 @@ class AuditLogsController extends ControllerBase
 
         $offset = 0;
         if (($rawOffset = $this->request->getQuery('offset')) !== null && $rawOffset !== '') {
-            if (!ctype_digit((string) $rawOffset)) {
+            if (!ctype_digit((string) $rawOffset) || (int) $rawOffset > self::MAX_OFFSET) {
                 return $this->jsonResponse(['error' => 'invalid_offset'], 400);
             }
             $offset = (int) $rawOffset;
@@ -67,7 +68,7 @@ class AuditLogsController extends ControllerBase
         // and can grow large, and no caller here needs a total, just "is there a next page".
         $rows = $db->fetchAll(self::LIST_SQL, Enum::FETCH_ASSOC, [
             'from' => $from !== '' ? $from : null,
-            'to' => $to !== '' ? $to : null,
+            'to' => $to !== '' ? $this->endOfDayIfDateOnly((string) $to) : null,
             'fetch_limit' => $limit + 1,
             'offset' => $offset,
         ]);
@@ -79,6 +80,19 @@ class AuditLogsController extends ControllerBase
             'items' => array_map([$this, 'formatEntry'], $rows),
             'has_more' => $hasMore,
         ]);
+    }
+
+    /**
+     * `to` comes from the Settings UI's <input type="date">, a bare "YYYY-MM-DD" with no
+     * time component — cast straight to timestamptz that means midnight, which would make
+     * an inclusive `<=` filter exclude the entire day the admin actually picked. Widening a
+     * plain date to its last instant keeps the filter inclusive of that whole day; a value
+     * that already carries a time (or any other format strtotime() accepts) passes through
+     * unchanged.
+     */
+    private function endOfDayIfDateOnly(string $value): string
+    {
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) === 1 ? $value . ' 23:59:59.999999' : $value;
     }
 
     /**
