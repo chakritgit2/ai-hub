@@ -25,6 +25,11 @@ class MeController extends ControllerBase
             'companies' => array_map(
                 static fn (array $membership): array => [
                     'company_id' => $membership['company_id'],
+                    'company_code' => $membership['company_code'],
+                    'company_name' => $membership['company_name'],
+                    'tenant_id' => $membership['tenant_id'],
+                    'tenant_code' => $membership['tenant_code'],
+                    'tenant_name' => $membership['tenant_name'],
                     'role' => $membership['role'],
                 ],
                 $authUser['companies']

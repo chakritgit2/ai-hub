@@ -110,7 +110,10 @@ class AuthService
      *     id: string,
      *     email: string,
      *     is_platform_admin: bool,
-     *     companies: array<int, array{company_id: string, role: string}>,
+     *     companies: array<int, array{
+     *         company_id: string, company_code: string, company_name: string,
+     *         tenant_id: string, tenant_code: string, tenant_name: string, role: string
+     *     }>,
      *     skipped_company_refs: array<int, string>
      * }
      */
@@ -145,8 +148,14 @@ class AuthService
         $skippedRefs = [];
 
         foreach ($claims['companies'] as $entry) {
+            // Joins tenants here (not resolved separately) so the switcher/header can
+            // group and label companies without a second round trip - companies.tenant_id
+            // is NOT NULL (20261026000002), so this join never silently drops a row.
             $company = $this->db->fetchOne(
-                'SELECT id FROM console.companies WHERE external_ref = :ref',
+                'SELECT c.id, c.code, c.name, t.id AS tenant_id, t.code AS tenant_code, t.name AS tenant_name
+                 FROM console.companies c
+                 JOIN console.tenants t ON t.id = c.tenant_id
+                 WHERE c.external_ref = :ref',
                 Enum::FETCH_ASSOC,
                 ['ref' => $entry['ref']]
             );
@@ -166,7 +175,15 @@ class AuthService
 
             $companyId = (string) $company['id'];
             $this->upsertCompanyMember($companyId, $userId, $entry['role']);
-            $companies[] = ['company_id' => $companyId, 'role' => $entry['role']];
+            $companies[] = [
+                'company_id' => $companyId,
+                'company_code' => $company['code'],
+                'company_name' => $company['name'],
+                'tenant_id' => (string) $company['tenant_id'],
+                'tenant_code' => $company['tenant_code'],
+                'tenant_name' => $company['tenant_name'],
+                'role' => $entry['role'],
+            ];
         }
 
         return [

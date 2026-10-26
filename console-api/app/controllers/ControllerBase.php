@@ -64,7 +64,10 @@ abstract class ControllerBase extends Controller
      *     id: string,
      *     email: string,
      *     is_platform_admin: bool,
-     *     companies: array<int, array{company_id: string, role: string}>,
+     *     companies: array<int, array{
+     *         company_id: string, company_code: string, company_name: string,
+     *         tenant_id: string, tenant_code: string, tenant_name: string, role: string
+     *     }>,
      *     skipped_company_refs: array<int, string>
      * }|null
      */

@@ -7,6 +7,10 @@ export interface CompanyOption {
 	id: string;
 	code: string;
 	name: string;
+	// Unset for the pre-login sampleCompanies placeholder below - real options (from
+	// getMe()) always have these since console.companies.tenant_id is NOT NULL.
+	tenant_id?: string;
+	tenant_name?: string;
 }
 
 // Hardcoded sample companies for the skeleton; real data will come from getMe()/listCompanies().
