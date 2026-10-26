@@ -304,7 +304,7 @@ export interface Agent {
 	id: string;
 	company_id: string;
 	name: string;
-	description?: string;
+	description?: string | null;
 	status: string;
 	archived_at?: string | null;
 	// Convenience fields surfaced from the latest identity (PRD §6.1a) for the catalog view.

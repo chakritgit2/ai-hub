@@ -1,13 +1,16 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import {
+		updateAgent,
 		updateAgentVersion,
 		createAgentVersion,
 		publishAgentVersion,
 		listAgentVersions,
 		cloneAgent,
 		archiveAgent,
-		unarchiveAgent
+		unarchiveAgent,
+		exportAgent,
+		importAgent
 	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
 	import type { Agent, AgentVersion } from '$lib/api/types';
@@ -76,6 +79,10 @@
 		publishErrors = [];
 		publishGateError = null;
 		savedNotice = false;
+		renaming = false;
+		exportError = null;
+		importError = null;
+		importSuccess = false;
 	}
 
 	let loadedForAgentId = $state<string | undefined>(undefined);
@@ -313,10 +320,164 @@
 			archiving = false;
 		}
 	}
+
+	// Shared across rename/export/import below - every one of these endpoints can 403/404
+	// the same way (membership revoked mid-session, agent deleted by someone else).
+	const COMMON_ERROR_MESSAGES: Record<string, string> = {
+		forbidden: 'You no longer have permission to do this.',
+		not_found: 'This agent no longer exists.'
+	};
+
+	// ---- Rename / redescribe (console.agents.name/description - independent of the
+	// identity.name/role carried inside each version's spec) ----
+	let renaming = $state(false);
+	let renameForm = $state({ name: '', description: '' });
+	let renameError = $state<string | null>(null);
+	let savingRename = $state(false);
+
+	const RENAME_ERROR_MESSAGES: Record<string, string> = {
+		...COMMON_ERROR_MESSAGES,
+		name_required: 'Name is required.',
+		name_already_exists: 'An agent with this name already exists.'
+	};
+
+	function openRename() {
+		if (!agent) return;
+		renameForm = { name: agent.name, description: agent.description ?? '' };
+		renameError = null;
+		renaming = true;
+	}
+
+	async function submitRename() {
+		if (!agent) return;
+		savingRename = true;
+		renameError = null;
+		try {
+			agent = await updateAgent(agent.id, {
+				name: renameForm.name,
+				description: renameForm.description.trim() === '' ? null : renameForm.description
+			});
+			renaming = false;
+		} catch (e) {
+			renameError =
+				e instanceof ApiError ? (RENAME_ERROR_MESSAGES[e.message] ?? e.message) : 'Failed to save changes.';
+		} finally {
+			savingRename = false;
+		}
+	}
+
+	// ---- Export / import YAML (AgentsController::exportAgent/importAgent) ----
+	let exporting = $state(false);
+	let exportError = $state<string | null>(null);
+	let importing = $state(false);
+	let importError = $state<string | null>(null);
+	let importSuccess = $state(false);
+	let importFileInput = $state<HTMLInputElement>();
+
+	async function doExport() {
+		if (!agent) return;
+		exportError = null;
+		exporting = true;
+		try {
+			const yaml = await exportAgent(agent.id);
+			const blob = new Blob([yaml], { type: 'application/yaml' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${agent.name}.yaml`;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch (e) {
+			exportError =
+				e instanceof ApiError
+					? e.message === 'no_versions'
+						? 'This agent has no versions yet - nothing to export.'
+						: (COMMON_ERROR_MESSAGES[e.message] ?? e.message)
+					: 'Failed to export this agent.';
+		} finally {
+			exporting = false;
+		}
+	}
+
+	function triggerImport() {
+		importError = null;
+		importSuccess = false;
+		importFileInput?.click();
+	}
+
+	const IMPORT_ERROR_MESSAGES: Record<string, string> = {
+		...COMMON_ERROR_MESSAGES,
+		yaml_required: 'The selected file is empty.',
+		invalid_yaml: 'Could not parse this file as YAML.',
+		spec_required: 'This file has no "spec" section - is it an agent export?',
+		agent_archived: 'This agent is archived - unarchive it first.',
+		version_conflict_retry: 'Someone else imported or created a version at the same moment - try again.'
+	};
+
+	async function onImportFileChange(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file || !agent) return;
+
+		const proceed = confirm(
+			`Import "${file.name}" as a new draft version of "${agent.display_name ?? agent.name}"? This won't change the agent's name or description.`
+		);
+		if (!proceed) {
+			input.value = '';
+			return;
+		}
+
+		importing = true;
+		importError = null;
+		try {
+			const yaml = await file.text();
+			await importAgent(agent.id, yaml);
+			const fresh = await listAgentVersions(agent.id);
+			loadFrom(agent, fresh);
+			importSuccess = true;
+		} catch (e) {
+			importError =
+				e instanceof ApiError && e.message === 'yaml_too_large'
+					? `File is too large (max ${(e.body as { max_bytes?: number } | undefined)?.max_bytes ?? '?'} bytes).`
+					: e instanceof ApiError
+						? (IMPORT_ERROR_MESSAGES[e.message] ?? e.message)
+						: 'Failed to import this file.';
+		} finally {
+			importing = false;
+			input.value = '';
+		}
+	}
 </script>
 
 {#snippet headerActions()}
-	<div class="flex gap-2">
+	<div class="flex flex-wrap gap-2">
+		<button
+			type="button"
+			class="rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium
+				text-neutral-700 shadow-sm hover:bg-neutral-50"
+			onclick={openRename}
+		>
+			Rename
+		</button>
+		<button
+			type="button"
+			class="rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium
+				text-neutral-700 shadow-sm hover:bg-neutral-50 disabled:opacity-50"
+			onclick={doExport}
+			disabled={exporting}
+		>
+			{exporting ? 'Exporting…' : 'Export YAML'}
+		</button>
+		<button
+			type="button"
+			class="rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium
+				text-neutral-700 shadow-sm hover:bg-neutral-50 disabled:opacity-50"
+			onclick={triggerImport}
+			disabled={importing || agent?.status === 'archived'}
+			title={agent?.status === 'archived' ? 'Unarchive this agent first' : 'Import a YAML export as a new draft version'}
+		>
+			{importing ? 'Importing…' : 'Import YAML'}
+		</button>
 		<button
 			type="button"
 			class="rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium
@@ -384,6 +545,14 @@
 	</div>
 {/snippet}
 
+<input
+	bind:this={importFileInput}
+	type="file"
+	accept=".yaml,.yml,application/yaml,text/yaml"
+	class="hidden"
+	onchange={onImportFileChange}
+/>
+
 {#if data.loadError}
 	<div class="rounded-md border border-danger/30 bg-danger/5 p-4">
 		<p class="text-sm font-medium text-danger">Could not load this agent</p>
@@ -396,6 +565,73 @@
 		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
 			{error}
 		</div>
+	{/if}
+
+	{#if exportError}
+		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+			{exportError}
+		</div>
+	{/if}
+
+	{#if importError}
+		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+			{importError}
+		</div>
+	{/if}
+
+	{#if importSuccess}
+		<div class="mb-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-primary-700">
+			Imported as a new draft version below.
+		</div>
+	{/if}
+
+	{#if renaming}
+		<form
+			class="mb-4 grid grid-cols-1 gap-3 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-2"
+			onsubmit={(e) => {
+				e.preventDefault();
+				submitRename();
+			}}
+		>
+			{#if renameError}
+				<p class="text-sm text-danger sm:col-span-2">{renameError}</p>
+			{/if}
+			<label class="block">
+				<span class="text-sm font-medium text-neutral-700">Name</span>
+				<input
+					type="text"
+					bind:value={renameForm.name}
+					required
+					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				/>
+			</label>
+			<label class="block">
+				<span class="text-sm font-medium text-neutral-700">Description</span>
+				<input
+					type="text"
+					bind:value={renameForm.description}
+					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				/>
+			</label>
+			<div class="flex gap-2 sm:col-span-2">
+				<button
+					type="submit"
+					disabled={savingRename}
+					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+				>
+					{savingRename ? 'Saving…' : 'Save'}
+				</button>
+				<button
+					type="button"
+					class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
+					onclick={() => (renaming = false)}
+				>
+					Cancel
+				</button>
+			</div>
+		</form>
 	{/if}
 
 	{#if publishErrors.length > 0}
