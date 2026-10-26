@@ -231,6 +231,16 @@ export function listApiKeys(): Promise<ApiKey[]> {
 	return apiFetch<ApiKey[]>('/api-keys');
 }
 
+/**
+ * Pools API keys across every company the caller is an admin in under this one tenant
+ * (ApiKeysController::listApiKeys()'s X-Tenant-Id branch) - tenth menu in the "each menu
+ * shows only its own tenant's data" pilot, same pattern as listAgentsForTenant() etc.
+ * Every other /api-keys call stays single-company via listApiKeys() above.
+ */
+export function listApiKeysForTenant(tenantId: string): Promise<ApiKey[]> {
+	return apiFetch<ApiKey[]>('/api-keys', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function createApiKey(input: Partial<ApiKey>): Promise<ApiKeyCreated> {
 	return apiFetch<ApiKeyCreated>('/api-keys', { method: 'POST', body: input });
 }

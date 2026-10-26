@@ -37,8 +37,31 @@ final class ApiKeyScopeError extends \RuntimeException
  */
 class ApiKeysController extends ControllerBase
 {
+    private const LIST_API_KEYS_SQL = "SELECT k.id, k.company_id, k.name, k.prefix, k.allowed_ips, k.rate_limit_per_min,
+                k.daily_cost_limit_usd, k.last_used_at, k.created_by, k.revoked_at, k.created_at,
+                coalesce(array_agg(s.deployment_id ORDER BY s.deployment_id) FILTER (WHERE s.deployment_id IS NOT NULL), '{}') AS deployment_ids
+         FROM console.api_keys k
+         LEFT JOIN console.api_key_scopes s ON s.api_key_id = k.id
+         GROUP BY k.id
+         ORDER BY k.created_at DESC";
+
+    /**
+     * Tenth menu in the "each menu shows only its own tenant's data" pilot (option A, see
+     * AgentsController::listAgents()'s X-Tenant-Id branch for the full reasoning) - same
+     * pattern applied verbatim, with one difference: this list is admin-only per company
+     * (PRD §9.3), not just membership, so the tenant-pooled branch filters
+     * $authUser['companies'] down to companies where the caller's own role is admin, not
+     * merely a member - same gate as requireAdminRole() enforces on the single-company
+     * path, just applied per company instead of once. Every mutator is untouched and still
+     * requires a single X-Company-Id.
+     */
     public function listApiKeys(): Response
     {
+        $tenantId = $_SERVER['HTTP_X_TENANT_ID'] ?? null;
+        if ($tenantId !== null && $tenantId !== '') {
+            return $this->listApiKeysForTenant($tenantId);
+        }
+
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
@@ -47,17 +70,48 @@ class ApiKeysController extends ControllerBase
         }
 
         $rows = $this->runInCompanyTransaction(
-            static fn ($db) => $db->fetchAll(
-                "SELECT k.id, k.company_id, k.name, k.prefix, k.allowed_ips, k.rate_limit_per_min,
-                        k.daily_cost_limit_usd, k.last_used_at, k.created_by, k.revoked_at, k.created_at,
-                        coalesce(array_agg(s.deployment_id ORDER BY s.deployment_id) FILTER (WHERE s.deployment_id IS NOT NULL), '{}') AS deployment_ids
-                 FROM console.api_keys k
-                 LEFT JOIN console.api_key_scopes s ON s.api_key_id = k.id
-                 GROUP BY k.id
-                 ORDER BY k.created_at DESC",
-                Enum::FETCH_ASSOC
-            )
+            static fn ($db) => $db->fetchAll(self::LIST_API_KEYS_SQL, Enum::FETCH_ASSOC)
         );
+
+        return $this->jsonResponse(array_map(
+            fn (array $row) => [...$this->formatApiKey($row), 'deployment_ids' => $this->parsePgUuidArray($row['deployment_ids'])],
+            $rows
+        ));
+    }
+
+    /**
+     * Same approach as AgentsController::listAgentsForTenant(), filtered to admin
+     * memberships only (see listApiKeys()'s own docblock for why) - the per-company
+     * RLS-scoped query is unchanged, this only changes which companies get looped. A
+     * tenant where the caller is a member but never admin anywhere just yields an empty
+     * company list and therefore an empty (200) result, same as a tenant with zero
+     * membership at all - no information leak either way.
+     */
+    private function listApiKeysForTenant(string $tenantId): Response
+    {
+        $authUser = $this->getAuthUser();
+        $companyIds = array_values(array_unique(array_map(
+            static fn (array $membership): string => $membership['company_id'],
+            array_filter(
+                $authUser['companies'] ?? [],
+                static fn (array $membership): bool => $membership['tenant_id'] === $tenantId
+                    && $membership['role'] === 'admin'
+            )
+        )));
+
+        $rows = [];
+        foreach ($companyIds as $companyId) {
+            $companyRows = $this->runInTransactionAsCompany(
+                $companyId,
+                static fn ($db) => $db->fetchAll(self::LIST_API_KEYS_SQL, Enum::FETCH_ASSOC)
+            );
+            array_push($rows, ...$companyRows);
+        }
+
+        // Each company's own rows arrive newest-first, but concatenating them in
+        // company-iteration order doesn't make the merged set newest-first overall -
+        // re-sort once across the whole pooled result (same as listAgentsForTenant()).
+        usort($rows, static fn (array $a, array $b): int => $b['created_at'] <=> $a['created_at']);
 
         return $this->jsonResponse(array_map(
             fn (array $row) => [...$this->formatApiKey($row), 'deployment_ids' => $this->parsePgUuidArray($row['deployment_ids'])],

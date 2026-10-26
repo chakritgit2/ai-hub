@@ -1,9 +1,20 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listApiKeys, createApiKey, revokeApiKey, listDeployments } from '$lib/api/console';
+	import { listApiKeysForTenant, createApiKey, revokeApiKey, listDeploymentsForTenant } from '$lib/api/console';
 	import type { ApiKey, ApiKeyCreated, Deployment } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { companyId } from '$lib/stores/company';
+	import { companyId, tenantId } from '$lib/stores/company';
+	import { currentUser } from '$lib/stores/auth';
+
+	// Pilot of "each menu shows only its own tenant's data" (option A) - pools API keys
+	// (for companies the caller is admin in, same gate as the single-company path's
+	// requireAdminRole()) across every company under the selected tenant instead of the
+	// usual single X-Company-Id company. See ApiKeysController::listApiKeys()'s
+	// X-Tenant-Id branch and agents/+page.svelte, the first menu this pattern was applied
+	// to. `deployments` is also fetched tenant-wide now (not just the current company) so
+	// a pooled key's deploymentSlugs() lookup resolves correctly regardless of which
+	// company it belongs to - the "+ New key" form's own checklist then filters it back
+	// down to the current company, since a new key is still created into just that one.
 
 	let apiKeys = $state<ApiKey[]>([]);
 	let deployments = $state<Deployment[]>([]);
@@ -14,6 +25,12 @@
 	let copyFailed = $state(false);
 	let revokingId = $state<string | null>(null);
 	let copiedPrefixId = $state<string | null>(null);
+
+	let formDeployments = $derived(deployments.filter((d) => d.company_id === $companyId));
+
+	function companyLabel(apiKeyCompanyId: string): string | undefined {
+		return $currentUser?.companies.find((c) => c.company_id === apiKeyCompanyId)?.company_name;
+	}
 
 	let form = $state({
 		name: '',
@@ -47,8 +64,21 @@
 	async function load() {
 		loading = true;
 		error = null;
+		// No tenant resolved yet (e.g. a brand new SSO user with zero company
+		// memberships at all, so CompanySwitcher never has anything to pick) - nothing
+		// to fetch, but still clear the spinner rather than spinning forever. Same guard
+		// as agents/+page.svelte's load().
+		if (!$tenantId) {
+			apiKeys = [];
+			deployments = [];
+			loading = false;
+			return;
+		}
 		try {
-			[apiKeys, deployments] = await Promise.all([listApiKeys(), listDeployments()]);
+			[apiKeys, deployments] = await Promise.all([
+				listApiKeysForTenant($tenantId),
+				listDeploymentsForTenant($tenantId)
+			]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load API keys.';
 		} finally {
@@ -132,7 +162,7 @@
 
 	onMount(load);
 	$effect(() => {
-		$companyId;
+		$tenantId;
 		load();
 	});
 
@@ -249,11 +279,11 @@
 				(every call gets 404). Server-to-server only, browsers use 5-minute session tokens instead
 				(PRD §6.3).
 			</p>
-			{#if deployments.length === 0}
-				<p class="mt-2 text-sm text-neutral-500">No deployments yet — publish one first.</p>
+			{#if formDeployments.length === 0}
+				<p class="mt-2 text-sm text-neutral-500">No deployments yet for this company — publish one first.</p>
 			{:else}
 				<div class="mt-2 flex flex-col gap-1.5">
-					{#each deployments as deployment (deployment.id)}
+					{#each formDeployments as deployment (deployment.id)}
 						<label
 							class="flex items-center gap-2 text-sm"
 							class:text-neutral-700={deployment.enabled}
@@ -352,7 +382,7 @@
 	</div>
 {:else if apiKeys.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
-		<p class="text-sm text-neutral-500">No API keys yet for this company.</p>
+		<p class="text-sm text-neutral-500">No API keys yet for this tenant.</p>
 	</div>
 {:else}
 	<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
@@ -360,6 +390,7 @@
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
 				<tr>
 					<th class="px-4 py-2">Name</th>
+					<th class="px-4 py-2">Company</th>
 					<th class="px-4 py-2" title="Short, non-secret identifier for this key. The full secret is only ever shown once, at creation.">
 						Prefix
 					</th>
@@ -382,6 +413,13 @@
 				{#each apiKeys as key (key.id)}
 					<tr class={key.revoked_at ? 'opacity-50' : ''}>
 						<td class="px-4 py-2 font-medium text-neutral-900">{key.name}</td>
+						<td class="px-4 py-2 text-neutral-600">
+							{#if companyLabel(key.company_id)}
+								<span class="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
+									{companyLabel(key.company_id)}
+								</span>
+							{/if}
+						</td>
 						<td class="px-4 py-2 font-mono text-xs text-neutral-600">
 							<span class="inline-flex items-center gap-1.5">
 								{key.prefix}••••
