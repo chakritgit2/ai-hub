@@ -97,6 +97,16 @@ export function listAgents(): Promise<Agent[]> {
 	return apiFetch<Agent[]>('/agents');
 }
 
+/**
+ * Pools agents across every company the caller belongs to under this one tenant
+ * (AgentsController::listAgents()'s X-Tenant-Id branch) - the Agents list page's pilot of
+ * "each menu shows only its own tenant's data". Every other /agents call stays
+ * single-company via listAgents() above.
+ */
+export function listAgentsForTenant(tenantId: string): Promise<Agent[]> {
+	return apiFetch<Agent[]>('/agents', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function createAgent(input: Partial<Agent>): Promise<Agent> {
 	return apiFetch<Agent>('/agents', { method: 'POST', body: input });
 }

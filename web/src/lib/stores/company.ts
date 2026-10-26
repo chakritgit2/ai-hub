@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
 
 const STORAGE_KEY = 'dynamiq-console.company-id';
+const TENANT_STORAGE_KEY = 'dynamiq-console.tenant-id';
 
 export interface CompanyOption {
 	id: string;
@@ -20,19 +21,19 @@ export const sampleCompanies: CompanyOption[] = [
 	{ id: 'c_retail', code: 'retail', name: 'Retail Partners Co.' }
 ];
 
-function readInitialCompanyId(): string {
-	if (!browser) return sampleCompanies[0].id;
+function readInitial(key: string, fallback: string): string {
+	if (!browser) return fallback;
 	try {
-		return localStorage.getItem(STORAGE_KEY) ?? sampleCompanies[0].id;
+		return localStorage.getItem(key) ?? fallback;
 	} catch {
 		// localStorage can throw (private browsing, disabled storage, etc.) —
 		// this is only a per-viewer convenience, never load-bearing state.
-		return sampleCompanies[0].id;
+		return fallback;
 	}
 }
 
-function createCompanyStore() {
-	const { subscribe, set, update } = writable<string>(readInitialCompanyId());
+function createPersistedStore(key: string, fallback: string) {
+	const { subscribe, set, update } = writable<string>(readInitial(key, fallback));
 
 	return {
 		subscribe,
@@ -40,7 +41,7 @@ function createCompanyStore() {
 			set(value);
 			if (browser) {
 				try {
-					localStorage.setItem(STORAGE_KEY, value);
+					localStorage.setItem(key, value);
 				} catch {
 					// ignore — see note above
 				}
@@ -51,7 +52,15 @@ function createCompanyStore() {
 }
 
 /** Current company_id; every console-api request reads this to set X-Company-Id (PRD §7.2). */
-export const companyId = createCompanyStore();
+export const companyId = createPersistedStore(STORAGE_KEY, sampleCompanies[0].id);
+
+/**
+ * Current tenant_id, set by CompanySwitcher. Only consumed so far by the Agents list
+ * page's tenant-pooled view (a deliberately narrow pilot of "each menu shows only its own
+ * tenant's data") - every other page still reads only `companyId` above, unaffected by
+ * which tenant is selected here.
+ */
+export const tenantId = createPersistedStore(TENANT_STORAGE_KEY, '');
 
 export function companyById(id: string): CompanyOption | undefined {
 	return sampleCompanies.find((c) => c.id === id);

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { companyId, sampleCompanies, type CompanyOption } from '$lib/stores/company';
+	import { companyId, tenantId, sampleCompanies, type CompanyOption } from '$lib/stores/company';
 	import { currentUser } from '$lib/stores/auth';
 
 	// Real memberships from /me once logged in (getMe() now resolves company/tenant
@@ -28,17 +28,17 @@
 		)
 	);
 
-	let selectedTenantId = $state<string>('');
-
 	// Keeps the tenant select in sync with whichever company is actually active - covers
 	// both the initial load and company_id being changed from outside this component
-	// (e.g. restored from localStorage on a page that isn't this one).
+	// (e.g. restored from localStorage on a page that isn't this one). Written into the
+	// shared tenantId store (not just local state) so other pages - so far just the
+	// Agents list's tenant-pooled view - know which tenant is selected too.
 	$effect(() => {
 		const current = options.find((c) => c.id === $companyId);
-		if (current && current.tenant_id !== selectedTenantId) {
-			selectedTenantId = current.tenant_id ?? '';
-		} else if (!current && tenantOptions.length > 0 && !tenantOptions.some((t) => t.id === selectedTenantId)) {
-			selectedTenantId = tenantOptions[0].id;
+		if (current && current.tenant_id !== $tenantId) {
+			tenantId.set(current.tenant_id ?? '');
+		} else if (!current && tenantOptions.length > 0 && !tenantOptions.some((t) => t.id === $tenantId)) {
+			tenantId.set(tenantOptions[0].id);
 		}
 	});
 
@@ -47,8 +47,9 @@
 	// reachable here via that first one; switching to a sibling company needs a
 	// different entry point than this header switcher.
 	function onTenantChange(event: Event) {
-		selectedTenantId = (event.currentTarget as HTMLSelectElement).value;
-		const first = options.find((c) => (c.tenant_id ?? '') === selectedTenantId);
+		const newTenantId = (event.currentTarget as HTMLSelectElement).value;
+		tenantId.set(newTenantId);
+		const first = options.find((c) => (c.tenant_id ?? '') === newTenantId);
 		if (first) companyId.set(first.id);
 	}
 
@@ -68,7 +69,7 @@
 	<select
 		class="rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-neutral-800
 			shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-		value={selectedTenantId}
+		value={$tenantId}
 		onchange={onTenantChange}
 	>
 		{#each tenantOptions as tenant (tenant.id)}
