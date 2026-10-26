@@ -371,6 +371,17 @@ export function listApprovals(): Promise<Approval[]> {
 	return apiFetch<Approval[]>('/approvals');
 }
 
+/**
+ * Pools approvals across every company the caller has write access (developer or admin)
+ * in under this one tenant (ApprovalsController::listApprovals()'s X-Tenant-Id branch) -
+ * eleventh menu in the "each menu shows only its own tenant's data" pilot, same pattern
+ * as listAgentsForTenant() etc. Every other /approvals call stays single-company via
+ * listApprovals() above.
+ */
+export function listApprovalsForTenant(tenantId: string): Promise<Approval[]> {
+	return apiFetch<Approval[]>('/approvals', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function decideApproval(id: string, decision: 'approved' | 'rejected'): Promise<Approval> {
 	return apiFetch<Approval>(`/approvals/${id}`, { method: 'POST', body: { decision } });
 }
