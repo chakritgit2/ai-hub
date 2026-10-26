@@ -45,6 +45,13 @@ spec:
                 secretKeyRef:
                   name: dynamiq-db-credentials
                   key: console_app_password
+            # Without this, fake-sso.php's login handler falls back to
+            # http://localhost:5173 (its local-dev default) - fine for the one developer
+            # running the web dev server on their own machine, but this Deployment is
+            # reachable from anyone via the public aihub-fake-sso.advws.com hostname, so
+            # every login must land on the actual deployed web console instead.
+            - name: DEV_LOGIN_WEB_BASE_URL
+              value: https://aihub-console.advws.com
 ---
 apiVersion: v1
 kind: Service
