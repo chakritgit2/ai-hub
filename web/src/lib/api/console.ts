@@ -254,6 +254,20 @@ export function listRuns(params: ListRunsParams = {}): Promise<Run[]> {
 	return apiFetch<Run[]>(`/runs${query ? `?${query}` : ''}`);
 }
 
+/**
+ * Pools runs across every company the caller belongs to under this one tenant
+ * (RunsController::listRuns()'s X-Tenant-Id branch) - ninth menu in the "each menu shows
+ * only its own tenant's data" pilot, same pattern as listAgentsForTenant() etc. The
+ * agent_id/deployment_id/status filters apply identically within the pooled result. Every
+ * other /runs call stays single-company via listRuns() above.
+ */
+export function listRunsForTenant(tenantId: string, params: ListRunsParams = {}): Promise<Run[]> {
+	const query = new URLSearchParams(
+		Object.entries(params).filter(([, v]) => v !== undefined) as [string, string][]
+	).toString();
+	return apiFetch<Run[]>(`/runs${query ? `?${query}` : ''}`, { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function getRun(id: string): Promise<Run> {
 	return apiFetch<Run>(`/runs/${id}`);
 }
