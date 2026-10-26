@@ -1,9 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listDatasets, createDataset } from '$lib/api/console';
+	import { listDatasetsForTenant, createDataset } from '$lib/api/console';
 	import type { Dataset } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { companyId } from '$lib/stores/company';
+	import { companyId, tenantId } from '$lib/stores/company';
+	import { currentUser } from '$lib/stores/auth';
+
+	// Pilot of "each menu shows only its own tenant's data" (option A) - pools datasets
+	// across every company under the selected tenant instead of the usual single
+	// X-Company-Id company. See DatasetsController::listDatasets()'s X-Tenant-Id branch
+	// and agents/+page.svelte, the first menu this pattern was applied to.
 
 	let datasets = $state<Dataset[]>([]);
 	let loading = $state(true);
@@ -17,8 +23,17 @@
 	async function load() {
 		loading = true;
 		error = null;
+		// No tenant resolved yet (e.g. a brand new SSO user with zero company
+		// memberships at all, so CompanySwitcher never has anything to pick) - nothing
+		// to fetch, but still clear the spinner rather than spinning forever. Same guard
+		// as agents/+page.svelte's load().
+		if (!$tenantId) {
+			datasets = [];
+			loading = false;
+			return;
+		}
 		try {
-			datasets = await listDatasets();
+			datasets = await listDatasetsForTenant($tenantId);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load datasets.';
 		} finally {
@@ -28,9 +43,21 @@
 
 	onMount(load);
 	$effect(() => {
-		$companyId;
+		$tenantId;
 		load();
 	});
+
+	// A pooled dataset can belong to any company under the tenant, not just whichever one
+	// $companyId currently points at - the detail page still scopes strictly by
+	// $companyId, so it must be pointed at this dataset's own company before navigating
+	// into it, or the detail page 404s. Same approach as agents/+page.svelte's openAgent().
+	function openDataset(dataset: Dataset) {
+		companyId.set(dataset.company_id);
+	}
+
+	function companyLabel(datasetCompanyId: string): string | undefined {
+		return $currentUser?.companies.find((c) => c.company_id === datasetCompanyId)?.company_name;
+	}
 
 	$effect(() => {
 		headerContent.set({ menu: 'Datasets', title: 'Datasets', actions: newDatasetAction });
@@ -125,7 +152,7 @@
 {:else if datasets.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
-			No datasets yet for this company — a dataset is a reusable set of test questions for
+			No datasets yet for this tenant — a dataset is a reusable set of test questions for
 			Evaluation runs (PRD §6.7).
 		</p>
 	</div>
@@ -135,6 +162,7 @@
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
 				<tr>
 					<th class="px-4 py-2">Name</th>
+					<th class="px-4 py-2">Company</th>
 					<th class="px-4 py-2">Updated</th>
 					<th class="px-4 py-2"></th>
 				</tr>
@@ -143,12 +171,26 @@
 				{#each datasets as dataset (dataset.id)}
 					<tr>
 						<td class="px-4 py-2 font-medium text-neutral-900">
-							<a href="/datasets/{dataset.id}" class="text-primary underline">{dataset.name}</a>
+							<a
+								href="/datasets/{dataset.id}"
+								onclick={() => openDataset(dataset)}
+								class="text-primary underline"
+							>
+								{dataset.name}
+							</a>
+						</td>
+						<td class="px-4 py-2 text-neutral-600">
+							{#if companyLabel(dataset.company_id)}
+								<span class="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
+									{companyLabel(dataset.company_id)}
+								</span>
+							{/if}
 						</td>
 						<td class="px-4 py-2 text-neutral-600">{new Date(dataset.updated_at).toLocaleString()}</td>
 						<td class="px-4 py-2 text-right">
 							<a
 								href="/datasets/{dataset.id}"
+								onclick={() => openDataset(dataset)}
 								class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
 							>
 								Manage

@@ -408,6 +408,16 @@ export function listDatasets(): Promise<Dataset[]> {
 	return apiFetch<Dataset[]>('/datasets');
 }
 
+/**
+ * Pools datasets across every company the caller belongs to under this one tenant
+ * (DatasetsController::listDatasets()'s X-Tenant-Id branch) - eighth menu in the "each
+ * menu shows only its own tenant's data" pilot, same pattern as listAgentsForTenant() etc.
+ * Every other /datasets call stays single-company via listDatasets() above.
+ */
+export function listDatasetsForTenant(tenantId: string): Promise<Dataset[]> {
+	return apiFetch<Dataset[]>('/datasets', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function getDataset(id: string): Promise<Dataset> {
 	return apiFetch<Dataset>(`/datasets/${id}`);
 }
