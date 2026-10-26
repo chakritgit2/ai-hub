@@ -4,7 +4,7 @@
 	import type { Workflow } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser } from '$lib/stores/auth';
+	import { currentUser, companyLabelForCompany } from '$lib/stores/auth';
 
 	// Pilot of "each menu shows only its own tenant's data" (option A) - pools workflows
 	// across every company under the selected tenant instead of the usual single
@@ -59,7 +59,7 @@
 	}
 
 	function companyLabel(workflowCompanyId: string): string | undefined {
-		return $currentUser?.companies.find((c) => c.company_id === workflowCompanyId)?.company_name;
+		return companyLabelForCompany($currentUser, workflowCompanyId);
 	}
 </script>
 

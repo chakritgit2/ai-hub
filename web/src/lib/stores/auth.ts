@@ -36,6 +36,18 @@ export function roleForCompany(
   return user?.companies.find((c) => c.company_id === companyId)?.role;
 }
 
+/**
+ * The display name of one of the user's own companies - used by every tenant-pooled list
+ * page (option A pilot) to render a company badge per row, since a pooled row can belong
+ * to any company under the tenant, not just whichever one is currently selected.
+ */
+export function companyLabelForCompany(
+  user: Me | null,
+  companyId: string,
+): string | undefined {
+  return user?.companies.find((c) => c.company_id === companyId)?.company_name;
+}
+
 /** Clears the session and sends the browser back to SSO (same destination as the 401 auto-redirect in api/client.ts). */
 export function logout(): void {
   authToken.set(null);

@@ -35,11 +35,30 @@ class AgentsController extends ControllerBase
      * instead of querying across companies in one go, so a user can never see an agent
      * belonging to a company they aren't a real member of, even within the right tenant.
      */
+    private const LIST_AGENTS_SQL = 'SELECT id, company_id, name, description, status, archived_at, created_at, updated_at
+         FROM console.agents ORDER BY created_at DESC';
+
+    /**
+     * Pilot of "each menu shows only its own tenant's data" (option A, user-confirmed
+     * scope): an optional X-Tenant-Id header pools agents across every company under that
+     * tenant the caller is actually a member of - instead of the usual single
+     * X-Company-Id-scoped company. No RLS/security-boundary change: ControllerBase's
+     * poolAcrossTenant() loops the exact same per-company RLS-scoped query once per
+     * company instead of querying across companies in one go, so a user can never see an
+     * agent belonging to a company they aren't a real member of, even within the right
+     * tenant. See ControllerBase::poolAcrossTenant()'s own docblock for the full reasoning
+     * shared by every other menu that adopted this pattern.
+     */
     public function listAgents(): Response
     {
         $tenantId = $_SERVER['HTTP_X_TENANT_ID'] ?? null;
         if ($tenantId !== null && $tenantId !== '') {
-            return $this->listAgentsForTenant($tenantId);
+            $rows = $this->poolAcrossTenant(
+                $tenantId,
+                static fn ($db) => $db->fetchAll(self::LIST_AGENTS_SQL, Enum::FETCH_ASSOC)
+            );
+
+            return $this->jsonResponse(array_map([$this, 'formatAgent'], $rows));
         }
 
         if (($error = $this->requireCompanyId()) !== null) {
@@ -50,53 +69,8 @@ class AgentsController extends ControllerBase
         }
 
         $rows = $this->runInCompanyTransaction(
-            static fn ($db) => $db->fetchAll(
-                'SELECT id, company_id, name, description, status, archived_at, created_at, updated_at
-                 FROM console.agents ORDER BY created_at DESC',
-                Enum::FETCH_ASSOC
-            )
+            static fn ($db) => $db->fetchAll(self::LIST_AGENTS_SQL, Enum::FETCH_ASSOC)
         );
-
-        return $this->jsonResponse(array_map([$this, 'formatAgent'], $rows));
-    }
-
-    /**
-     * $authUser['companies'] (from AuthService::syncUser(), PRD §7.1) is the same real
-     * membership list requireMembership() already trusts - filtering it to this tenant
-     * and looping is the only new logic here, not a new source of truth for access.
-     * A tenant the caller has zero membership in (wrong tenant_id, or one they were
-     * never added to) just yields an empty company list and therefore an empty (200)
-     * result, same as any other company with no agents - no separate 404 needed, and no
-     * information is leaked either way.
-     */
-    private function listAgentsForTenant(string $tenantId): Response
-    {
-        $authUser = $this->getAuthUser();
-        $companyIds = array_values(array_unique(array_map(
-            static fn (array $membership): string => $membership['company_id'],
-            array_filter(
-                $authUser['companies'] ?? [],
-                static fn (array $membership): bool => $membership['tenant_id'] === $tenantId
-            )
-        )));
-
-        $rows = [];
-        foreach ($companyIds as $companyId) {
-            $companyRows = $this->runInTransactionAsCompany(
-                $companyId,
-                static fn ($db) => $db->fetchAll(
-                    'SELECT id, company_id, name, description, status, archived_at, created_at, updated_at
-                     FROM console.agents ORDER BY created_at DESC',
-                    Enum::FETCH_ASSOC
-                )
-            );
-            array_push($rows, ...$companyRows);
-        }
-
-        // Each company's own rows arrive newest-first, but concatenating them in
-        // company-iteration order doesn't make the merged set newest-first overall -
-        // re-sort once across the whole pooled result.
-        usort($rows, static fn (array $a, array $b): int => $b['created_at'] <=> $a['created_at']);
 
         return $this->jsonResponse(array_map([$this, 'formatAgent'], $rows));
     }

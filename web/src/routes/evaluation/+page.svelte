@@ -5,7 +5,7 @@
 	import type { EvalRun } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser } from '$lib/stores/auth';
+	import { currentUser, companyLabelForCompany } from '$lib/stores/auth';
 
 	// Pilot of "each menu shows only its own tenant's data" (option A) - pools eval runs
 	// across every company under the selected tenant instead of the usual single
@@ -73,6 +73,12 @@
 	onMount(load);
 	$effect(() => {
 		$tenantId;
+		// Switching tenants (CompanySwitcher) replaces evalRuns wholesale - a stale
+		// selection from the previous tenant would otherwise survive (its ids not
+		// found in the new evalRuns, so compareSelected()'s companyId.set() silently
+		// no-ops and the app navigates to /evaluation/compare with a stale/unrelated
+		// companyId still set).
+		selectedIds = [];
 		load();
 	});
 
@@ -85,7 +91,7 @@
 	}
 
 	function companyLabel(runCompanyId: string): string | undefined {
-		return $currentUser?.companies.find((c) => c.company_id === runCompanyId)?.company_name;
+		return companyLabelForCompany($currentUser, runCompanyId);
 	}
 
 	$effect(() => {

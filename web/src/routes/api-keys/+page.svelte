@@ -4,7 +4,7 @@
 	import type { ApiKey, ApiKeyCreated, Deployment } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser } from '$lib/stores/auth';
+	import { currentUser, companyLabelForCompany } from '$lib/stores/auth';
 
 	// Pilot of "each menu shows only its own tenant's data" (option A) - pools API keys
 	// (for companies the caller is admin in, same gate as the single-company path's
@@ -29,7 +29,7 @@
 	let formDeployments = $derived(deployments.filter((d) => d.company_id === $companyId));
 
 	function companyLabel(apiKeyCompanyId: string): string | undefined {
-		return $currentUser?.companies.find((c) => c.company_id === apiKeyCompanyId)?.company_name;
+		return companyLabelForCompany($currentUser, apiKeyCompanyId);
 	}
 
 	let form = $state({
@@ -151,6 +151,11 @@
 		if (!confirm(message)) return;
 		revokingId = key.id;
 		try {
+			// revokeApiKey is X-Company-Id-scoped via the shared companyId store
+			// (api/client.ts), but a pooled key can belong to any company under the
+			// tenant - point companyId at that key's own company before acting, same
+			// approach as approvals/+page.svelte's decide().
+			companyId.set(key.company_id);
 			await revokeApiKey(key.id);
 			await load();
 		} catch (e) {

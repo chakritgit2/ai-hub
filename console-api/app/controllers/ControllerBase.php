@@ -257,4 +257,54 @@ abstract class ControllerBase extends Controller
             throw $exception;
         }
     }
+
+    /**
+     * Shared "each menu shows only its own tenant's data" implementation (option A,
+     * originally written independently in each `listXxxForTenant()` method, consolidated
+     * here once that pattern had been copied into 10 controllers identically). Resolves
+     * which companies under `$tenantId` the caller is *actually a member of* from
+     * `$authUser['companies']` (the same real membership list `requireMembership()`
+     * already trusts, not a new access source) — optionally narrowed further by
+     * `$roleFilter`, for endpoints gated tighter than plain membership (e.g.
+     * `ApiKeysController` is admin-only per company, `ApprovalsController` is
+     * developer/admin-only; pass the same role check the single-company path's own
+     * `require*Role()` enforces). Loops `$perCompanyQuery` once per company via
+     * `runInTransactionAsCompany()`, concatenates the results, then sorts the merged set
+     * by `created_at` DESC — each company's own rows arrive newest-first, but
+     * concatenating them in company-iteration order doesn't make the merged set
+     * newest-first overall. A tenant the caller has zero matching membership in (wrong
+     * tenant_id, or a role the filter excludes) just yields `[]`, not a 404 - no
+     * information leak either way, same as any other company with no rows.
+     *
+     * @template T of array<string, mixed>
+     * @param callable(AbstractPdo): array<int, T> $perCompanyQuery
+     * @param (callable(array<string, mixed>): bool)|null $roleFilter
+     * @return array<int, T>
+     */
+    protected function poolAcrossTenant(string $tenantId, callable $perCompanyQuery, ?callable $roleFilter = null): array
+    {
+        $authUser = $this->getAuthUser();
+        $companyIds = array_values(array_unique(array_map(
+            static fn (array $membership): string => $membership['company_id'],
+            array_filter(
+                $authUser['companies'] ?? [],
+                static function (array $membership) use ($tenantId, $roleFilter): bool {
+                    if ($membership['tenant_id'] !== $tenantId) {
+                        return false;
+                    }
+
+                    return $roleFilter === null || $roleFilter($membership);
+                }
+            )
+        )));
+
+        $rows = [];
+        foreach ($companyIds as $companyId) {
+            array_push($rows, ...$this->runInTransactionAsCompany($companyId, $perCompanyQuery));
+        }
+
+        usort($rows, static fn (array $a, array $b): int => $b['created_at'] <=> $a['created_at']);
+
+        return $rows;
+    }
 }

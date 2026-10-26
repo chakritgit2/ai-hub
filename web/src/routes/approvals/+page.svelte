@@ -4,7 +4,7 @@
 	import type { Approval } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser } from '$lib/stores/auth';
+	import { currentUser, companyLabelForCompany } from '$lib/stores/auth';
 
 	// Pilot of "each menu shows only its own tenant's data" (option A) - pools approvals
 	// (for companies the caller has write access in, same gate as the single-company
@@ -64,7 +64,7 @@
 	});
 
 	function companyLabel(approvalCompanyId: string): string | undefined {
-		return $currentUser?.companies.find((c) => c.company_id === approvalCompanyId)?.company_name;
+		return companyLabelForCompany($currentUser, approvalCompanyId);
 	}
 
 	$effect(() => {

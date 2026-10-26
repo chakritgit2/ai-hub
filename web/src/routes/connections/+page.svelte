@@ -11,8 +11,8 @@
 	import { ApiError } from '$lib/api/client';
 	import type { Connection } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser, roleForCompany } from '$lib/stores/auth';
+	import { companyId, tenantId, withCompany } from '$lib/stores/company';
+	import { currentUser, roleForCompany, companyLabelForCompany } from '$lib/stores/auth';
 
 	// Pilot of "each menu shows only its own tenant's data" (option A) - pools connections
 	// across every company under the selected tenant instead of the usual single
@@ -36,16 +36,7 @@
 	}
 
 	function companyLabel(connectionCompanyId: string): string | undefined {
-		return $currentUser?.companies.find((c) => c.company_id === connectionCompanyId)?.company_name;
-	}
-
-	// Every mutator below is X-Company-Id-scoped via the shared companyId store
-	// (api/client.ts), but a pooled connection can belong to any company under the
-	// tenant - point companyId at that connection's own company before acting, same
-	// approach as agents/+page.svelte's openAgent().
-	function withCompany<T>(connectionCompanyId: string, fn: () => Promise<T>): Promise<T> {
-		companyId.set(connectionCompanyId);
-		return fn();
+		return companyLabelForCompany($currentUser, connectionCompanyId);
 	}
 
 	let connections = $state<Connection[]>([]);

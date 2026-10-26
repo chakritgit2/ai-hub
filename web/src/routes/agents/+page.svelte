@@ -4,7 +4,7 @@
 	import type { Agent } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser } from '$lib/stores/auth';
+	import { currentUser, companyLabelForCompany } from '$lib/stores/auth';
 
 	let agents = $state<Agent[]>([]);
 	let loading = $state(true);
@@ -50,7 +50,7 @@
 	}
 
 	function companyLabel(companyIdForAgent: string): string | undefined {
-		return $currentUser?.companies.find((c) => c.company_id === companyIdForAgent)?.company_name;
+		return companyLabelForCompany($currentUser, companyIdForAgent);
 	}
 
 	$effect(() => {

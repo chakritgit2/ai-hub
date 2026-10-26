@@ -27,13 +27,14 @@ use RuntimeException;
 class ApprovalsController extends ControllerBase
 {
     private const APPROVAL_COLUMNS = 'id, company_id, run_id, tool_id, request, status, decided_by, decided_at, created_at';
+    private const LIST_APPROVALS_SQL = 'SELECT ' . self::APPROVAL_COLUMNS . ' FROM runtime.tool_approvals ORDER BY created_at DESC';
 
     /**
      * Eleventh menu in the "each menu shows only its own tenant's data" pilot (option A,
-     * see AgentsController::listAgents()'s X-Tenant-Id branch for the full reasoning) -
-     * same pattern applied verbatim: an optional X-Tenant-Id header pools approvals across
-     * every company under that tenant the caller actually has write access (developer or
-     * admin) in, instead of the usual single X-Company-Id-scoped company - same gate
+     * see ControllerBase::poolAcrossTenant()'s docblock for the full reasoning) - same
+     * pattern applied verbatim, with one difference: this list requires write access
+     * (developer or admin, PRD §9.1) per company, not just membership, so the
+     * tenant-pooled branch passes a role filter down to poolAcrossTenant() - same gate
      * requireWriteRole() enforces on the single-company path, just applied per company.
      * decideApproval is untouched and still requires a single X-Company-Id.
      */
@@ -41,7 +42,13 @@ class ApprovalsController extends ControllerBase
     {
         $tenantId = $_SERVER['HTTP_X_TENANT_ID'] ?? null;
         if ($tenantId !== null && $tenantId !== '') {
-            return $this->listApprovalsForTenant($tenantId);
+            $rows = $this->poolAcrossTenant(
+                $tenantId,
+                static fn ($db) => $db->fetchAll(self::LIST_APPROVALS_SQL, Enum::FETCH_ASSOC),
+                static fn (array $membership): bool => in_array($membership['role'], ['developer', 'admin'], true)
+            );
+
+            return $this->jsonResponse(array_map([$this, 'formatApproval'], $rows));
         }
 
         if (($error = $this->requireCompanyId()) !== null) {
@@ -52,51 +59,8 @@ class ApprovalsController extends ControllerBase
         }
 
         $rows = $this->runInCompanyTransaction(
-            static fn ($db) => $db->fetchAll(
-                'SELECT ' . self::APPROVAL_COLUMNS . ' FROM runtime.tool_approvals ORDER BY created_at DESC',
-                Enum::FETCH_ASSOC
-            )
+            static fn ($db) => $db->fetchAll(self::LIST_APPROVALS_SQL, Enum::FETCH_ASSOC)
         );
-
-        return $this->jsonResponse(array_map([$this, 'formatApproval'], $rows));
-    }
-
-    /**
-     * Same approach as AgentsController::listAgentsForTenant(), filtered to
-     * developer/admin memberships only (see listApprovals()'s own docblock for why) - the
-     * per-company RLS-scoped query is unchanged, this only changes which companies get
-     * looped. A tenant where the caller is a member but only ever viewer there just yields
-     * an empty company list and therefore an empty (200) result, same as a tenant with
-     * zero membership at all - no information leak either way.
-     */
-    private function listApprovalsForTenant(string $tenantId): Response
-    {
-        $authUser = $this->getAuthUser();
-        $companyIds = array_values(array_unique(array_map(
-            static fn (array $membership): string => $membership['company_id'],
-            array_filter(
-                $authUser['companies'] ?? [],
-                static fn (array $membership): bool => $membership['tenant_id'] === $tenantId
-                    && in_array($membership['role'], ['developer', 'admin'], true)
-            )
-        )));
-
-        $rows = [];
-        foreach ($companyIds as $companyId) {
-            $companyRows = $this->runInTransactionAsCompany(
-                $companyId,
-                static fn ($db) => $db->fetchAll(
-                    'SELECT ' . self::APPROVAL_COLUMNS . ' FROM runtime.tool_approvals ORDER BY created_at DESC',
-                    Enum::FETCH_ASSOC
-                )
-            );
-            array_push($rows, ...$companyRows);
-        }
-
-        // Each company's own rows arrive newest-first, but concatenating them in
-        // company-iteration order doesn't make the merged set newest-first overall -
-        // re-sort once across the whole pooled result (same as listAgentsForTenant()).
-        usort($rows, static fn (array $a, array $b): int => $b['created_at'] <=> $a['created_at']);
 
         return $this->jsonResponse(array_map([$this, 'formatApproval'], $rows));
     }

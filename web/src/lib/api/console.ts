@@ -257,11 +257,15 @@ export interface ListRunsParams {
 	status?: string;
 }
 
-export function listRuns(params: ListRunsParams = {}): Promise<Run[]> {
+function runsPath(params: ListRunsParams): string {
 	const query = new URLSearchParams(
 		Object.entries(params).filter(([, v]) => v !== undefined) as [string, string][]
 	).toString();
-	return apiFetch<Run[]>(`/runs${query ? `?${query}` : ''}`);
+	return `/runs${query ? `?${query}` : ''}`;
+}
+
+export function listRuns(params: ListRunsParams = {}): Promise<Run[]> {
+	return apiFetch<Run[]>(runsPath(params));
 }
 
 /**
@@ -272,10 +276,7 @@ export function listRuns(params: ListRunsParams = {}): Promise<Run[]> {
  * other /runs call stays single-company via listRuns() above.
  */
 export function listRunsForTenant(tenantId: string, params: ListRunsParams = {}): Promise<Run[]> {
-	const query = new URLSearchParams(
-		Object.entries(params).filter(([, v]) => v !== undefined) as [string, string][]
-	).toString();
-	return apiFetch<Run[]>(`/runs${query ? `?${query}` : ''}`, { headers: { 'X-Tenant-Id': tenantId } });
+	return apiFetch<Run[]>(runsPath(params), { headers: { 'X-Tenant-Id': tenantId } });
 }
 
 export function getRun(id: string): Promise<Run> {

@@ -4,25 +4,16 @@
 	import { ApiError } from '$lib/api/client';
 	import type { Tool } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser, roleForCompany } from '$lib/stores/auth';
+	import { companyId, tenantId, withCompany } from '$lib/stores/company';
+	import { currentUser, roleForCompany, companyLabelForCompany } from '$lib/stores/auth';
 
 	// Pilot of "each menu shows only its own tenant's data" (option A) - pools tools
 	// across every company under the selected tenant instead of the usual single
 	// X-Company-Id company. See ToolsController::listTools()'s X-Tenant-Id branch and
 	// agents/+page.svelte, the first menu this pattern was applied to.
 
-	// Every mutator below is X-Company-Id-scoped via the shared companyId store
-	// (api/client.ts), but a pooled tool can belong to any company under the tenant -
-	// point companyId at that tool's own company before acting, same approach as
-	// connections/+page.svelte's withCompany().
-	function withCompany<T>(toolCompanyId: string, fn: () => Promise<T>): Promise<T> {
-		companyId.set(toolCompanyId);
-		return fn();
-	}
-
 	function companyLabel(toolCompanyId: string): string | undefined {
-		return $currentUser?.companies.find((c) => c.company_id === toolCompanyId)?.company_name;
+		return companyLabelForCompany($currentUser, toolCompanyId);
 	}
 
 	let tools = $state<Tool[]>([]);

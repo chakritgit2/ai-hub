@@ -3,8 +3,8 @@
 	import { listSkillsForTenant, createSkill, updateSkill, publishSkill } from '$lib/api/console';
 	import type { Skill } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser } from '$lib/stores/auth';
+	import { tenantId, withCompany } from '$lib/stores/company';
+	import { currentUser, companyLabelForCompany } from '$lib/stores/auth';
 
 	// Pilot of "each menu shows only its own tenant's data" (option A) - pools skills
 	// across every company under the selected tenant instead of the usual single
@@ -58,16 +58,7 @@
 	});
 
 	function companyLabel(skillCompanyId: string): string | undefined {
-		return $currentUser?.companies.find((c) => c.company_id === skillCompanyId)?.company_name;
-	}
-
-	// Every mutator below is X-Company-Id-scoped via the shared companyId store
-	// (api/client.ts), but a pooled skill can belong to any company under the tenant -
-	// point companyId at that skill's own company before acting, same approach as
-	// connections/+page.svelte's withCompany().
-	function withCompany<T>(skillCompanyId: string, fn: () => Promise<T>): Promise<T> {
-		companyId.set(skillCompanyId);
-		return fn();
+		return companyLabelForCompany($currentUser, skillCompanyId);
 	}
 
 	function startCreate() {

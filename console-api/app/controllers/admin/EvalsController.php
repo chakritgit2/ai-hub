@@ -32,21 +32,30 @@ class EvalsController extends ControllerBase
 
     /**
      * Twelfth and final menu in the "each menu shows only its own tenant's data" pilot
-     * (option A, see AgentsController::listAgents()'s X-Tenant-Id branch for the full
+     * (option A, see ControllerBase::poolAcrossTenant()'s docblock for the full
      * reasoning) - same pattern applied verbatim: an optional X-Tenant-Id header pools
      * eval runs across every company under that tenant the caller actually belongs to,
      * instead of the usual single X-Company-Id-scoped company. The
-     * agent_version_id/dataset_id/status query filters below are unaffected - they're
-     * applied identically whichever company a row came from (same approach as
-     * RunsController::listRuns()'s buildRunFilters()).
+     * agent_version_id/dataset_id/status query filters are built once by
+     * buildEvalRunFilters() below and applied identically whichever company a row came
+     * from - $query is the same closure either path ends up running (same approach as
+     * RunsController::listRuns()).
      */
     public function listEvalRuns(): Response
     {
         [$where, $params] = $this->buildEvalRunFilters();
+        $query = fn ($db) => $db->fetchAll(
+            'SELECT ' . self::EVAL_RUN_COLUMNS . " FROM runtime.eval_runs {$where} ORDER BY created_at DESC",
+            Enum::FETCH_ASSOC,
+            $params
+        );
 
         $tenantId = $_SERVER['HTTP_X_TENANT_ID'] ?? null;
         if ($tenantId !== null && $tenantId !== '') {
-            return $this->listEvalRunsForTenant($tenantId, $where, $params);
+            return $this->jsonResponse(array_map(
+                [$this, 'formatEvalRun'],
+                $this->poolAcrossTenant($tenantId, $query)
+            ));
         }
 
         if (($error = $this->requireCompanyId()) !== null) {
@@ -56,13 +65,7 @@ class EvalsController extends ControllerBase
             return $error;
         }
 
-        $rows = $this->runInCompanyTransaction(
-            fn ($db) => $db->fetchAll(
-                'SELECT ' . self::EVAL_RUN_COLUMNS . " FROM runtime.eval_runs {$where} ORDER BY created_at DESC",
-                Enum::FETCH_ASSOC,
-                $params
-            )
-        );
+        $rows = $this->runInCompanyTransaction($query);
 
         return $this->jsonResponse(array_map([$this, 'formatEvalRun'], $rows));
     }
@@ -95,48 +98,6 @@ class EvalsController extends ControllerBase
         $where = $conditions === [] ? '' : 'WHERE ' . implode(' AND ', $conditions);
 
         return [$where, $params];
-    }
-
-    /**
-     * Same approach as AgentsController::listAgentsForTenant(): $authUser['companies'] is
-     * the same real membership list requireMembership() already trusts, so filtering it to
-     * this tenant and looping the per-company RLS-scoped query is the only new logic - no
-     * new access-control surface. A tenant the caller has zero membership in just yields
-     * an empty company list and therefore an empty (200) result, same as any other company
-     * with no eval runs.
-     *
-     * @param array<string, string> $params
-     */
-    private function listEvalRunsForTenant(string $tenantId, string $where, array $params): Response
-    {
-        $authUser = $this->getAuthUser();
-        $companyIds = array_values(array_unique(array_map(
-            static fn (array $membership): string => $membership['company_id'],
-            array_filter(
-                $authUser['companies'] ?? [],
-                static fn (array $membership): bool => $membership['tenant_id'] === $tenantId
-            )
-        )));
-
-        $rows = [];
-        foreach ($companyIds as $companyId) {
-            $companyRows = $this->runInTransactionAsCompany(
-                $companyId,
-                fn ($db) => $db->fetchAll(
-                    'SELECT ' . self::EVAL_RUN_COLUMNS . " FROM runtime.eval_runs {$where} ORDER BY created_at DESC",
-                    Enum::FETCH_ASSOC,
-                    $params
-                )
-            );
-            array_push($rows, ...$companyRows);
-        }
-
-        // Each company's own rows arrive newest-first, but concatenating them in
-        // company-iteration order doesn't make the merged set newest-first overall -
-        // re-sort once across the whole pooled result (same as listAgentsForTenant()).
-        usort($rows, static fn (array $a, array $b): int => $b['created_at'] <=> $a['created_at']);
-
-        return $this->jsonResponse(array_map([$this, 'formatEvalRun'], $rows));
     }
 
     public function createEvalRun(): Response

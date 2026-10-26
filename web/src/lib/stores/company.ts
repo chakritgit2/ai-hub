@@ -55,13 +55,28 @@ function createPersistedStore(key: string, fallback: string) {
 export const companyId = createPersistedStore(STORAGE_KEY, sampleCompanies[0].id);
 
 /**
- * Current tenant_id, set by CompanySwitcher. Only consumed so far by the Agents list
- * page's tenant-pooled view (a deliberately narrow pilot of "each menu shows only its own
- * tenant's data") - every other page still reads only `companyId` above, unaffected by
- * which tenant is selected here.
+ * Current tenant_id, set by CompanySwitcher. Read by every tenant-pooled list page
+ * (option A pilot - Agents, Connections, Deployments, Workflows, Tools, Skills, Knowledge
+ * Bases, Datasets, Runs, API Keys, Approvals, Evaluation) to fetch across every company
+ * under it; every other page (detail/edit/create) still reads only `companyId` above.
  */
 export const tenantId = createPersistedStore(TENANT_STORAGE_KEY, '');
 
 export function companyById(id: string): CompanyOption | undefined {
 	return sampleCompanies.find((c) => c.id === id);
+}
+
+/**
+ * Points `companyId` at a specific company and runs `fn()` - every X-Company-Id-scoped
+ * mutator (api/client.ts) reads `companyId` at call time, but a row on a tenant-pooled
+ * list page can belong to any company under the tenant, not just whichever one is
+ * currently selected. Used by every tenant-pooled page with an inline per-row mutator
+ * (Connections, Tools, Skills, API Keys, Approvals, Evaluation's compare); pages that
+ * instead navigate to a single-company-scoped detail route call `companyId.set(...)`
+ * directly before navigating (see agents/+page.svelte's openAgent()), since there's no
+ * `fn()` to wrap there.
+ */
+export function withCompany<T>(id: string, fn: () => Promise<T>): Promise<T> {
+	companyId.set(id);
+	return fn();
 }
