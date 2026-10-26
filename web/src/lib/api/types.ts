@@ -1,8 +1,16 @@
 // Types mirroring components.schemas in contracts/openapi/console-api.yaml.
 // Hand-written for now; see src/lib/api/README.md for the plan to generate these.
 
+export interface Tenant {
+	id: string;
+	code: string;
+	name: string;
+	status: 'active' | 'suspended';
+}
+
 export interface Company {
 	id: string;
+	tenant_id: string;
 	code: string;
 	name: string;
 	external_ref?: string;

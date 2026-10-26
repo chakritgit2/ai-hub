@@ -46,10 +46,18 @@ components:
       type: object
       description: Placeholder body for a not-yet-designed (phase 2/3) endpoint.
       additionalProperties: true
+    Tenant:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [active, suspended] }
     Company:
       type: object
       properties:
         id: { type: string }
+        tenant_id: { type: string }
         code: { type: string }
         name: { type: string }
         external_ref: { type: string }
@@ -1335,10 +1343,30 @@ paths:
       operationId: deleteEgressAllowlistEntry
       responses: { "204": { description: Deleted } }
 
+  /tenants:
+    get:
+      operationId: listTenants
+      summary: platform_admin only.
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Tenant' } } } } } }
+    post:
+      operationId: createTenant
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Tenant' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Tenant' } } } } }
+  /tenants/{id}/suspend:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    post:
+      operationId: suspendTenant
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Tenant' } } } } }
+  /tenants/{id}/activate:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    post:
+      operationId: activateTenant
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Tenant' } } } } }
+
   /companies:
     get:
       operationId: listCompanies
-      summary: platform_admin only.
+      summary: platform_admin only. Every company belongs to exactly one tenant (tenant_id required on create).
       responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Company' } } } } } }
     post:
       operationId: createCompany

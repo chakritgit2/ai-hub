@@ -31,7 +31,7 @@ class CompaniesController extends ControllerBase
 
         $db = $this->getDI()->getShared('db');
         $rows = $db->fetchAll(
-            'SELECT id, code, name, external_ref, status, monthly_budget_usd, created_at, updated_at
+            'SELECT id, tenant_id, code, name, external_ref, status, monthly_budget_usd, created_at, updated_at
              FROM console.companies ORDER BY created_at DESC',
             Enum::FETCH_ASSOC
         );
@@ -46,6 +46,10 @@ class CompaniesController extends ControllerBase
         }
 
         $body = $this->request->getJsonRawBody(true) ?? [];
+        $tenantId = $body['tenant_id'] ?? null;
+        if (!is_string($tenantId) || !$this->isUuid($tenantId)) {
+            return $this->jsonResponse(['error' => 'tenant_id_required'], 400);
+        }
         $code = $body['code'] ?? null;
         if (!is_string($code) || trim($code) === '') {
             return $this->jsonResponse(['error' => 'code_required'], 400);
@@ -64,13 +68,29 @@ class CompaniesController extends ControllerBase
         }
 
         $db = $this->getDI()->getShared('db');
+
+        $tenant = $db->fetchOne(
+            'SELECT id FROM console.tenants WHERE id = :id',
+            Enum::FETCH_ASSOC,
+            ['id' => $tenantId]
+        );
+        if (empty($tenant)) {
+            return $this->jsonResponse(['error' => 'tenant_not_found'], 400);
+        }
+
         try {
             $row = $db->fetchOne(
-                'INSERT INTO console.companies (code, name, external_ref, monthly_budget_usd)
-                 VALUES (:code, :name, :external_ref, :monthly_budget_usd)
-                 RETURNING id, code, name, external_ref, status, monthly_budget_usd, created_at, updated_at',
+                'INSERT INTO console.companies (tenant_id, code, name, external_ref, monthly_budget_usd)
+                 VALUES (:tenant_id, :code, :name, :external_ref, :monthly_budget_usd)
+                 RETURNING id, tenant_id, code, name, external_ref, status, monthly_budget_usd, created_at, updated_at',
                 Enum::FETCH_ASSOC,
-                ['code' => $code, 'name' => $name, 'external_ref' => $externalRef, 'monthly_budget_usd' => $monthlyBudgetUsd]
+                [
+                    'tenant_id' => $tenantId,
+                    'code' => $code,
+                    'name' => $name,
+                    'external_ref' => $externalRef,
+                    'monthly_budget_usd' => $monthlyBudgetUsd,
+                ]
             );
         } catch (Throwable $exception) {
             if ($this->isUniqueViolation($exception)) {
@@ -162,7 +182,7 @@ class CompaniesController extends ControllerBase
         $db = $this->getDI()->getShared('db');
         $row = $db->fetchOne(
             'UPDATE console.companies SET status = :status, updated_at = now() WHERE id = :id
-             RETURNING id, code, name, external_ref, status, monthly_budget_usd, created_at, updated_at',
+             RETURNING id, tenant_id, code, name, external_ref, status, monthly_budget_usd, created_at, updated_at',
             Enum::FETCH_ASSOC,
             ['status' => $status, 'id' => $id]
         );
@@ -202,6 +222,7 @@ class CompaniesController extends ControllerBase
     {
         return [
             'id' => $row['id'],
+            'tenant_id' => $row['tenant_id'],
             'code' => $row['code'],
             'name' => $row['name'],
             'external_ref' => $row['external_ref'],

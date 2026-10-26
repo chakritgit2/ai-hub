@@ -204,16 +204,20 @@ def make_company():
     """Inserts a `console.companies` row (console-api's own write role, same convention
     as make_connection) with a given id/monthly_budget_usd and deletes it afterward.
     Unlike every other make_* fixture here, no `SET LOCAL app.company_id` is needed -
-    `console.companies` carries no RLS company_isolation policy at all (it IS the tenant
-    row, not a company_id-scoped child table - see db/migrations/post/002_rls_policies.sql's
-    own "every table with company_id" comment). `company_ids()` alone never creates a real
-    row here, only hands out a bare uuid for RLS-scoped runtime.*/logs.* tables - tests
-    that need `app.services.company_budget.check_monthly_budget_not_exceeded` to see a
-    real `monthly_budget_usd` must use this fixture too, with the same id. `status`
-    defaults to the column's own default ('active') - pass 'suspended' for a test of
-    db/migrations/post/026_resolve_api_key_requires_active_company.sql's gate."""
+    `console.companies` carries no RLS company_isolation policy at all (it's a child of
+    `console.tenants`, not a company_id-scoped child table itself - see
+    db/migrations/post/002_rls_policies.sql's own "every table with company_id" comment).
+    `company_ids()` alone never creates a real row here, only hands out a bare uuid for
+    RLS-scoped runtime.*/logs.* tables - tests that need
+    `app.services.company_budget.check_monthly_budget_not_exceeded` to see a real
+    `monthly_budget_usd` must use this fixture too, with the same id. `status` defaults
+    to the column's own default ('active') - pass 'suspended' for a test of
+    db/migrations/post/026_resolve_api_key_requires_active_company.sql's gate.
+    `tenant_id` is NOT NULL on `console.companies` (20261026000002_add_tenant_id_to_
+    companies) - this fixture creates a disposable tenant row per call rather than
+    reusing one fixed id, so parallel test runs never collide on `tenants_code_unique`."""
     settings = get_settings()
-    created: list[str] = []
+    created: list[tuple[str, str]] = []  # (company_id, tenant_id)
 
     def _connect() -> psycopg.Connection:
         return psycopg.connect(
@@ -225,21 +229,27 @@ def make_company():
         )
 
     def _make(company_id: str, monthly_budget_usd: float | None = None, status: str = "active") -> str:
+        tenant_id = str(uuid.uuid4())
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO console.companies (id, code, name, monthly_budget_usd, status) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (company_id, f"test-{company_id[:8]}", "Test Co", monthly_budget_usd, status),
+                "INSERT INTO console.tenants (id, code, name) VALUES (%s, %s, %s)",
+                (tenant_id, f"test-tenant-{tenant_id[:8]}", "Test Tenant"),
+            )
+            conn.execute(
+                "INSERT INTO console.companies (id, tenant_id, code, name, monthly_budget_usd, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (company_id, tenant_id, f"test-{company_id[:8]}", "Test Co", monthly_budget_usd, status),
             )
             conn.commit()
-        created.append(company_id)
+        created.append((company_id, tenant_id))
         return company_id
 
     yield _make
 
-    for company_id in created:
+    for company_id, tenant_id in created:
         with _connect() as conn:
             conn.execute("DELETE FROM console.companies WHERE id = %s", (company_id,))
+            conn.execute("DELETE FROM console.tenants WHERE id = %s", (tenant_id,))
             conn.commit()
 
 

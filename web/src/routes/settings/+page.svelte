@@ -5,10 +5,18 @@
 		listEgressAllowlist,
 		createEgressAllowlistEntry,
 		deleteEgressAllowlistEntry,
-		listCompanies
+		listCompanies,
+		createCompany,
+		suspendCompany,
+		activateCompany,
+		destroyCompanyDek,
+		listTenants,
+		createTenant,
+		suspendTenant,
+		activateTenant
 	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
-	import type { Placeholder, Company, EgressAllowlistEntry } from '$lib/api/types';
+	import type { Placeholder, Company, Tenant, EgressAllowlistEntry } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
@@ -21,7 +29,7 @@
 
 	headerContent.set({ menu: 'Settings', title: 'Settings' });
 
-	type TabId = 'users' | 'egress' | 'companies' | 'pricing';
+	type TabId = 'users' | 'egress' | 'tenants' | 'companies' | 'pricing';
 
 	let activeTab = $state<TabId>('users');
 
@@ -64,6 +72,14 @@
 	let companies = $state<Company[]>([]);
 	let companiesLoading = $state(true);
 	let companiesError = $state<string | null>(null);
+
+	let tenants = $state<Tenant[]>([]);
+	let tenantsLoading = $state(true);
+	let tenantsError = $state<string | null>(null);
+
+	function tenantName(tenantId: string): string {
+		return tenants.find((t) => t.id === tenantId)?.name ?? tenantId;
+	}
 
 	async function loadUsers() {
 		usersLoading = true;
@@ -140,6 +156,179 @@
 		}
 	}
 
+	async function loadTenants() {
+		tenantsLoading = true;
+		tenantsError = null;
+		try {
+			tenants = await listTenants();
+		} catch (e) {
+			tenantsError = e instanceof Error ? e.message : 'Failed to load tenants.';
+		} finally {
+			tenantsLoading = false;
+		}
+	}
+
+	const TENANT_ERROR_MESSAGES: Record<string, string> = {
+		code_required: 'Code is required.',
+		name_required: 'Name is required.',
+		code_already_exists: 'A tenant with this code already exists.',
+		forbidden: 'You no longer have permission to do this.',
+		not_found: 'This tenant no longer exists - it may have been changed by someone else.'
+	};
+
+	function describeTenantError(e: unknown, fallback: string): string {
+		if (e instanceof ApiError) return TENANT_ERROR_MESSAGES[e.message] ?? e.message;
+		return e instanceof Error ? e.message : fallback;
+	}
+
+	let showTenantForm = $state(false);
+	let tenantForm = $state({ code: '', name: '' });
+	let tenantFormError = $state<string | null>(null);
+	let submittingTenant = $state(false);
+	let tenantActionId = $state<string | null>(null);
+	let tenantActionError = $state<string | null>(null);
+
+	async function submitTenantForm() {
+		submittingTenant = true;
+		tenantFormError = null;
+		try {
+			await createTenant({ code: tenantForm.code.trim(), name: tenantForm.name.trim() });
+			showTenantForm = false;
+			tenantForm = { code: '', name: '' };
+			await loadTenants();
+		} catch (e) {
+			tenantFormError = describeTenantError(e, 'Failed to create this tenant.');
+		} finally {
+			submittingTenant = false;
+		}
+	}
+
+	async function doSuspendTenant(tenant: Tenant) {
+		tenantActionId = tenant.id;
+		tenantActionError = null;
+		try {
+			await suspendTenant(tenant.id);
+			await loadTenants();
+		} catch (e) {
+			tenantActionError = describeTenantError(e, 'Failed to suspend this tenant.');
+		} finally {
+			tenantActionId = null;
+		}
+	}
+
+	async function doActivateTenant(tenant: Tenant) {
+		tenantActionId = tenant.id;
+		tenantActionError = null;
+		try {
+			await activateTenant(tenant.id);
+			await loadTenants();
+		} catch (e) {
+			tenantActionError = describeTenantError(e, 'Failed to activate this tenant.');
+		} finally {
+			tenantActionId = null;
+		}
+	}
+
+	const COMPANY_ERROR_MESSAGES: Record<string, string> = {
+		tenant_id_required: 'Tenant is required.',
+		tenant_not_found: 'The selected tenant no longer exists.',
+		code_required: 'Code is required.',
+		name_required: 'Name is required.',
+		code_already_exists: 'A company with this code already exists.',
+		invalid_monthly_budget_usd: 'Monthly budget must be a number.',
+		forbidden: 'You no longer have permission to do this.',
+		not_found: 'This company no longer exists - it may have been changed by someone else.'
+	};
+
+	function describeCompanyError(e: unknown, fallback: string): string {
+		if (e instanceof ApiError) return COMPANY_ERROR_MESSAGES[e.message] ?? e.message;
+		return e instanceof Error ? e.message : fallback;
+	}
+
+	let showCompanyForm = $state(false);
+	// monthly_budget_usd is bound to a type="number" input, which Svelte coerces to
+	// number | null (same reasoning as egressForm.port above).
+	let companyForm = $state<{
+		tenant_id: string;
+		code: string;
+		name: string;
+		external_ref: string;
+		monthly_budget_usd: number | null;
+	}>({ tenant_id: '', code: '', name: '', external_ref: '', monthly_budget_usd: null });
+	let companyFormError = $state<string | null>(null);
+	let submittingCompany = $state(false);
+	let companyActionId = $state<string | null>(null);
+	let companyActionError = $state<string | null>(null);
+	let destroyingDekId = $state<string | null>(null);
+	let dekDestroyedIds = $state<Set<string>>(new Set());
+
+	async function submitCompanyForm() {
+		submittingCompany = true;
+		companyFormError = null;
+		try {
+			await createCompany({
+				tenant_id: companyForm.tenant_id,
+				code: companyForm.code.trim(),
+				name: companyForm.name.trim(),
+				external_ref: companyForm.external_ref.trim() === '' ? undefined : companyForm.external_ref.trim(),
+				monthly_budget_usd: companyForm.monthly_budget_usd ?? undefined
+			});
+			showCompanyForm = false;
+			companyForm = { tenant_id: '', code: '', name: '', external_ref: '', monthly_budget_usd: null };
+			await loadCompanies();
+		} catch (e) {
+			companyFormError = describeCompanyError(e, 'Failed to create this company.');
+		} finally {
+			submittingCompany = false;
+		}
+	}
+
+	async function doSuspendCompany(company: Company) {
+		companyActionId = company.id;
+		companyActionError = null;
+		try {
+			await suspendCompany(company.id);
+			await loadCompanies();
+		} catch (e) {
+			companyActionError = describeCompanyError(e, 'Failed to suspend this company.');
+		} finally {
+			companyActionId = null;
+		}
+	}
+
+	async function doActivateCompany(company: Company) {
+		companyActionId = company.id;
+		companyActionError = null;
+		try {
+			await activateCompany(company.id);
+			await loadCompanies();
+		} catch (e) {
+			companyActionError = describeCompanyError(e, 'Failed to activate this company.');
+		} finally {
+			companyActionId = null;
+		}
+	}
+
+	async function doDestroyDek(company: Company) {
+		if (
+			!confirm(
+				`Permanently destroy the encryption key for "${company.name}"? Every connection secret in this company becomes undecryptable immediately. This cannot be undone.`
+			)
+		) {
+			return;
+		}
+		destroyingDekId = company.id;
+		companyActionError = null;
+		try {
+			await destroyCompanyDek(company.id);
+			dekDestroyedIds = new Set([...dekDestroyedIds, company.id]);
+		} catch (e) {
+			companyActionError = describeCompanyError(e, "Failed to destroy this company's encryption key.");
+		} finally {
+			destroyingDekId = null;
+		}
+	}
+
 	onMount(() => {
 		loadUsers();
 		loadEgress();
@@ -160,6 +349,18 @@
 		}
 	});
 
+	// Tenants are needed by both tabs - the Tenants tab itself, and the Companies tab's
+	// create-form tenant picker + the tenant name shown per row.
+	$effect(() => {
+		if (
+			(activeTab === 'tenants' || activeTab === 'companies') &&
+			$currentUser?.is_platform_admin &&
+			tenants.length === 0
+		) {
+			loadTenants();
+		}
+	});
+
 	const roleDescriptions: Record<string, string> = {
 		admin: 'Everything in the company, including Connections and code tools.',
 		developer: 'Agents, HTTP Tools, KB, Eval, Playground.',
@@ -169,6 +370,7 @@
 	const tabs: { id: TabId; label: string; platformAdminOnly?: boolean }[] = [
 		{ id: 'users', label: 'Users' },
 		{ id: 'egress', label: 'Egress allowlist' },
+		{ id: 'tenants', label: 'Tenants', platformAdminOnly: true },
 		{ id: 'companies', label: 'Companies', platformAdminOnly: true },
 		{ id: 'pricing', label: 'Model pricing', platformAdminOnly: true }
 	];
@@ -372,55 +574,347 @@
 				</table>
 			</div>
 		{/if}
+	{:else if activeTab === 'tenants'}
+		{#if !$currentUser?.is_platform_admin}
+			<div class="rounded-md border border-neutral-200 bg-white p-8 text-center text-sm text-neutral-500">
+				platform_admin only.
+			</div>
+		{:else}
+			<div class="mb-4 flex items-center justify-between">
+				<p class="text-xs text-neutral-400">
+					The org-level grouping above Companies - most deployments only ever need one.
+				</p>
+				<button
+					type="button"
+					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+					onclick={() => (showTenantForm = !showTenantForm)}
+				>
+					+ New tenant
+				</button>
+			</div>
+
+			{#if showTenantForm}
+				<form
+					class="mb-4 grid grid-cols-1 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-2"
+					onsubmit={(e) => {
+						e.preventDefault();
+						submitTenantForm();
+					}}
+				>
+					{#if tenantFormError}
+						<div class="sm:col-span-2 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+							{tenantFormError}
+						</div>
+					{/if}
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Code</span>
+						<input
+							type="text"
+							bind:value={tenantForm.code}
+							required
+							placeholder="advws"
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Name</span>
+						<input
+							type="text"
+							bind:value={tenantForm.name}
+							required
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<div class="flex gap-2 sm:col-span-2">
+						<button
+							type="submit"
+							disabled={submittingTenant}
+							class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+						>
+							{submittingTenant ? 'Saving…' : 'Save tenant'}
+						</button>
+						<button
+							type="button"
+							class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
+							onclick={() => (showTenantForm = false)}
+						>
+							Cancel
+						</button>
+					</div>
+				</form>
+			{/if}
+
+			{#if tenantActionError}
+				<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+					{tenantActionError}
+				</div>
+			{/if}
+
+			{#if tenantsLoading}
+				<p class="text-sm text-neutral-500" role="status">Loading tenants…</p>
+			{:else if tenantsError}
+				<div class="rounded-md border border-danger/30 bg-danger/5 p-4 text-sm text-danger">{tenantsError}</div>
+			{:else if tenants.length === 0}
+				<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
+					<p class="text-sm text-neutral-500">No tenants yet.</p>
+				</div>
+			{:else}
+				<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
+					<table class="min-w-full divide-y divide-neutral-200 text-sm">
+						<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+							<tr>
+								<th class="px-4 py-2">Code</th>
+								<th class="px-4 py-2">Name</th>
+								<th class="px-4 py-2">Status</th>
+								<th class="px-4 py-2">Actions</th>
+							</tr>
+						</thead>
+						<tbody class="divide-y divide-neutral-100">
+							{#each tenants as tenant (tenant.id)}
+								<tr>
+									<td class="px-4 py-2 font-mono text-xs">{tenant.code}</td>
+									<td class="px-4 py-2 text-neutral-800">{tenant.name}</td>
+									<td class="px-4 py-2">
+										<span
+											class="rounded-full px-2 py-0.5 text-xs font-medium
+												{tenant.status === 'active' ? 'bg-primary/10 text-primary-700' : 'bg-danger/10 text-danger'}"
+										>
+											{tenant.status}
+										</span>
+									</td>
+									<td class="px-4 py-2">
+										{#if tenant.status === 'active'}
+											<button
+												type="button"
+												class="rounded-md border border-danger/40 px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+												disabled={tenantActionId === tenant.id}
+												onclick={() => doSuspendTenant(tenant)}
+											>
+												{tenantActionId === tenant.id ? 'Suspending…' : 'Suspend'}
+											</button>
+										{:else}
+											<button
+												type="button"
+												class="rounded-md border border-neutral-300 px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+												disabled={tenantActionId === tenant.id}
+												onclick={() => doActivateTenant(tenant)}
+											>
+												{tenantActionId === tenant.id ? 'Activating…' : 'Activate'}
+											</button>
+										{/if}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
+		{/if}
 	{:else if activeTab === 'companies'}
 		{#if !$currentUser?.is_platform_admin}
 			<div class="rounded-md border border-neutral-200 bg-white p-8 text-center text-sm text-neutral-500">
 				platform_admin only.
 			</div>
-		{:else if companiesLoading}
-			<p class="text-sm text-neutral-500" role="status">Loading companies…</p>
-		{:else if companiesError}
-			<div class="rounded-md border border-danger/30 bg-danger/5 p-4 text-sm text-danger">{companiesError}</div>
-		{:else if companies.length === 0}
-			<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
-				<p class="text-sm text-neutral-500">No companies yet.</p>
-			</div>
 		{:else}
-			<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
-				<table class="min-w-full divide-y divide-neutral-200 text-sm">
-					<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
-						<tr>
-							<th class="px-4 py-2">Code</th>
-							<th class="px-4 py-2">Name</th>
-							<th class="px-4 py-2">Status</th>
-							<th class="px-4 py-2">Monthly budget</th>
-						</tr>
-					</thead>
-					<tbody class="divide-y divide-neutral-100">
-						{#each companies as company (company.id)}
-							<tr>
-								<td class="px-4 py-2 font-mono text-xs">{company.code}</td>
-								<td class="px-4 py-2 text-neutral-800">{company.name}</td>
-								<td class="px-4 py-2">
-									<span
-										class="rounded-full px-2 py-0.5 text-xs font-medium
-											{company.status === 'active' ? 'bg-primary/10 text-primary-700' : 'bg-danger/10 text-danger'}"
-									>
-										{company.status}
-									</span>
-								</td>
-								<td class="px-4 py-2 text-neutral-600">
-									{company.monthly_budget_usd != null ? `$${company.monthly_budget_usd}` : '—'}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
+			<div class="mb-4 flex items-center justify-between">
+				<p class="text-xs text-neutral-400">
+					platform_admin sees only aggregate figures here — never secrets, knowledge or conversation
+					content (PRD §7.2).
+				</p>
+				{#if tenants.length > 0}
+					<button
+						type="button"
+						class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+						onclick={() => {
+							if (!showCompanyForm) companyForm.tenant_id = tenants[0]?.id ?? '';
+							showCompanyForm = !showCompanyForm;
+						}}
+					>
+						+ New company
+					</button>
+				{:else}
+					<span class="text-sm text-neutral-400">Create a tenant first, under the Tenants tab</span>
+				{/if}
 			</div>
-			<p class="mt-2 text-xs text-neutral-400">
-				platform_admin sees only aggregate figures here — never secrets, knowledge or conversation
-				content (PRD §7.2).
-			</p>
+
+			{#if showCompanyForm}
+				<form
+					class="mb-4 grid grid-cols-1 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-2"
+					onsubmit={(e) => {
+						e.preventDefault();
+						submitCompanyForm();
+					}}
+				>
+					{#if companyFormError}
+						<div class="sm:col-span-2 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+							{companyFormError}
+						</div>
+					{/if}
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Tenant</span>
+						<select
+							bind:value={companyForm.tenant_id}
+							required
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						>
+							{#each tenants as tenant (tenant.id)}
+								<option value={tenant.id}>{tenant.name}</option>
+							{/each}
+						</select>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Code</span>
+						<input
+							type="text"
+							bind:value={companyForm.code}
+							required
+							placeholder="operations"
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Name</span>
+						<input
+							type="text"
+							bind:value={companyForm.name}
+							required
+							placeholder="Operations"
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">External ref (optional)</span>
+						<input
+							type="text"
+							bind:value={companyForm.external_ref}
+							placeholder="matches the SSO JWT's companies[].ref claim"
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+						<span class="mt-1 block text-xs text-neutral-400">
+							Users only get synced into this company on login if their SSO claim's ref matches this.
+						</span>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Monthly budget USD (optional)</span>
+						<input
+							type="number"
+							min="0"
+							step="0.01"
+							bind:value={companyForm.monthly_budget_usd}
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<div class="flex gap-2 sm:col-span-2">
+						<button
+							type="submit"
+							disabled={submittingCompany}
+							class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+						>
+							{submittingCompany ? 'Saving…' : 'Save company'}
+						</button>
+						<button
+							type="button"
+							class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
+							onclick={() => (showCompanyForm = false)}
+						>
+							Cancel
+						</button>
+					</div>
+				</form>
+			{/if}
+
+			{#if companyActionError}
+				<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+					{companyActionError}
+				</div>
+			{/if}
+
+			{#if companiesLoading}
+				<p class="text-sm text-neutral-500" role="status">Loading companies…</p>
+			{:else if companiesError}
+				<div class="rounded-md border border-danger/30 bg-danger/5 p-4 text-sm text-danger">{companiesError}</div>
+			{:else if companies.length === 0}
+				<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
+					<p class="text-sm text-neutral-500">No companies yet.</p>
+				</div>
+			{:else}
+				<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
+					<table class="min-w-full divide-y divide-neutral-200 text-sm">
+						<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+							<tr>
+								<th class="px-4 py-2">Code</th>
+								<th class="px-4 py-2">Name</th>
+								<th class="px-4 py-2">Tenant</th>
+								<th class="px-4 py-2">Status</th>
+								<th class="px-4 py-2">Monthly budget</th>
+								<th class="px-4 py-2">Actions</th>
+							</tr>
+						</thead>
+						<tbody class="divide-y divide-neutral-100">
+							{#each companies as company (company.id)}
+								<tr>
+									<td class="px-4 py-2 font-mono text-xs">{company.code}</td>
+									<td class="px-4 py-2 text-neutral-800">{company.name}</td>
+									<td class="px-4 py-2 text-neutral-600">{tenantName(company.tenant_id)}</td>
+									<td class="px-4 py-2">
+										<span
+											class="rounded-full px-2 py-0.5 text-xs font-medium
+												{company.status === 'active' ? 'bg-primary/10 text-primary-700' : 'bg-danger/10 text-danger'}"
+										>
+											{company.status}
+										</span>
+									</td>
+									<td class="px-4 py-2 text-neutral-600">
+										{company.monthly_budget_usd != null ? `$${company.monthly_budget_usd}` : '—'}
+									</td>
+									<td class="px-4 py-2">
+										<div class="flex flex-wrap items-center gap-2">
+											{#if company.status === 'active'}
+												<button
+													type="button"
+													class="rounded-md border border-neutral-300 px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+													disabled={companyActionId === company.id}
+													onclick={() => doSuspendCompany(company)}
+												>
+													{companyActionId === company.id ? 'Suspending…' : 'Suspend'}
+												</button>
+											{:else}
+												<button
+													type="button"
+													class="rounded-md border border-neutral-300 px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+													disabled={companyActionId === company.id}
+													onclick={() => doActivateCompany(company)}
+												>
+													{companyActionId === company.id ? 'Activating…' : 'Activate'}
+												</button>
+											{/if}
+											{#if dekDestroyedIds.has(company.id)}
+												<span class="text-xs text-danger">Key destroyed</span>
+											{:else}
+												<button
+													type="button"
+													class="rounded-md border border-danger/40 px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+													disabled={destroyingDekId === company.id}
+													onclick={() => doDestroyDek(company)}
+												>
+													{destroyingDekId === company.id ? 'Destroying…' : 'Destroy key'}
+												</button>
+											{/if}
+										</div>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
 		{/if}
 	{:else if activeTab === 'pricing'}
 		{#if !$currentUser?.is_platform_admin}

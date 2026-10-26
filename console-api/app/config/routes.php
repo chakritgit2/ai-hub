@@ -158,6 +158,12 @@ return function (Router $router): void {
     $admin('POST', '/settings/egress-allowlist', 'Settings', 'createEgressAllowlistEntry');
     $admin('DELETE', '/settings/egress-allowlist/{id:[^/]+}', 'Settings', 'deleteEgressAllowlistEntry');
 
+    // --- /tenants (platform_admin only; no X-Company-Id) --------------------------
+    $admin('GET', '/tenants', 'Tenants', 'listTenants');
+    $admin('POST', '/tenants', 'Tenants', 'createTenant');
+    $admin('POST', '/tenants/{id:[^/]+}/suspend', 'Tenants', 'suspendTenant');
+    $admin('POST', '/tenants/{id:[^/]+}/activate', 'Tenants', 'activateTenant');
+
     // --- /companies (platform_admin only; no X-Company-Id) -----------------------
     $admin('GET', '/companies', 'Companies', 'listCompanies');
     $admin('POST', '/companies', 'Companies', 'createCompany');

@@ -39,6 +39,7 @@ import type {
 	RuntimeTokenResponse,
 	RunStep,
 	Skill,
+	Tenant,
 	Tool,
 	Workflow,
 	WorkflowInput,
@@ -426,6 +427,24 @@ export function deleteEgressAllowlistEntry(id: string): Promise<void> {
 	return apiFetch<void>(`/settings/egress-allowlist/${id}`, { method: 'DELETE' });
 }
 
+// ---- /tenants (platform_admin) ----------------------------------------------
+
+export function listTenants(): Promise<Tenant[]> {
+	return apiFetch<Tenant[]>('/tenants', { skipCompanyHeader: true });
+}
+
+export function createTenant(input: Partial<Tenant>): Promise<Tenant> {
+	return apiFetch<Tenant>('/tenants', { method: 'POST', body: input, skipCompanyHeader: true });
+}
+
+export function suspendTenant(id: string): Promise<Tenant> {
+	return apiFetch<Tenant>(`/tenants/${id}/suspend`, { method: 'POST', skipCompanyHeader: true });
+}
+
+export function activateTenant(id: string): Promise<Tenant> {
+	return apiFetch<Tenant>(`/tenants/${id}/activate`, { method: 'POST', skipCompanyHeader: true });
+}
+
 // ---- /companies (platform_admin) -------------------------------------------
 
 export function listCompanies(): Promise<Company[]> {
@@ -538,6 +557,7 @@ export type {
 	RuntimeTokenResponse,
 	RunStep,
 	Skill,
+	Tenant,
 	Tool,
 	Workflow,
 	WorkflowInput,
