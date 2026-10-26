@@ -1,9 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listKnowledgeBases, createKnowledgeBase, listConnections } from '$lib/api/console';
+	import { listKnowledgeBasesForTenant, createKnowledgeBase, listConnections } from '$lib/api/console';
 	import type { KnowledgeBase, Connection } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { companyId } from '$lib/stores/company';
+	import { companyId, tenantId } from '$lib/stores/company';
+	import { currentUser } from '$lib/stores/auth';
+
+	// Pilot of "each menu shows only its own tenant's data" (option A) - pools knowledge
+	// bases across every company under the selected tenant instead of the usual single
+	// X-Company-Id company. See KbController::listKnowledgeBases()'s X-Tenant-Id branch
+	// and agents/+page.svelte, the first menu this pattern was applied to.
 
 	let knowledgeBases = $state<KnowledgeBase[]>([]);
 	let connections = $state<Connection[]>([]);
@@ -25,8 +31,18 @@
 	async function load() {
 		loading = true;
 		error = null;
+		// No tenant resolved yet (e.g. a brand new SSO user with zero company
+		// memberships at all, so CompanySwitcher never has anything to pick) - nothing
+		// to fetch, but still clear the spinner rather than spinning forever. Same guard
+		// as agents/+page.svelte's load(). Connections still load for whichever single
+		// company is currently selected - "+ New knowledge base" creates into that one.
+		if (!$tenantId) {
+			knowledgeBases = [];
+			loading = false;
+			return;
+		}
 		try {
-			[knowledgeBases, connections] = await Promise.all([listKnowledgeBases(), listConnections()]);
+			[knowledgeBases, connections] = await Promise.all([listKnowledgeBasesForTenant($tenantId), listConnections()]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load knowledge bases.';
 		} finally {
@@ -36,9 +52,22 @@
 
 	onMount(load);
 	$effect(() => {
-		$companyId;
+		$tenantId;
 		load();
 	});
+
+	// A pooled knowledge base can belong to any company under the tenant, not just
+	// whichever one $companyId currently points at - every other page (detail/documents)
+	// still scopes strictly by $companyId, so it must be pointed at this knowledge base's
+	// own company before navigating into it, or the detail page 404s. Same approach as
+	// agents/+page.svelte's openAgent().
+	function openKb(kb: KnowledgeBase) {
+		companyId.set(kb.company_id);
+	}
+
+	function companyLabel(kbCompanyId: string): string | undefined {
+		return $currentUser?.companies.find((c) => c.company_id === kbCompanyId)?.company_name;
+	}
 
 	$effect(() => {
 		headerContent.set({ menu: 'Knowledge Bases', title: 'Knowledge Bases', actions: newKbAction });
@@ -204,7 +233,7 @@
 {:else if knowledgeBases.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
-			No knowledge bases yet for this company — import OKF Markdown files for an agent to search (PRD §6.6).
+			No knowledge bases yet for this tenant — import OKF Markdown files for an agent to search (PRD §6.6).
 		</p>
 	</div>
 {:else}
@@ -213,6 +242,7 @@
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
 				<tr>
 					<th class="px-4 py-2">Name</th>
+					<th class="px-4 py-2">Company</th>
 					<th class="px-4 py-2">Retrieval mode</th>
 					<th class="px-4 py-2">Chunk size</th>
 					<th class="px-4 py-2"></th>
@@ -222,13 +252,23 @@
 				{#each knowledgeBases as kb (kb.id)}
 					<tr>
 						<td class="px-4 py-2 font-medium text-neutral-900">
-							<a href="/knowledge-bases/{kb.id}" class="text-primary underline">{kb.name}</a>
+							<a href="/knowledge-bases/{kb.id}" onclick={() => openKb(kb)} class="text-primary underline">
+								{kb.name}
+							</a>
+						</td>
+						<td class="px-4 py-2 text-neutral-600">
+							{#if companyLabel(kb.company_id)}
+								<span class="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
+									{companyLabel(kb.company_id)}
+								</span>
+							{/if}
 						</td>
 						<td class="px-4 py-2 text-neutral-600">{kb.retrieval_mode}</td>
 						<td class="px-4 py-2 text-neutral-600">{kb.chunk_size}</td>
 						<td class="px-4 py-2 text-right">
 							<a
 								href="/knowledge-bases/{kb.id}"
+								onclick={() => openKb(kb)}
 								class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
 							>
 								Manage

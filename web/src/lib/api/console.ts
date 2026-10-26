@@ -357,6 +357,16 @@ export function listKnowledgeBases(): Promise<KnowledgeBase[]> {
 	return apiFetch<KnowledgeBase[]>('/kb');
 }
 
+/**
+ * Pools knowledge bases across every company the caller belongs to under this one tenant
+ * (KbController::listKnowledgeBases()'s X-Tenant-Id branch) - seventh menu in the "each
+ * menu shows only its own tenant's data" pilot, same pattern as listAgentsForTenant() etc.
+ * Every other /kb call stays single-company via listKnowledgeBases() above.
+ */
+export function listKnowledgeBasesForTenant(tenantId: string): Promise<KnowledgeBase[]> {
+	return apiFetch<KnowledgeBase[]>('/kb', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function getKnowledgeBase(id: string): Promise<KnowledgeBase> {
 	return apiFetch<KnowledgeBase>(`/kb/${id}`);
 }
