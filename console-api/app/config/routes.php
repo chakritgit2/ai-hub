@@ -172,6 +172,9 @@ return function (Router $router): void {
     $admin('POST', '/companies/{id:[^/]+}/destroy-dek', 'Companies', 'destroyCompanyDek');
     $admin('GET', '/companies/{id:[^/]+}/members', 'Companies', 'listCompanyMembers');
 
+    // --- /audit-logs (platform_admin only; no X-Company-Id) -----------------------
+    $admin('GET', '/audit-logs', 'AuditLogs', 'listAuditLogs');
+
     // --- Ops route, not part of the OpenAPI contract, never exposed via ingress ---
     $router
         ->add('/healthz', [

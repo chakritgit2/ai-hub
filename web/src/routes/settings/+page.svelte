@@ -13,10 +13,11 @@
 		listTenants,
 		createTenant,
 		suspendTenant,
-		activateTenant
+		activateTenant,
+		listAuditLogs
 	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
-	import type { Placeholder, Company, Tenant, EgressAllowlistEntry } from '$lib/api/types';
+	import type { Placeholder, Company, Tenant, EgressAllowlistEntry, AuditLogEntry } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
@@ -29,7 +30,7 @@
 
 	headerContent.set({ menu: 'Settings', title: 'Settings' });
 
-	type TabId = 'users' | 'egress' | 'tenants' | 'companies' | 'pricing';
+	type TabId = 'users' | 'egress' | 'tenants' | 'companies' | 'pricing' | 'audit';
 
 	let activeTab = $state<TabId>('users');
 
@@ -79,6 +80,44 @@
 
 	function tenantName(tenantId: string): string {
 		return tenants.find((t) => t.id === tenantId)?.name ?? tenantId;
+	}
+
+	const AUDIT_LOG_PAGE_SIZE = 50;
+
+	let auditLogs = $state<AuditLogEntry[]>([]);
+	let auditLoading = $state(true);
+	let auditError = $state<string | null>(null);
+	let auditHasMore = $state(false);
+	let auditOffset = $state(0);
+	let auditFrom = $state('');
+	let auditTo = $state('');
+	let auditExpandedId = $state<string | null>(null);
+
+	async function loadAuditLogs(reset: boolean) {
+		const offset = reset ? 0 : auditOffset;
+		auditLoading = true;
+		auditError = null;
+		try {
+			const response = await listAuditLogs({
+				from: auditFrom || undefined,
+				to: auditTo || undefined,
+				limit: AUDIT_LOG_PAGE_SIZE,
+				offset
+			});
+			auditLogs = reset ? response.items : [...auditLogs, ...response.items];
+			auditHasMore = response.has_more;
+			auditOffset = offset + response.items.length;
+		} catch (e) {
+			auditError = e instanceof Error ? e.message : 'Failed to load audit logs.';
+		} finally {
+			auditLoading = false;
+		}
+	}
+
+	function clearAuditFilter() {
+		auditFrom = '';
+		auditTo = '';
+		loadAuditLogs(true);
 	}
 
 	async function loadUsers() {
@@ -361,6 +400,12 @@
 		}
 	});
 
+	$effect(() => {
+		if (activeTab === 'audit' && $currentUser?.is_platform_admin && auditLogs.length === 0) {
+			loadAuditLogs(true);
+		}
+	});
+
 	const roleDescriptions: Record<string, string> = {
 		admin: 'Everything in the company, including Connections and code tools.',
 		developer: 'Agents, HTTP Tools, KB, Eval, Playground.',
@@ -372,7 +417,8 @@
 		{ id: 'egress', label: 'Egress allowlist' },
 		{ id: 'tenants', label: 'Tenants', platformAdminOnly: true },
 		{ id: 'companies', label: 'Companies', platformAdminOnly: true },
-		{ id: 'pricing', label: 'Model pricing', platformAdminOnly: true }
+		{ id: 'pricing', label: 'Model pricing', platformAdminOnly: true },
+		{ id: 'audit', label: 'Audit Log', platformAdminOnly: true }
 	];
 </script>
 
@@ -929,6 +975,140 @@
 					designed.
 				</p>
 			</div>
+		{/if}
+	{:else if activeTab === 'audit'}
+		{#if !$currentUser?.is_platform_admin}
+			<div class="rounded-md border border-neutral-200 bg-white p-8 text-center text-sm text-neutral-500">
+				platform_admin only.
+			</div>
+		{:else}
+			<div class="mb-4 flex flex-wrap items-end gap-3">
+				<label class="block">
+					<span class="text-sm font-medium text-neutral-700">From</span>
+					<input
+						type="date"
+						bind:value={auditFrom}
+						class="mt-1 rounded-md border border-neutral-300 px-3 py-2 text-sm
+							focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+					/>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium text-neutral-700">To</span>
+					<input
+						type="date"
+						bind:value={auditTo}
+						class="mt-1 rounded-md border border-neutral-300 px-3 py-2 text-sm
+							focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+					/>
+				</label>
+				<button
+					type="button"
+					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+					onclick={() => loadAuditLogs(true)}
+				>
+					Apply
+				</button>
+				<button
+					type="button"
+					class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
+					onclick={clearAuditFilter}
+				>
+					Clear
+				</button>
+			</div>
+
+			{#if auditError}
+				<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-4">
+					<p class="text-sm font-medium text-danger">Could not load audit logs</p>
+					<p class="mt-1 text-sm text-neutral-700">{auditError}</p>
+					<button
+						type="button"
+						class="mt-3 rounded-md border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10"
+						onclick={() => loadAuditLogs(true)}
+					>
+						Retry
+					</button>
+				</div>
+			{/if}
+
+			{#if auditLoading && auditLogs.length === 0}
+				<p class="text-sm text-neutral-500" role="status">Loading audit logs…</p>
+			{:else if !auditError && auditLogs.length === 0}
+				<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
+					<p class="text-sm text-neutral-500">No audit log entries for this filter.</p>
+				</div>
+			{:else if auditLogs.length > 0}
+				<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
+					<table class="min-w-full divide-y divide-neutral-200 text-sm">
+						<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+							<tr>
+								<th class="px-4 py-2">Time</th>
+								<th class="px-4 py-2">Company</th>
+								<th class="px-4 py-2">User</th>
+								<th class="px-4 py-2">Action</th>
+								<th class="px-4 py-2">Entity</th>
+								<th class="px-4 py-2" title="The row this action affected, when applicable.">Entity ID</th>
+								<th class="px-4 py-2"></th>
+							</tr>
+						</thead>
+						<tbody class="divide-y divide-neutral-100">
+							{#each auditLogs as entry (entry.id)}
+								<tr>
+									<td class="px-4 py-2 text-neutral-600">{new Date(entry.created_at).toLocaleString()}</td>
+									<td class="px-4 py-2 text-neutral-600">
+										{#if entry.company_name}
+											<span class="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
+												{entry.company_name}
+											</span>
+										{:else}
+											<span class="text-xs text-neutral-400">Platform</span>
+										{/if}
+									</td>
+									<td class="px-4 py-2 text-neutral-600">{entry.user_email ?? 'system'}</td>
+									<td class="px-4 py-2 font-mono text-xs text-neutral-600">{entry.action}</td>
+									<td class="px-4 py-2 text-neutral-600">{entry.entity}</td>
+									<td class="px-4 py-2 font-mono text-xs text-neutral-500">{entry.entity_id ?? '—'}</td>
+									<td class="px-4 py-2 text-right">
+										{#if entry.diff}
+											<button
+												type="button"
+												class="text-xs text-primary underline underline-offset-2"
+												onclick={() => (auditExpandedId = auditExpandedId === entry.id ? null : entry.id)}
+											>
+												{auditExpandedId === entry.id ? 'Hide diff' : 'View diff'}
+											</button>
+										{/if}
+									</td>
+								</tr>
+								{#if auditExpandedId === entry.id && entry.diff}
+									<tr>
+										<td colspan="7" class="bg-neutral-50 px-4 py-2">
+											<pre class="overflow-x-auto text-xs text-neutral-700">{JSON.stringify(
+													entry.diff,
+													null,
+													2
+												)}</pre>
+										</td>
+									</tr>
+								{/if}
+							{/each}
+						</tbody>
+					</table>
+				</div>
+
+				{#if auditHasMore}
+					<div class="mt-4 text-center">
+						<button
+							type="button"
+							disabled={auditLoading}
+							class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+							onclick={() => loadAuditLogs(false)}
+						>
+							{auditLoading ? 'Loading…' : 'Load more'}
+						</button>
+					</div>
+				{/if}
+			{/if}
 		{/if}
 	{/if}
 </div>

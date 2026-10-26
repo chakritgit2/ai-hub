@@ -38,6 +38,27 @@ $di->setShared('db', function () {
     ]);
 });
 
+// Same connection as `db`, but authenticated as `console_platform` instead of
+// `console_app` — the only role `platform_admin_read_all` (db/migrations/post/
+// 002_rls_policies.sql) grants cross-company SELECT to, including audit_logs rows with
+// company_id IS NULL. Used only by AuditLogsController; every other platform_admin
+// endpoint (Tenants/Companies) queries tables with no RLS at all via `db`.
+$di->setShared('dbPlatform', function () {
+    /** @var \Phalcon\Config\Config $config */
+    $config = $this->getShared('config')->database;
+
+    return new PdoPostgresql([
+        'host' => $config->host,
+        'port' => (string) $config->port,
+        'dbname' => $config->dbname,
+        'username' => $config->platformUsername,
+        'password' => $config->platformPassword,
+        'options' => [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        ],
+    ]);
+});
+
 $di->setShared('router', function () {
     $router = new Router(false);
     $register = require __DIR__ . '/routes.php';

@@ -7,6 +7,7 @@ import { apiFetch } from './client';
 import type {
 	Agent,
 	AgentVersion,
+	AuditLogListResponse,
 	ApiKey,
 	ApiKeyCreated,
 	Approval,
@@ -594,6 +595,25 @@ export function destroyCompanyDek(id: string): Promise<void> {
 
 export function listCompanyMembers(id: string): Promise<Placeholder[]> {
 	return apiFetch<Placeholder[]>(`/companies/${id}/members`, { skipCompanyHeader: true });
+}
+
+// ---- /audit-logs (platform_admin) --------------------------------------------
+
+export function listAuditLogs(params: {
+	from?: string;
+	to?: string;
+	limit?: number;
+	offset?: number;
+}): Promise<AuditLogListResponse> {
+	const query = new URLSearchParams();
+	if (params.from) query.set('from', params.from);
+	if (params.to) query.set('to', params.to);
+	if (params.limit !== undefined) query.set('limit', String(params.limit));
+	if (params.offset !== undefined) query.set('offset', String(params.offset));
+	const qs = query.toString();
+	return apiFetch<AuditLogListResponse>(`/audit-logs${qs ? `?${qs}` : ''}`, {
+		skipCompanyHeader: true
+	});
 }
 
 // ---- /workflows (PRD §6.9, phase 4 - slice 1: CRUD + compile/validate, no execution/

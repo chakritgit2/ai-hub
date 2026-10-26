@@ -18,6 +18,25 @@ export interface Company {
 	monthly_budget_usd?: number;
 }
 
+export interface AuditLogEntry {
+	id: string;
+	company_id: string | null;
+	company_code: string | null;
+	company_name: string | null;
+	user_id: string | null;
+	user_email: string | null;
+	action: string;
+	entity: string;
+	entity_id: string | null;
+	diff: Record<string, unknown> | null;
+	created_at: string;
+}
+
+export interface AuditLogListResponse {
+	items: AuditLogEntry[];
+	has_more: boolean;
+}
+
 export interface Me {
 	id: string;
 	email: string;

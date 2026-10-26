@@ -63,6 +63,25 @@ components:
         external_ref: { type: string }
         status: { type: string, enum: [active, suspended] }
         monthly_budget_usd: { type: number }
+    AuditLogEntry:
+      type: object
+      properties:
+        id: { type: string }
+        company_id: { type: string, nullable: true }
+        company_code: { type: string, nullable: true }
+        company_name: { type: string, nullable: true }
+        user_id: { type: string, nullable: true }
+        user_email: { type: string, nullable: true }
+        action: { type: string }
+        entity: { type: string }
+        entity_id: { type: string, nullable: true }
+        diff: { type: object, additionalProperties: true, nullable: true }
+        created_at: { type: string, format: date-time }
+    AuditLogListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AuditLogEntry' } }
+        has_more: { type: boolean }
     Me:
       type: object
       properties:
@@ -1398,3 +1417,14 @@ paths:
     get:
       operationId: listCompanyMembers
       responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CompanyUser' } } } } } }
+
+  /audit-logs:
+    get:
+      operationId: listAuditLogs
+      summary: platform_admin only. Reads via the console_platform DB role so company_id IS NULL platform-level events are visible too (PRD §8.1/§8.2).
+      parameters:
+        - { name: from, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, default: 0 } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AuditLogListResponse' } } } } }
