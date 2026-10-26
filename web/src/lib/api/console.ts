@@ -67,6 +67,17 @@ export function listConnections(): Promise<Connection[]> {
 	return apiFetch<Connection[]>('/connections');
 }
 
+/**
+ * Pools connections across every company the caller belongs to under this one tenant
+ * (ConnectionsController::listConnections()'s X-Tenant-Id branch) - second menu in the
+ * "each menu shows only its own tenant's data" pilot, same pattern as
+ * listAgentsForTenant() below. Every other /connections call stays single-company via
+ * listConnections() above.
+ */
+export function listConnectionsForTenant(tenantId: string): Promise<Connection[]> {
+	return apiFetch<Connection[]>('/connections', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function createConnection(input: Partial<Connection>): Promise<Connection> {
 	return apiFetch<Connection>('/connections', { method: 'POST', body: input });
 }

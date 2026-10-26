@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
-		listConnections,
+		listConnectionsForTenant,
 		createConnection,
 		updateConnection,
 		deleteConnection,
@@ -11,15 +11,42 @@
 	import { ApiError } from '$lib/api/client';
 	import type { Connection } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { companyId } from '$lib/stores/company';
+	import { companyId, tenantId } from '$lib/stores/company';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
+
+	// Pilot of "each menu shows only its own tenant's data" (option A) - pools connections
+	// across every company under the selected tenant instead of the usual single
+	// X-Company-Id company. See ConnectionsController::listConnections()'s X-Tenant-Id
+	// branch and agents/+page.svelte, the first menu this pattern was applied to.
+
+	// "+ New connection" still creates into whichever single company is currently selected
+	// (CompanySwitcher) - same as Agents' "+ New agent" header action - so this check stays
+	// tied to $companyId, not the pooled tenant.
+	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
 
 	// Every mutating endpoint here (create/update/delete/set-secret/test) is admin-only
 	// server-side (ConnectionsController.php's requireAdminRole() - these hold or gate the
 	// provider credentials every agent in the company runs against) - unlike tools/+page.svelte,
 	// this page never checked role at all until now, so a developer/viewer saw every button
-	// and only found out via a 403 after clicking.
-	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
+	// and only found out via a 403 after clicking. A pooled connection can belong to any
+	// company under the tenant, not just whichever one $companyId currently points at, so
+	// this must be checked per-row against that connection's own company.
+	function isAdminFor(connectionCompanyId: string): boolean {
+		return roleForCompany($currentUser, connectionCompanyId) === 'admin';
+	}
+
+	function companyLabel(connectionCompanyId: string): string | undefined {
+		return $currentUser?.companies.find((c) => c.company_id === connectionCompanyId)?.company_name;
+	}
+
+	// Every mutator below is X-Company-Id-scoped via the shared companyId store
+	// (api/client.ts), but a pooled connection can belong to any company under the
+	// tenant - point companyId at that connection's own company before acting, same
+	// approach as agents/+page.svelte's openAgent().
+	function withCompany<T>(connectionCompanyId: string, fn: () => Promise<T>): Promise<T> {
+		companyId.set(connectionCompanyId);
+		return fn();
+	}
 
 	let connections = $state<Connection[]>([]);
 	let loading = $state(true);
@@ -80,8 +107,17 @@
 	async function load() {
 		loading = true;
 		error = null;
+		// No tenant resolved yet (e.g. a brand new SSO user with zero company
+		// memberships at all, so CompanySwitcher never has anything to pick) - nothing
+		// to fetch, but still clear the spinner rather than spinning forever. Same guard
+		// as agents/+page.svelte's load().
+		if (!$tenantId) {
+			connections = [];
+			loading = false;
+			return;
+		}
 		try {
-			connections = await listConnections();
+			connections = await listConnectionsForTenant($tenantId);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load connections.';
 		} finally {
@@ -91,7 +127,7 @@
 
 	onMount(load);
 	$effect(() => {
-		$companyId;
+		$tenantId;
 		load();
 	});
 
@@ -125,11 +161,13 @@
 		editError = null;
 	}
 
-	async function submitEdit(connectionId: string) {
+	async function submitEdit(connection: Connection) {
 		savingEdit = true;
 		editError = null;
 		try {
-			await updateConnection(connectionId, { ...editForm, api_base: normalizeApiBase(editForm.api_base) });
+			await withCompany(connection.company_id, () =>
+				updateConnection(connection.id, { ...editForm, api_base: normalizeApiBase(editForm.api_base) })
+			);
 			editFormId = null;
 			await load();
 		} catch (e) {
@@ -144,7 +182,7 @@
 		deletingId = connection.id;
 		deleteError = null;
 		try {
-			await deleteConnection(connection.id);
+			await withCompany(connection.company_id, () => deleteConnection(connection.id));
 			await load();
 		} catch (e) {
 			if (e instanceof ApiError && e.message === 'connection_in_use') {
@@ -167,11 +205,11 @@
 		secretError = null;
 	}
 
-	async function submitSecret(connectionId: string) {
+	async function submitSecret(connection: Connection) {
 		savingSecret = true;
 		secretError = null;
 		try {
-			await putConnectionSecret(connectionId, { secret: secretValue });
+			await withCompany(connection.company_id, () => putConnectionSecret(connection.id, { secret: secretValue }));
 			secretFormId = null;
 			secretValue = '';
 			await load();
@@ -182,15 +220,15 @@
 		}
 	}
 
-	async function runTest(connectionId: string) {
-		testResults = { ...testResults, [connectionId]: 'testing' };
+	async function runTest(connection: Connection) {
+		testResults = { ...testResults, [connection.id]: 'testing' };
 		try {
-			const result = await testConnection(connectionId);
-			testResults = { ...testResults, [connectionId]: result };
+			const result = await withCompany(connection.company_id, () => testConnection(connection.id));
+			testResults = { ...testResults, [connection.id]: result };
 		} catch (e) {
 			testResults = {
 				...testResults,
-				[connectionId]: { ok: false, detail: e instanceof Error ? e.message : 'Test failed.' }
+				[connection.id]: { ok: false, detail: e instanceof Error ? e.message : 'Test failed.' }
 			};
 		}
 	}
@@ -307,7 +345,7 @@
 {:else if connections.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
-			No connections yet for this company — there are no shared connections across companies (PRD §7.7).
+			No connections yet for this tenant — there are no shared connections across companies (PRD §7.7).
 		</p>
 	</div>
 {:else}
@@ -316,6 +354,7 @@
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
 				<tr>
 					<th class="px-4 py-2">Name</th>
+					<th class="px-4 py-2">Company</th>
 					<th class="px-4 py-2">Type</th>
 					<th class="px-4 py-2">API base</th>
 					<th class="px-4 py-2">Key</th>
@@ -327,12 +366,19 @@
 				{#each connections as connection (connection.id)}
 					<tr>
 						<td class="px-4 py-2 font-medium text-neutral-900">{connection.name}</td>
+						<td class="px-4 py-2 text-neutral-600">
+							{#if companyLabel(connection.company_id)}
+								<span class="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
+									{companyLabel(connection.company_id)}
+								</span>
+							{/if}
+						</td>
 						<td class="px-4 py-2 font-mono text-xs text-neutral-600">{connection.type}</td>
 						<td class="px-4 py-2 text-neutral-600">{connection.api_base ?? '—'}</td>
 						<td class="px-4 py-2 font-mono text-xs text-neutral-500">{connection.masked_hint ?? '••••••••'}</td>
 						<td class="px-4 py-2 text-neutral-600">{connection.max_concurrency ?? '—'}</td>
 						<td class="px-4 py-2">
-							{#if isAdmin}
+							{#if isAdminFor(connection.company_id)}
 								<div class="flex flex-wrap items-center gap-2">
 									<button
 										type="button"
@@ -352,7 +398,7 @@
 										type="button"
 										class="rounded-md border border-neutral-300 px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
 										disabled={testResults[connection.id] === 'testing'}
-										onclick={() => runTest(connection.id)}
+										onclick={() => runTest(connection)}
 									>
 										{testResults[connection.id] === 'testing' ? 'Testing…' : 'Test'}
 									</button>
@@ -376,7 +422,7 @@
 										class="mt-2 grid grid-cols-1 gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 sm:grid-cols-2"
 										onsubmit={(e) => {
 											e.preventDefault();
-											submitEdit(connection.id);
+											submitEdit(connection);
 										}}
 									>
 										{#if editError}
@@ -447,7 +493,7 @@
 										class="mt-2 flex flex-col gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2"
 										onsubmit={(e) => {
 											e.preventDefault();
-											submitSecret(connection.id);
+											submitSecret(connection);
 										}}
 									>
 										{#if secretError}
