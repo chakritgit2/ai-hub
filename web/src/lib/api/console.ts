@@ -345,6 +345,17 @@ export function listEvalRuns(): Promise<EvalRun[]> {
 	return apiFetch<EvalRun[]>('/evals');
 }
 
+/**
+ * Pools eval runs across every company the caller belongs to under this one tenant
+ * (EvalsController::listEvalRuns()'s X-Tenant-Id branch) - twelfth and final menu in the
+ * "each menu shows only its own tenant's data" pilot, same pattern as
+ * listAgentsForTenant() etc. Every other /evals call stays single-company via
+ * listEvalRuns() above.
+ */
+export function listEvalRunsForTenant(tenantId: string): Promise<EvalRun[]> {
+	return apiFetch<EvalRun[]>('/evals', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function createEvalRun(input: CreateEvalRunInput): Promise<EvalRun> {
 	return apiFetch<EvalRun>('/evals', { method: 'POST', body: input });
 }
