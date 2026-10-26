@@ -428,6 +428,16 @@ export function listSkills(): Promise<Skill[]> {
 	return apiFetch<Skill[]>('/skills');
 }
 
+/**
+ * Pools skills across every company the caller belongs to under this one tenant
+ * (SkillsController::listSkills()'s X-Tenant-Id branch) - sixth menu in the "each menu
+ * shows only its own tenant's data" pilot, same pattern as listAgentsForTenant() etc.
+ * Every other /skills call stays single-company via listSkills() above.
+ */
+export function listSkillsForTenant(tenantId: string): Promise<Skill[]> {
+	return apiFetch<Skill[]>('/skills', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export interface SkillInput {
 	name?: string;
 	description?: string | null;

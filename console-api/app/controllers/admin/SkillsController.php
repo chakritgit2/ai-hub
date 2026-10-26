@@ -33,8 +33,33 @@ class SkillsController extends ControllerBase
 {
     private const MAX_CONTENT_BYTES = 102400; // 100 KB, PRD §6.6a
 
+    private const LIST_SKILLS_SQL = "SELECT s.id, s.company_id, s.name, s.description, s.status, s.created_at, s.updated_at,
+                sv.id AS version_id, sv.version_no, sv.content, sv.content_hash, sv.has_scripts,
+                sv.is_published, sv.published_at
+         FROM console.skills s
+         JOIN LATERAL (
+             SELECT id, version_no, content, content_hash, has_scripts, is_published, published_at
+             FROM console.skill_versions
+             WHERE skill_id = s.id
+             ORDER BY version_no DESC LIMIT 1
+         ) sv ON true
+         ORDER BY s.created_at DESC";
+
+    /**
+     * Sixth menu in the "each menu shows only its own tenant's data" pilot (option A, see
+     * AgentsController::listAgents()'s X-Tenant-Id branch for the full reasoning) - same
+     * pattern applied verbatim: an optional X-Tenant-Id header pools skills across every
+     * company under that tenant the caller actually belongs to, instead of the usual
+     * single X-Company-Id-scoped company. Every mutator is untouched and still requires a
+     * single X-Company-Id.
+     */
     public function listSkills(): Response
     {
+        $tenantId = $_SERVER['HTTP_X_TENANT_ID'] ?? null;
+        if ($tenantId !== null && $tenantId !== '') {
+            return $this->listSkillsForTenant($tenantId);
+        }
+
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
@@ -43,21 +68,44 @@ class SkillsController extends ControllerBase
         }
 
         $rows = $this->runInCompanyTransaction(
-            static fn ($db) => $db->fetchAll(
-                "SELECT s.id, s.company_id, s.name, s.description, s.status, s.created_at, s.updated_at,
-                        sv.id AS version_id, sv.version_no, sv.content, sv.content_hash, sv.has_scripts,
-                        sv.is_published, sv.published_at
-                 FROM console.skills s
-                 JOIN LATERAL (
-                     SELECT id, version_no, content, content_hash, has_scripts, is_published, published_at
-                     FROM console.skill_versions
-                     WHERE skill_id = s.id
-                     ORDER BY version_no DESC LIMIT 1
-                 ) sv ON true
-                 ORDER BY s.created_at DESC",
-                Enum::FETCH_ASSOC
-            )
+            static fn ($db) => $db->fetchAll(self::LIST_SKILLS_SQL, Enum::FETCH_ASSOC)
         );
+
+        return $this->jsonResponse(array_map([$this, 'formatSkill'], $rows));
+    }
+
+    /**
+     * Same approach as AgentsController::listAgentsForTenant(): $authUser['companies'] is
+     * the same real membership list requireMembership() already trusts, so filtering it to
+     * this tenant and looping the per-company RLS-scoped query is the only new logic - no
+     * new access-control surface. A tenant the caller has zero membership in just yields
+     * an empty company list and therefore an empty (200) result, same as any other company
+     * with no skills.
+     */
+    private function listSkillsForTenant(string $tenantId): Response
+    {
+        $authUser = $this->getAuthUser();
+        $companyIds = array_values(array_unique(array_map(
+            static fn (array $membership): string => $membership['company_id'],
+            array_filter(
+                $authUser['companies'] ?? [],
+                static fn (array $membership): bool => $membership['tenant_id'] === $tenantId
+            )
+        )));
+
+        $rows = [];
+        foreach ($companyIds as $companyId) {
+            $companyRows = $this->runInTransactionAsCompany(
+                $companyId,
+                static fn ($db) => $db->fetchAll(self::LIST_SKILLS_SQL, Enum::FETCH_ASSOC)
+            );
+            array_push($rows, ...$companyRows);
+        }
+
+        // Each company's own rows arrive newest-first, but concatenating them in
+        // company-iteration order doesn't make the merged set newest-first overall -
+        // re-sort once across the whole pooled result (same as listAgentsForTenant()).
+        usort($rows, static fn (array $a, array $b): int => $b['created_at'] <=> $a['created_at']);
 
         return $this->jsonResponse(array_map([$this, 'formatSkill'], $rows));
     }
