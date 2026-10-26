@@ -19,10 +19,9 @@
 			: sampleCompanies
 	);
 
-	// Groups this user's own companies by tenant, so switching tenant narrows the second
-	// dropdown instead of scrolling one long flat list - this is pure client-side
-	// navigation grouping, not a new access scope: the set of companies shown is still
-	// exactly $currentUser.companies, the same set the plain list showed before.
+	// Groups this user's own companies by tenant - this is pure client-side navigation
+	// grouping, not a new access scope: the set of companies is still exactly
+	// $currentUser.companies, same as before this switcher existed.
 	let tenantOptions = $derived<{ id: string; name: string }[]>(
 		Array.from(new Map(options.map((c) => [c.tenant_id ?? '', c.tenant_name ?? 'Companies'])).entries()).map(
 			([id, name]) => ({ id, name })
@@ -43,16 +42,14 @@
 		}
 	});
 
-	let companiesInTenant = $derived(options.filter((c) => (c.tenant_id ?? '') === selectedTenantId));
-
+	// Deliberately no separate Company control - picking a tenant jumps straight to its
+	// first company (by user request). A tenant with more than one company is only
+	// reachable here via that first one; switching to a sibling company needs a
+	// different entry point than this header switcher.
 	function onTenantChange(event: Event) {
 		selectedTenantId = (event.currentTarget as HTMLSelectElement).value;
 		const first = options.find((c) => (c.tenant_id ?? '') === selectedTenantId);
 		if (first) companyId.set(first.id);
-	}
-
-	function onCompanyChange(event: Event) {
-		companyId.set((event.currentTarget as HTMLSelectElement).value);
 	}
 
 	// $companyId can be left over from the pre-login sampleCompanies placeholder (or an old
@@ -66,33 +63,16 @@
 	});
 </script>
 
-<div class="flex items-center gap-2">
-	{#if tenantOptions.length > 1}
-		<label class="flex items-center gap-2 text-sm">
-			<span class="sr-only">Tenant</span>
-			<select
-				class="rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-neutral-800
-					shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-				value={selectedTenantId}
-				onchange={onTenantChange}
-			>
-				{#each tenantOptions as tenant (tenant.id)}
-					<option value={tenant.id}>{tenant.name}</option>
-				{/each}
-			</select>
-		</label>
-	{/if}
-	<label class="flex items-center gap-2 text-sm">
-		<span class="sr-only">Company</span>
-		<select
-			class="rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-neutral-800
-				shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-			value={$companyId}
-			onchange={onCompanyChange}
-		>
-			{#each companiesInTenant as company (company.id)}
-				<option value={company.id}>{company.name}</option>
-			{/each}
-		</select>
-	</label>
-</div>
+<label class="flex items-center gap-2 text-sm">
+	<span class="sr-only">Tenant</span>
+	<select
+		class="rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-neutral-800
+			shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+		value={selectedTenantId}
+		onchange={onTenantChange}
+	>
+		{#each tenantOptions as tenant (tenant.id)}
+			<option value={tenant.id}>{tenant.name}</option>
+		{/each}
+	</select>
+</label>

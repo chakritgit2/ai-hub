@@ -16,11 +16,63 @@ declare(strict_types=1);
  * OPENSSL_CONF pointing at an openssl.cnf (php.ini's openssl.cafile alone isn't enough) —
  * if you see "Cannot get key from parameter 1", run with e.g.
  * OPENSSL_CONF="C:\xampp\php\extras\openssl\openssl.cnf" php -S ...
+ *
+ * The login form's "Companies" field defaults to every company currently in
+ * console.companies (see defaultCompaniesValue() below) rather than a hardcoded sample -
+ * reads the same DB_* env vars as console-api itself (console-api/app/config/config.php),
+ * loaded here from .env the same way for local dev. Best-effort: no DB reachable (or no
+ * .env at all) just falls back to the one hardcoded sample, same as before this existed.
  */
 
 require __DIR__ . '/../vendor/autoload.php';
 
 use Firebase\JWT\JWT;
+
+if (file_exists(__DIR__ . '/../.env')) {
+    Dotenv\Dotenv::createImmutable(__DIR__ . '/..')->safeLoad();
+}
+
+/**
+ * phpdotenv's safeLoad() only populates $_ENV/$_SERVER here, not getenv() - same reason
+ * config.php's own env() helper checks those first (see its own comment). The k8s
+ * Deployment sets these as real process env vars instead (no .env file there), which
+ * getenv() does see - so this still needs to fall through to it too.
+ */
+function envOrDefault(string $key, ?string $default = null): ?string
+{
+    return $_ENV[$key] ?? $_SERVER[$key] ?? (getenv($key) ?: null) ?? $default;
+}
+
+/**
+ * Every company's external_ref (skipping companies with none - unrefreshable from any
+ * JWT claim anyway), each defaulted to the admin role, comma-separated. Falls back to the
+ * single pre-existing sample on any failure - a DB hiccup here must never break the login
+ * page, this is only a convenience default.
+ */
+function defaultCompaniesValue(): string
+{
+    $fallback = 'ext-test-co:admin';
+    $host = envOrDefault('DB_HOST');
+    if ($host === null) {
+        return $fallback;
+    }
+
+    try {
+        $pdo = new PDO(
+            sprintf('pgsql:host=%s;port=%s;dbname=%s', $host, envOrDefault('DB_PORT', '5432'), envOrDefault('DB_NAME', 'ai_console')),
+            envOrDefault('DB_APP_USER', 'console_app'),
+            envOrDefault('DB_APP_PASSWORD', ''),
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 2]
+        );
+        $refs = $pdo->query(
+            'SELECT external_ref FROM console.companies WHERE external_ref IS NOT NULL ORDER BY created_at'
+        )->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Throwable) {
+        return $fallback;
+    }
+
+    return $refs === [] ? $fallback : implode(',', array_map(static fn (string $ref): string => "{$ref}:admin", $refs));
+}
 
 $keyPath = __DIR__ . '/fake-sso-key.pem';
 if (!file_exists($keyPath)) {
@@ -95,7 +147,7 @@ header('Content-Type: text/html; charset=utf-8');
 	</p>
 	<p>
 		<label style="display:block">Companies (<code>external_ref:role</code>, comma-separated)
-			<input name="companies" value="ext-test-co:admin" style="width:100%; box-sizing:border-box">
+			<input name="companies" value="<?= htmlspecialchars(defaultCompaniesValue(), ENT_QUOTES) ?>" style="width:100%; box-sizing:border-box">
 		</label>
 		<small>role is one of admin / developer / viewer. A ref with no matching
 			<code>console.companies.external_ref</code> is skipped on sync (PRD §12).</small>

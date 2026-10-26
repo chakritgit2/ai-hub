@@ -26,6 +26,25 @@ spec:
           command: ["php", "-S", "0.0.0.0:8999", "dev/fake-sso.php"]
           ports:
             - containerPort: 8999
+          env:
+            # Read-only: lets the login form default "Companies" to every company that
+            # currently exists (console_app already has SELECT on console.companies, no
+            # RLS on that table) so testers don't have to hand-type every external_ref
+            # whenever a new tenant/company is added. Same role/Secret console-api itself
+            # uses - see console-api-deployment.yaml.
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: ai_console
+            - name: DB_APP_USER
+              value: console_app
+            - name: DB_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dynamiq-db-credentials
+                  key: console_app_password
 ---
 apiVersion: v1
 kind: Service
