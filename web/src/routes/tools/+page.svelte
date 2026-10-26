@@ -1,11 +1,29 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listTools, createTool, updateTool, deleteTool, putToolSecret, testTool } from '$lib/api/console';
+	import { listToolsForTenant, createTool, updateTool, deleteTool, putToolSecret, testTool } from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
 	import type { Tool } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { companyId } from '$lib/stores/company';
+	import { companyId, tenantId } from '$lib/stores/company';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
+
+	// Pilot of "each menu shows only its own tenant's data" (option A) - pools tools
+	// across every company under the selected tenant instead of the usual single
+	// X-Company-Id company. See ToolsController::listTools()'s X-Tenant-Id branch and
+	// agents/+page.svelte, the first menu this pattern was applied to.
+
+	// Every mutator below is X-Company-Id-scoped via the shared companyId store
+	// (api/client.ts), but a pooled tool can belong to any company under the tenant -
+	// point companyId at that tool's own company before acting, same approach as
+	// connections/+page.svelte's withCompany().
+	function withCompany<T>(toolCompanyId: string, fn: () => Promise<T>): Promise<T> {
+		companyId.set(toolCompanyId);
+		return fn();
+	}
+
+	function companyLabel(toolCompanyId: string): string | undefined {
+		return $currentUser?.companies.find((c) => c.company_id === toolCompanyId)?.company_name;
+	}
 
 	let tools = $state<Tool[]>([]);
 	let loading = $state(true);
@@ -39,9 +57,12 @@
 
 	// `kind: python` is code-execution and admin-only server-side (requireWriteRoleForKind)
 	// - edit/delete must be hidden the same way the create form already disables selecting
-	// it, instead of letting a developer click through to a silent/unexplained 403.
+	// it, instead of letting a developer click through to a silent/unexplained 403. A
+	// pooled tool can belong to any company under the tenant, not just whichever one
+	// $companyId currently points at, so this must be checked per-row against that tool's
+	// own company (same reasoning as connections/+page.svelte's isAdminFor()).
 	function canManage(tool: Tool): boolean {
-		return tool.kind !== 'python' || isAdmin;
+		return tool.kind !== 'python' || roleForCompany($currentUser, tool.company_id) === 'admin';
 	}
 
 	// console-api's own error codes for create/update, mapped to readable copy -
@@ -76,8 +97,17 @@
 	async function load() {
 		loading = true;
 		error = null;
+		// No tenant resolved yet (e.g. a brand new SSO user with zero company
+		// memberships at all, so CompanySwitcher never has anything to pick) - nothing
+		// to fetch, but still clear the spinner rather than spinning forever. Same guard
+		// as agents/+page.svelte's load().
+		if (!$tenantId) {
+			tools = [];
+			loading = false;
+			return;
+		}
 		try {
-			tools = await listTools();
+			tools = await listToolsForTenant($tenantId);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load tools.';
 		} finally {
@@ -87,7 +117,7 @@
 
 	onMount(load);
 	$effect(() => {
-		$companyId;
+		$tenantId;
 		load();
 	});
 
@@ -176,23 +206,25 @@
 		editError = null;
 		try {
 			const authMode = tool.kind === 'builtin' ? 'service' : editForm.auth_mode;
-			await updateTool(tool.id, {
-				name: editForm.name,
-				access_level: editForm.access_level,
-				auth_mode: authMode,
-				audience: authMode === 'delegated' && editForm.audience ? editForm.audience : null,
-				// PATCH overwrites `config` wholesale server-side (no merge) - for kinds this
-				// form has no fields for (python), send the tool's existing config back
-				// unchanged rather than {}, or saving just a rename/enabled-toggle would
-				// silently wipe it.
-				config:
-					tool.kind === 'http'
-						? { url: editForm.url, method: editForm.method, description: editForm.description }
-						: tool.kind === 'builtin'
-							? { provider: editForm.provider }
-							: tool.config,
-				enabled: editForm.enabled
-			});
+			await withCompany(tool.company_id, () =>
+				updateTool(tool.id, {
+					name: editForm.name,
+					access_level: editForm.access_level,
+					auth_mode: authMode,
+					audience: authMode === 'delegated' && editForm.audience ? editForm.audience : null,
+					// PATCH overwrites `config` wholesale server-side (no merge) - for kinds this
+					// form has no fields for (python), send the tool's existing config back
+					// unchanged rather than {}, or saving just a rename/enabled-toggle would
+					// silently wipe it.
+					config:
+						tool.kind === 'http'
+							? { url: editForm.url, method: editForm.method, description: editForm.description }
+							: tool.kind === 'builtin'
+								? { provider: editForm.provider }
+								: tool.config,
+					enabled: editForm.enabled
+				})
+			);
 			editFormId = null;
 			await load();
 		} catch (e) {
@@ -207,7 +239,7 @@
 		deletingId = tool.id;
 		deleteError = null;
 		try {
-			await deleteTool(tool.id);
+			await withCompany(tool.company_id, () => deleteTool(tool.id));
 			await load();
 		} catch (e) {
 			deleteError = describeError(e, 'Failed to delete this tool.');
@@ -222,11 +254,11 @@
 		secretError = null;
 	}
 
-	async function submitSecret(toolId: string) {
+	async function submitSecret(tool: Tool) {
 		savingSecret = true;
 		secretError = null;
 		try {
-			await putToolSecret(toolId, { secret: secretValue });
+			await withCompany(tool.company_id, () => putToolSecret(tool.id, { secret: secretValue }));
 			secretFormId = null;
 			secretValue = '';
 			await load();
@@ -240,7 +272,7 @@
 	async function runTest(tool: Tool) {
 		testResults = { ...testResults, [tool.id]: 'testing' };
 		try {
-			const result = await testTool(tool.id);
+			const result = await withCompany(tool.company_id, () => testTool(tool.id));
 			testResults = { ...testResults, [tool.id]: result };
 		} catch (e) {
 			testResults = {
@@ -425,7 +457,7 @@
 {:else if tools.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
-			No tools yet for this company — not yet callable by an agent (CRUD only, PRD §6.5).
+			No tools yet for this tenant — not yet callable by an agent (CRUD only, PRD §6.5).
 		</p>
 	</div>
 {:else}
@@ -434,6 +466,7 @@
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
 				<tr>
 					<th class="px-4 py-2">Name</th>
+					<th class="px-4 py-2">Company</th>
 					<th class="px-4 py-2">Kind</th>
 					<th class="px-4 py-2">Access</th>
 					<th class="px-4 py-2">Auth mode</th>
@@ -447,6 +480,13 @@
 				{#each tools as tool (tool.id)}
 					<tr>
 						<td class="px-4 py-2 font-medium text-neutral-900">{tool.name}</td>
+						<td class="px-4 py-2 text-neutral-600">
+							{#if companyLabel(tool.company_id)}
+								<span class="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500">
+									{companyLabel(tool.company_id)}
+								</span>
+							{/if}
+						</td>
 						<td class="px-4 py-2 font-mono text-xs text-neutral-600">{tool.kind}</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.access_level}</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.auth_mode}</td>
@@ -641,7 +681,7 @@
 									class="mt-2 flex flex-col gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 text-left"
 									onsubmit={(e) => {
 										e.preventDefault();
-										submitSecret(tool.id);
+										submitSecret(tool);
 									}}
 								>
 									{#if secretError}

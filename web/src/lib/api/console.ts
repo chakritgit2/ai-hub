@@ -282,6 +282,16 @@ export function listTools(): Promise<Tool[]> {
 	return apiFetch<Tool[]>('/tools');
 }
 
+/**
+ * Pools tools across every company the caller belongs to under this one tenant
+ * (ToolsController::listTools()'s X-Tenant-Id branch) - fifth menu in the "each menu
+ * shows only its own tenant's data" pilot, same pattern as listAgentsForTenant() etc.
+ * Every other /tools call stays single-company via listTools() above.
+ */
+export function listToolsForTenant(tenantId: string): Promise<Tool[]> {
+	return apiFetch<Tool[]>('/tools', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function createTool(input: Partial<Tool>): Promise<Tool> {
 	return apiFetch<Tool>('/tools', { method: 'POST', body: input });
 }
