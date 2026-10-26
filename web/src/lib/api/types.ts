@@ -61,6 +61,9 @@ export interface Connection {
 	api_base?: string;
 	masked_hint?: string;
 	max_concurrency?: number;
+	// Returned by console-api's formatConnection, but nothing in this codebase reads or
+	// writes it yet - no documented meaning, so there's no edit UI for it either.
+	meta?: Record<string, unknown>;
 }
 
 export interface ConnectionSecretInput {
