@@ -3,12 +3,21 @@
 	import {
 		listCompanyUsers,
 		listEgressAllowlist,
+		createEgressAllowlistEntry,
+		deleteEgressAllowlistEntry,
 		listCompanies
 	} from '$lib/api/console';
-	import type { Placeholder, Company } from '$lib/api/types';
+	import { ApiError } from '$lib/api/client';
+	import type { Placeholder, Company, EgressAllowlistEntry } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
-	import { currentUser } from '$lib/stores/auth';
+	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
+
+	// Egress allowlist is a per-company list (RLS-scoped, stamped with the caller's own
+	// company_id on create) administered by that company's admins - requireAdminRole()
+	// server-side, same as Connections, NOT platform_admin like the Companies/Pricing
+	// tabs below.
+	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
 
 	headerContent.set({ menu: 'Settings', title: 'Settings' });
 
@@ -20,9 +29,37 @@
 	let usersLoading = $state(true);
 	let usersError = $state<string | null>(null);
 
-	let egress = $state<Placeholder[]>([]);
+	let egress = $state<EgressAllowlistEntry[]>([]);
 	let egressLoading = $state(true);
 	let egressError = $state<string | null>(null);
+
+	let showEgressForm = $state(false);
+	// port is bound to a type="number" input, which Svelte coerces to number | null
+	// (never a string, even for the initial value) - typing it as a number here avoids
+	// calling string-only methods on it later.
+	let egressForm = $state<{ host_pattern: string; port: number | null; allow_private_ip: boolean }>({
+		host_pattern: '',
+		port: null,
+		allow_private_ip: false
+	});
+	let egressFormError = $state<string | null>(null);
+	let submittingEgress = $state(false);
+	let deletingEgressId = $state<string | null>(null);
+	let egressDeleteError = $state<string | null>(null);
+
+	const EGRESS_ERROR_MESSAGES: Record<string, string> = {
+		host_pattern_required: 'Host pattern is required.',
+		invalid_port: 'Port must be a whole number between 1 and 65535.',
+		invalid_allow_private_ip: 'Allow private IP must be a yes/no value.',
+		forbidden: 'You no longer have permission to do this.'
+	};
+
+	function describeEgressError(e: unknown, fallback: string): string {
+		if (e instanceof ApiError) {
+			return EGRESS_ERROR_MESSAGES[e.message] ?? e.message;
+		}
+		return e instanceof Error ? e.message : fallback;
+	}
 
 	let companies = $state<Company[]>([]);
 	let companiesLoading = $state(true);
@@ -49,6 +86,45 @@
 			egressError = e instanceof Error ? e.message : 'Failed to load the egress allowlist.';
 		} finally {
 			egressLoading = false;
+		}
+	}
+
+	async function submitEgressForm() {
+		submittingEgress = true;
+		egressFormError = null;
+		try {
+			await createEgressAllowlistEntry({
+				host_pattern: egressForm.host_pattern.trim(),
+				port: egressForm.port ?? undefined,
+				allow_private_ip: egressForm.allow_private_ip
+			});
+			showEgressForm = false;
+			egressForm = { host_pattern: '', port: null, allow_private_ip: false };
+			await loadEgress();
+		} catch (e) {
+			egressFormError = describeEgressError(e, 'Failed to add this host.');
+		} finally {
+			submittingEgress = false;
+		}
+	}
+
+	async function doDeleteEgress(entry: EgressAllowlistEntry) {
+		if (!confirm(`Remove "${entry.host_pattern}" from the egress allowlist?`)) return;
+		deletingEgressId = entry.id;
+		egressDeleteError = null;
+		try {
+			await deleteEgressAllowlistEntry(entry.id);
+			await loadEgress();
+		} catch (e) {
+			// not_found means it's already gone (deleted elsewhere) - just reload quietly
+			// instead of surfacing an alarming error for something that's already resolved.
+			if (e instanceof ApiError && e.message === 'not_found') {
+				await loadEgress();
+			} else {
+				egressDeleteError = describeEgressError(e, 'Failed to remove this host.');
+			}
+		} finally {
+			deletingEgressId = null;
 		}
 	}
 
@@ -150,6 +226,92 @@
 			<pre class="rounded-lg border border-neutral-200 bg-white p-4 text-xs">{JSON.stringify(users, null, 2)}</pre>
 		{/if}
 	{:else if activeTab === 'egress'}
+		<div class="mb-4 flex items-center justify-between">
+			<p class="text-xs text-neutral-400">
+				Hosts connections' API bases are allowed to reach (PRD §7.4) — checked again on every save.
+			</p>
+			{#if isAdmin}
+				<button
+					type="button"
+					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+					onclick={() => (showEgressForm = !showEgressForm)}
+				>
+					+ Add host
+				</button>
+			{:else}
+				<span class="text-sm text-neutral-400">Admin access required to manage the egress allowlist</span>
+			{/if}
+		</div>
+
+		{#if showEgressForm}
+			<form
+				class="mb-4 grid grid-cols-1 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-3"
+				onsubmit={(e) => {
+					e.preventDefault();
+					submitEgressForm();
+				}}
+			>
+				{#if egressFormError}
+					<div class="sm:col-span-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+						{egressFormError}
+					</div>
+				{/if}
+				<label class="block">
+					<span class="text-sm font-medium text-neutral-700">Host pattern</span>
+					<input
+						type="text"
+						bind:value={egressForm.host_pattern}
+						required
+						placeholder="api.openai.com"
+						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
+							focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+					/>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium text-neutral-700">Port (optional)</span>
+					<input
+						type="number"
+						min="1"
+						max="65535"
+						bind:value={egressForm.port}
+						placeholder="443"
+						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+							focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+					/>
+				</label>
+				<label class="flex items-end gap-2 pb-2">
+					<input type="checkbox" bind:checked={egressForm.allow_private_ip} class="h-4 w-4" />
+					<span class="text-sm text-neutral-700">Allow private IP</span>
+				</label>
+				<p class="text-xs text-neutral-400 sm:col-span-3">
+					Only enable "Allow private IP" if this host genuinely resolves to an internal address you
+					trust — it bypasses the usual SSRF protection for this entry.
+				</p>
+				<div class="flex gap-2 sm:col-span-3">
+					<button
+						type="submit"
+						disabled={submittingEgress}
+						class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+					>
+						{submittingEgress ? 'Saving…' : 'Add host'}
+					</button>
+					<button
+						type="button"
+						class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
+						onclick={() => (showEgressForm = false)}
+					>
+						Cancel
+					</button>
+				</div>
+			</form>
+		{/if}
+
+		{#if egressDeleteError}
+			<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+				{egressDeleteError}
+			</div>
+		{/if}
+
 		{#if egressLoading}
 			<p class="text-sm text-neutral-500" role="status">Loading egress allowlist…</p>
 		{:else if egressError}
@@ -172,7 +334,43 @@
 				</p>
 			</div>
 		{:else}
-			<pre class="rounded-lg border border-neutral-200 bg-white p-4 text-xs">{JSON.stringify(egress, null, 2)}</pre>
+			<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
+				<table class="min-w-full divide-y divide-neutral-200 text-sm">
+					<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+						<tr>
+							<th class="px-4 py-2">Host pattern</th>
+							<th class="px-4 py-2">Port</th>
+							<th class="px-4 py-2">Allow private IP</th>
+							<th class="px-4 py-2">Added</th>
+							{#if isAdmin}
+								<th class="px-4 py-2">Actions</th>
+							{/if}
+						</tr>
+					</thead>
+					<tbody class="divide-y divide-neutral-100">
+						{#each egress as entry (entry.id)}
+							<tr>
+								<td class="px-4 py-2 font-mono text-xs text-neutral-800">{entry.host_pattern}</td>
+								<td class="px-4 py-2 text-neutral-600">{entry.port ?? 'any'}</td>
+								<td class="px-4 py-2 text-neutral-600">{entry.allow_private_ip ? 'Yes' : 'No'}</td>
+								<td class="px-4 py-2 text-neutral-500">{new Date(entry.created_at).toLocaleString()}</td>
+								{#if isAdmin}
+									<td class="px-4 py-2">
+										<button
+											type="button"
+											class="rounded-md border border-danger/40 px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+											disabled={deletingEgressId === entry.id}
+											onclick={() => doDeleteEgress(entry)}
+										>
+											{deletingEgressId === entry.id ? 'Removing…' : 'Delete'}
+										</button>
+									</td>
+								{/if}
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
 		{/if}
 	{:else if activeTab === 'companies'}
 		{#if !$currentUser?.is_platform_admin}

@@ -66,6 +66,16 @@ export interface Connection {
 	meta?: Record<string, unknown>;
 }
 
+export interface EgressAllowlistEntry {
+	id: string;
+	company_id: string;
+	host_pattern: string;
+	port: number | null;
+	allow_private_ip: boolean;
+	created_at: string;
+	updated_at: string;
+}
+
 export interface ConnectionSecretInput {
 	secret: string;
 }

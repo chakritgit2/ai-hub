@@ -19,6 +19,7 @@ import type {
 	DatasetInput,
 	DatasetItem,
 	Deployment,
+	EgressAllowlistEntry,
 	CreateEvalRunInput,
 	EvalCostEstimate,
 	EvalCostEstimateInput,
@@ -409,12 +410,16 @@ export function listCompanyUsers(): Promise<Placeholder[]> {
 	return apiFetch<Placeholder[]>('/settings/users');
 }
 
-export function listEgressAllowlist(): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>('/settings/egress-allowlist');
+export function listEgressAllowlist(): Promise<EgressAllowlistEntry[]> {
+	return apiFetch<EgressAllowlistEntry[]>('/settings/egress-allowlist');
 }
 
-export function createEgressAllowlistEntry(input: Placeholder): Promise<Placeholder> {
-	return apiFetch<Placeholder>('/settings/egress-allowlist', { method: 'POST', body: input });
+export function createEgressAllowlistEntry(input: {
+	host_pattern: string;
+	port?: number;
+	allow_private_ip?: boolean;
+}): Promise<EgressAllowlistEntry> {
+	return apiFetch<EgressAllowlistEntry>('/settings/egress-allowlist', { method: 'POST', body: input });
 }
 
 export function deleteEgressAllowlistEntry(id: string): Promise<void> {
