@@ -190,6 +190,17 @@ export function listDeployments(): Promise<Deployment[]> {
 	return apiFetch<Deployment[]>('/deployments');
 }
 
+/**
+ * Pools deployments across every company the caller belongs to under this one tenant
+ * (DeploymentsController::listDeployments()'s X-Tenant-Id branch) - third menu in the
+ * "each menu shows only its own tenant's data" pilot, same pattern as
+ * listAgentsForTenant()/listConnectionsForTenant(). Every other /deployments call stays
+ * single-company via listDeployments() above.
+ */
+export function listDeploymentsForTenant(tenantId: string): Promise<Deployment[]> {
+	return apiFetch<Deployment[]>('/deployments', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function createDeployment(input: Partial<Deployment>): Promise<Deployment> {
 	return apiFetch<Deployment>('/deployments', { method: 'POST', body: input });
 }
