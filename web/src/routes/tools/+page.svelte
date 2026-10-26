@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listTools, createTool, deleteTool, putToolSecret, testTool } from '$lib/api/console';
+	import { listTools, createTool, updateTool, deleteTool, putToolSecret, testTool } from '$lib/api/console';
+	import { ApiError } from '$lib/api/client';
 	import type { Tool } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId } from '$lib/stores/company';
@@ -31,7 +32,46 @@
 	let secretError = $state<string | null>(null);
 	let savingSecret = $state(false);
 
+	let deletingId = $state<string | null>(null);
+	let deleteError = $state<string | null>(null);
+
 	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
+
+	// `kind: python` is code-execution and admin-only server-side (requireWriteRoleForKind)
+	// - edit/delete must be hidden the same way the create form already disables selecting
+	// it, instead of letting a developer click through to a silent/unexplained 403.
+	function canManage(tool: Tool): boolean {
+		return tool.kind !== 'python' || isAdmin;
+	}
+
+	// console-api's own error codes for create/update, mapped to readable copy -
+	// egress_host_not_allowed carries the offending `host` in the body, folded in below.
+	const ERROR_MESSAGES: Record<string, string> = {
+		name_required: 'Name is required.',
+		kind_required: 'Kind is required.',
+		kind_invalid: 'Unsupported kind.',
+		name_already_exists: 'A tool with this name already exists.',
+		access_level_invalid: 'Unsupported access level.',
+		auth_mode_invalid: 'Unsupported auth mode.',
+		audience_must_be_string_or_null: 'Audience must be text.',
+		config_url_must_be_string: 'URL must be text.',
+		config_url_invalid: 'URL must be a valid absolute URL.',
+		config_provider_invalid: 'Unsupported provider.',
+		builtin_tools_require_service_auth_mode: 'Built-in tools always use service auth.',
+		forbidden: 'You no longer have permission to do this.',
+		not_found: 'This tool no longer exists - it may have been deleted by someone else.'
+	};
+
+	function describeError(e: unknown, fallback: string): string {
+		if (e instanceof ApiError) {
+			if (e.message === 'egress_host_not_allowed') {
+				const host = (e.body as { host?: string } | undefined)?.host;
+				return `"${host ?? 'this host'}" is not on the egress allowlist - add it under Settings first.`;
+			}
+			return ERROR_MESSAGES[e.message] ?? e.message;
+		}
+		return e instanceof Error ? e.message : fallback;
+	}
 
 	async function load() {
 		loading = true;
@@ -91,15 +131,89 @@
 			resetForm();
 			await load();
 		} catch (e) {
-			formError = e instanceof Error ? e.message : 'Failed to create the tool.';
+			formError = describeError(e, 'Failed to create the tool.');
 		} finally {
 			submitting = false;
 		}
 	}
 
+	let editFormId = $state<string | null>(null);
+	// `kind` is intentionally not editable here - it decides config's whole shape
+	// (url/method vs. provider vs. nothing), so a kind change is a delete+recreate, same
+	// as how this page's create form never lets kind be changed after submit either.
+	let editForm = $state({
+		name: '',
+		access_level: 'read' as Tool['access_level'],
+		auth_mode: 'service' as Tool['auth_mode'],
+		audience: '',
+		url: '',
+		method: 'GET',
+		description: '',
+		provider: 'tavily' as 'tavily' | 'exa',
+		enabled: true
+	});
+	let editError = $state<string | null>(null);
+	let savingEdit = $state(false);
+
+	function openEditForm(tool: Tool) {
+		editFormId = tool.id;
+		editForm = {
+			name: tool.name,
+			access_level: tool.access_level,
+			auth_mode: tool.auth_mode,
+			audience: tool.audience ?? '',
+			url: tool.kind === 'http' ? ((tool.config.url as string) ?? '') : '',
+			method: tool.kind === 'http' ? ((tool.config.method as string) ?? 'GET') : 'GET',
+			description: tool.kind === 'http' ? ((tool.config.description as string) ?? '') : '',
+			provider: tool.kind === 'builtin' ? ((tool.config.provider as 'tavily' | 'exa') ?? 'tavily') : 'tavily',
+			enabled: tool.enabled
+		};
+		editError = null;
+	}
+
+	async function submitEdit(tool: Tool) {
+		savingEdit = true;
+		editError = null;
+		try {
+			const authMode = tool.kind === 'builtin' ? 'service' : editForm.auth_mode;
+			await updateTool(tool.id, {
+				name: editForm.name,
+				access_level: editForm.access_level,
+				auth_mode: authMode,
+				audience: authMode === 'delegated' && editForm.audience ? editForm.audience : null,
+				// PATCH overwrites `config` wholesale server-side (no merge) - for kinds this
+				// form has no fields for (python), send the tool's existing config back
+				// unchanged rather than {}, or saving just a rename/enabled-toggle would
+				// silently wipe it.
+				config:
+					tool.kind === 'http'
+						? { url: editForm.url, method: editForm.method, description: editForm.description }
+						: tool.kind === 'builtin'
+							? { provider: editForm.provider }
+							: tool.config,
+				enabled: editForm.enabled
+			});
+			editFormId = null;
+			await load();
+		} catch (e) {
+			editError = describeError(e, 'Failed to save changes.');
+		} finally {
+			savingEdit = false;
+		}
+	}
+
 	async function remove(tool: Tool) {
-		await deleteTool(tool.id);
-		await load();
+		if (!confirm(`Delete tool "${tool.name}"? This cannot be undone.`)) return;
+		deletingId = tool.id;
+		deleteError = null;
+		try {
+			await deleteTool(tool.id);
+			await load();
+		} catch (e) {
+			deleteError = describeError(e, 'Failed to delete this tool.');
+		} finally {
+			deletingId = null;
+		}
 	}
 
 	function openSecretForm(tool: Tool) {
@@ -288,6 +402,12 @@
 	</form>
 {/if}
 
+{#if deleteError}
+	<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+		{deleteError}
+	</div>
+{/if}
+
 {#if loading}
 	<p class="text-sm text-neutral-500" role="status">Loading tools…</p>
 {:else if error}
@@ -374,14 +494,148 @@
 										Test
 									</button>
 								{/if}
-								<button
-									type="button"
-									class="rounded-md border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10"
-									onclick={() => remove(tool)}
-								>
-									Delete
-								</button>
+								{#if canManage(tool)}
+									<button
+										type="button"
+										class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
+										onclick={() => openEditForm(tool)}
+									>
+										Edit
+									</button>
+									<button
+										type="button"
+										class="rounded-md border border-danger/40 px-2 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+										disabled={deletingId === tool.id}
+										onclick={() => remove(tool)}
+									>
+										{deletingId === tool.id ? 'Deleting…' : 'Delete'}
+									</button>
+								{:else}
+									<span class="text-xs text-neutral-400">Admin access required</span>
+								{/if}
 							</div>
+							{#if editFormId === tool.id}
+								<form
+									class="mt-2 grid grid-cols-1 gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 text-left sm:grid-cols-2"
+									onsubmit={(e) => {
+										e.preventDefault();
+										submitEdit(tool);
+									}}
+								>
+									{#if editError}
+										<p class="text-xs text-danger sm:col-span-2">{editError}</p>
+									{/if}
+									<label class="block">
+										<span class="text-xs font-medium text-neutral-700">Name</span>
+										<input
+											type="text"
+											bind:value={editForm.name}
+											required
+											class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+												focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+										/>
+									</label>
+									<label class="block">
+										<span class="text-xs font-medium text-neutral-700">Access level</span>
+										<select
+											bind:value={editForm.access_level}
+											class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+												focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+										>
+											<option value="read">Read</option>
+											<option value="write">Write (requires human approval to execute)</option>
+										</select>
+									</label>
+									{#if tool.kind !== 'builtin'}
+										<label class="block">
+											<span class="text-xs font-medium text-neutral-700">Auth mode</span>
+											<select
+												bind:value={editForm.auth_mode}
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											>
+												<option value="service">Service (static token)</option>
+												<option value="delegated">Delegated (end-user identity)</option>
+											</select>
+										</label>
+									{/if}
+									{#if tool.kind !== 'builtin' && editForm.auth_mode === 'delegated'}
+										<label class="block">
+											<span class="text-xs font-medium text-neutral-700">Audience</span>
+											<input
+												type="text"
+												bind:value={editForm.audience}
+												placeholder="the tool host, e.g. phalcon.internal"
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											/>
+										</label>
+									{/if}
+									{#if tool.kind === 'http'}
+										<label class="block">
+											<span class="text-xs font-medium text-neutral-700">URL</span>
+											<input
+												type="text"
+												bind:value={editForm.url}
+												placeholder="https://phalcon.internal/api/orders"
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											/>
+										</label>
+										<label class="block">
+											<span class="text-xs font-medium text-neutral-700">Method</span>
+											<input
+												type="text"
+												bind:value={editForm.method}
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 font-mono text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											/>
+										</label>
+										<label class="block sm:col-span-2">
+											<span class="text-xs font-medium text-neutral-700">Description</span>
+											<input
+												type="text"
+												bind:value={editForm.description}
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											/>
+										</label>
+									{/if}
+									{#if tool.kind === 'builtin'}
+										<label class="block">
+											<span class="text-xs font-medium text-neutral-700">Provider</span>
+											<select
+												bind:value={editForm.provider}
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											>
+												<option value="tavily">Tavily</option>
+												<option value="exa">Exa</option>
+											</select>
+										</label>
+									{/if}
+									<label class="flex items-center gap-2 text-xs text-neutral-700">
+										<input type="checkbox" bind:checked={editForm.enabled} />
+										Enabled
+									</label>
+									<div class="flex gap-2 sm:col-span-2">
+										<button
+											type="submit"
+											disabled={savingEdit}
+											class="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-primary-600"
+										>
+											{savingEdit ? 'Saving…' : 'Save'}
+										</button>
+										<button
+											type="button"
+											class="rounded-md border border-neutral-300 px-3 py-1 text-xs text-neutral-700 hover:bg-white"
+											onclick={() => (editFormId = null)}
+										>
+											Cancel
+										</button>
+									</div>
+								</form>
+							{/if}
 							{#if secretFormId === tool.id}
 								<form
 									class="mt-2 flex flex-col gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 text-left"
