@@ -516,6 +516,16 @@ export function listWorkflows(): Promise<Workflow[]> {
 	return apiFetch<Workflow[]>('/workflows');
 }
 
+/**
+ * Pools workflows across every company the caller belongs to under this one tenant
+ * (WorkflowsController::listWorkflows()'s X-Tenant-Id branch) - fourth menu in the "each
+ * menu shows only its own tenant's data" pilot, same pattern as listAgentsForTenant() etc.
+ * Every other /workflows call stays single-company via listWorkflows() above.
+ */
+export function listWorkflowsForTenant(tenantId: string): Promise<Workflow[]> {
+	return apiFetch<Workflow[]>('/workflows', { headers: { 'X-Tenant-Id': tenantId } });
+}
+
 export function createWorkflow(input: WorkflowInput): Promise<Workflow> {
 	return apiFetch<Workflow>('/workflows', { method: 'POST', body: input });
 }

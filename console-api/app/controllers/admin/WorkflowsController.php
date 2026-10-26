@@ -21,8 +21,21 @@ use Throwable;
  */
 class WorkflowsController extends ControllerBase
 {
+    /**
+     * Fourth menu in the "each menu shows only its own tenant's data" pilot (option A, see
+     * AgentsController::listAgents()'s X-Tenant-Id branch for the full reasoning) - same
+     * pattern applied verbatim: an optional X-Tenant-Id header pools workflows across every
+     * company under that tenant the caller actually belongs to, instead of the usual single
+     * X-Company-Id-scoped company. Every mutator is untouched and still requires a single
+     * X-Company-Id.
+     */
     public function listWorkflows(): Response
     {
+        $tenantId = $_SERVER['HTTP_X_TENANT_ID'] ?? null;
+        if ($tenantId !== null && $tenantId !== '') {
+            return $this->listWorkflowsForTenant($tenantId);
+        }
+
         if (($error = $this->requireCompanyId()) !== null) {
             return $error;
         }
@@ -37,6 +50,46 @@ class WorkflowsController extends ControllerBase
                 Enum::FETCH_ASSOC
             )
         );
+
+        return $this->jsonResponse(array_map([$this, 'formatWorkflow'], $rows));
+    }
+
+    /**
+     * Same approach as AgentsController::listAgentsForTenant(): $authUser['companies'] is
+     * the same real membership list requireMembership() already trusts, so filtering it to
+     * this tenant and looping the per-company RLS-scoped query is the only new logic - no
+     * new access-control surface. A tenant the caller has zero membership in just yields
+     * an empty company list and therefore an empty (200) result, same as any other company
+     * with no workflows.
+     */
+    private function listWorkflowsForTenant(string $tenantId): Response
+    {
+        $authUser = $this->getAuthUser();
+        $companyIds = array_values(array_unique(array_map(
+            static fn (array $membership): string => $membership['company_id'],
+            array_filter(
+                $authUser['companies'] ?? [],
+                static fn (array $membership): bool => $membership['tenant_id'] === $tenantId
+            )
+        )));
+
+        $rows = [];
+        foreach ($companyIds as $companyId) {
+            $companyRows = $this->runInTransactionAsCompany(
+                $companyId,
+                static fn ($db) => $db->fetchAll(
+                    'SELECT id, company_id, name, description, status, archived_at, created_at, updated_at
+                     FROM console.workflows ORDER BY created_at DESC',
+                    Enum::FETCH_ASSOC
+                )
+            );
+            array_push($rows, ...$companyRows);
+        }
+
+        // Each company's own rows arrive newest-first, but concatenating them in
+        // company-iteration order doesn't make the merged set newest-first overall -
+        // re-sort once across the whole pooled result (same as listAgentsForTenant()).
+        usort($rows, static fn (array $a, array $b): int => $b['created_at'] <=> $a['created_at']);
 
         return $this->jsonResponse(array_map([$this, 'formatWorkflow'], $rows));
     }
