@@ -257,6 +257,63 @@ async def test_request_blocks_redirect_to_disallowed_host():
     assert exc_info.value.reason == "not_in_allowlist"
 
 
+def test_validated_ips_orders_ipv4_before_ipv6():
+    """Regression guard: a dual-stack host (e.g. any Cloudflare-fronted provider) must
+    try its IPv4 address(es) before any IPv6 one — a network with no outbound IPv6 route
+    would otherwise have no way to ever reach it, since nothing here re-resolves DNS to
+    eventually land on a better answer."""
+    ips = safe_http_client_module._validated_ips(
+        [_entry("api.example.com")],
+        ["2606:4700::6812:273", "104.18.2.115", "2606:4700::6812:373"],
+        "api.example.com",
+    )
+    assert ips == ["104.18.2.115", "2606:4700::6812:273", "2606:4700::6812:373"]
+
+
+async def test_request_falls_back_to_the_next_ip_when_the_first_fails_to_connect():
+    """Regression guard for the "Network is unreachable" bug: a host resolving to both an
+    IPv4 and an IPv6 address must still succeed if only one address family is actually
+    routable - pinning to a single candidate with no fallback breaks every call in that
+    environment, not just occasionally."""
+
+    # Both IPv4 - _validated_ips' own IPv4-before-IPv6 sort already guarantees the IPv4
+    # candidate is tried first whenever one exists, which would make a mixed-family
+    # resolver here pass vacuously (the lone IPv4 candidate just happens to succeed on
+    # the first try, never exercising the fallback path at all). Two same-family
+    # addresses isolate the fallback loop itself from that sort order.
+    async def two_ip_resolver(host: str) -> list[str]:
+        return ["104.18.3.115", "104.18.2.115"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "104.18.3.115":
+            raise httpx.ConnectError("Network is unreachable")
+        return httpx.Response(200, json={"ok": True})
+
+    client = SafeHttpClient(
+        [_entry("api.example.com")], transport=httpx.MockTransport(handler), resolve_ips=two_ip_resolver
+    )
+    response = await client.request("GET", "https://api.example.com/v1/models")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+async def test_request_raises_the_connect_error_when_every_ip_fails():
+    async def dual_stack_resolver(host: str) -> list[str]:
+        return ["104.18.2.115", "104.18.3.115"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Network is unreachable")
+
+    client = SafeHttpClient(
+        [_entry("api.example.com")], transport=httpx.MockTransport(handler), resolve_ips=dual_stack_resolver
+    )
+
+    with pytest.raises(RequestFailedError) as exc_info:
+        await client.request("GET", "https://api.example.com/v1/models")
+    assert exc_info.value.reason == "ConnectError"
+
+
 async def test_request_connects_to_the_resolved_ip_not_the_hostname():
     """Regression guard for the DNS-rebinding TOCTOU: check_host's resolved IP must be
     what the transport actually connects to (request.url.host), with the real hostname
@@ -326,6 +383,40 @@ def test_pinned_transport_propagates_non_dns_os_error(monkeypatch):
 
     with pytest.raises(OSError):
         transport.handle_request(request)
+
+
+def test_pinned_transport_falls_back_to_the_next_ip_when_the_first_fails_to_connect(monkeypatch):
+    """Sync twin of test_request_falls_back_to_the_next_ip_when_the_first_fails_to_connect
+    - PinnedTransport.handle_request must get the same IPv4-fallback treatment, since it's
+    what SafeOpenAIConnection hands to the `openai` SDK for every real LLM call."""
+
+    # Same-family pair, not mixed IPv4/IPv6 - see the comment on the async twin
+    # (test_request_falls_back_to_the_next_ip_when_the_first_fails_to_connect) for why a
+    # mixed pair would pass vacuously here instead of exercising the fallback loop.
+    def two_ip_resolver(host: str) -> list[str]:
+        return ["104.18.3.115", "104.18.2.115"]
+
+    monkeypatch.setattr(safe_http_client_module, "_resolve_ips_sync", two_ip_resolver)
+
+    # Stubs the real network call entirely (no real socket/TLS involved) - asserts only
+    # on which IP each attempt targeted, not on reaching the real internet.
+    seen_hosts = []
+
+    def fake_handle_request(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+        seen_hosts.append(request.url.host)
+        if request.url.host == "104.18.3.115":
+            raise httpx.ConnectError("Network is unreachable")
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_handle_request)
+
+    transport = PinnedTransport([_entry("api.example.com")])
+    request = httpx.Request("GET", "https://api.example.com/")
+
+    response = transport.handle_request(request)
+
+    assert response.status_code == 200
+    assert seen_hosts == ["104.18.3.115", "104.18.2.115"]
 
 
 async def test_request_timeout_on_a_single_hop_raises_request_timeout_error(monkeypatch):

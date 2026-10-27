@@ -157,11 +157,22 @@ def _resolve_ips_sync(host: str) -> list[str]:
     return list({info[4][0] for info in addrinfo})
 
 
-def _validated_ip(
+def _validated_ips(
     matches: list[EgressAllowlistEntry], resolved_ips: list[str], host: str
-) -> str:
-    """Picks the IP a now-approved request must connect to. Raises if DNS resolution
-    came back empty or (absent an `allow_private_ip` entry) landed on a blocked range."""
+) -> list[str]:
+    """Picks the ordered candidate IPs a now-approved request may connect to, trying each
+    in turn until one connects. Raises if DNS resolution came back empty or (absent an
+    `allow_private_ip` entry) landed on a blocked range.
+
+    IPv4 candidates are tried before IPv6 ones — a host that resolves to both (e.g. any
+    Cloudflare-fronted provider) isn't necessarily reachable over both from wherever this
+    runs. A cluster with no outbound IPv6 route would otherwise have a 50/50 chance of
+    pinning to an unreachable IPv6 address *every single call* (no DNS-level randomness to
+    eventually retry into something better), surfacing as a generic connection error with
+    no hint that the real IPv4 route was sitting right there unused. Returning every
+    candidate (not just the first) lets the caller fall back to the next one on a connect
+    failure instead of hard-failing on whichever single address happened to be picked.
+    """
     if not resolved_ips:
         raise EgressBlockedError("dns_resolution_failed", host)
     allow_private_ip = any(entry.allow_private_ip for entry in matches)
@@ -169,7 +180,7 @@ def _validated_ip(
         for ip in resolved_ips:
             if _is_blocked_ip(ip):
                 raise EgressBlockedError("private_ip_blocked", host)
-    return resolved_ips[0]
+    return sorted(resolved_ips, key=lambda ip: ipaddress.ip_address(ip).version)
 
 
 class SafeHttpClient:
@@ -193,12 +204,13 @@ class SafeHttpClient:
             if _host_matches(entry.host_pattern, host) and (entry.port is None or entry.port == port)
         ]
 
-    async def check_host(self, host: str, port: int) -> str:
+    async def check_host(self, host: str, port: int) -> list[str]:
         """Validates `host`/`port` against the allowlist and blocked ranges, returning the
-        specific IP the caller must connect to. Callers must connect to that exact IP
-        rather than resolving `host` again later — a second, independent resolution would
-        let a low-TTL DNS answer flip to a blocked address between this check and the
-        real request (DNS-rebinding TOCTOU), silently defeating the check entirely.
+        candidate IPs (IPv4 first) the caller must connect to, in order. Callers must
+        connect to one of these exact IPs rather than resolving `host` again later — a
+        second, independent resolution would let a low-TTL DNS answer flip to a blocked
+        address between this check and the real request (DNS-rebinding TOCTOU), silently
+        defeating the check entirely.
         """
         matches = self._matching_entries(host, port)
         if not matches:
@@ -213,7 +225,7 @@ class SafeHttpClient:
             # only gaierror (not every OSError) keeps unrelated local failures (fd
             # exhaustion, ENETUNREACH, ...) from being mislabeled as a DNS problem.
             resolved_ips = []
-        return _validated_ip(matches, resolved_ips, host)
+        return _validated_ips(matches, resolved_ips, host)
 
     async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         current_url = url
@@ -234,17 +246,16 @@ class SafeHttpClient:
                 ) as client:
                     for _ in range(MAX_REDIRECTS):
                         host, port = parse_host_port(current_url)
-                        pinned_ip = await self.check_host(host, port)
+                        pinned_ips = await self.check_host(host, port)
 
                         request = client.build_request(method, current_url, **kwargs)
-                        # Connect to the exact IP just validated (not `host` again) and
-                        # keep the original hostname for the Host header (already set
-                        # by build_request, above) and TLS SNI/cert verification
-                        # (`sni_hostname`) — see check_host's docstring for why
-                        # re-resolving here would matter.
-                        request.url = request.url.copy_with(host=pinned_ip)
+                        # Connect to one of the exact IPs just validated (not `host`
+                        # again) and keep the original hostname for the Host header
+                        # (already set by build_request, above) and TLS SNI/cert
+                        # verification (`sni_hostname`) — see check_host's docstring for
+                        # why re-resolving here would matter.
                         request.extensions["sni_hostname"] = host
-                        response = await client.send(request, follow_redirects=False, stream=True)
+                        response = await self._send_trying_each_ip(client, request, pinned_ips, host)
                         try:
                             body = await self._read_capped(response, host)
                         finally:
@@ -284,6 +295,26 @@ class SafeHttpClient:
             # httpx.TimeoutException before this runs, so this is everything else.
             host, _ = parse_host_port(current_url)
             raise RequestFailedError(host, type(exc).__name__) from exc
+
+    @staticmethod
+    async def _send_trying_each_ip(
+        client: httpx.AsyncClient, request: httpx.Request, candidate_ips: list[str], host: str
+    ) -> httpx.Response:
+        """Tries each pre-validated candidate IP in turn (as ordered by `_validated_ips` -
+        IPv4 first), falling back to the next on a connect failure instead of hard-failing
+        on whichever single address happened to be resolved first. Never re-resolves
+        `host` - every candidate here was already checked against the allowlist/blocked
+        ranges by `check_host`, so trying more than one doesn't reopen the DNS-rebinding
+        TOCTOU window that pinning to a single pre-validated IP closes."""
+        last_exc: httpx.ConnectError | None = None
+        for ip in candidate_ips:
+            request.url = request.url.copy_with(host=ip)
+            try:
+                return await client.send(request, follow_redirects=False, stream=True)
+            except httpx.ConnectError as exc:
+                last_exc = exc
+        assert last_exc is not None  # candidate_ips is never empty (see _validated_ips)
+        raise last_exc
 
     @staticmethod
     async def _read_capped(response: httpx.Response, host: str) -> bytes:
@@ -330,8 +361,21 @@ class PinnedTransport(httpx.HTTPTransport):
             resolved_ips = _resolve_ips_sync(host)
         except socket.gaierror:
             resolved_ips = []
-        pinned_ip = _validated_ip(matches, resolved_ips, host)
+        pinned_ips = _validated_ips(matches, resolved_ips, host)
 
-        request.url = request.url.copy_with(host=pinned_ip)
         request.extensions["sni_hostname"] = host
-        return super().handle_request(request)
+        # Tries each pre-validated candidate IP in turn (IPv4 first - see
+        # _validated_ips), the sync twin of SafeHttpClient._send_trying_each_ip: a host
+        # that resolves to both an IPv4 and IPv6 address isn't necessarily reachable over
+        # both, and hard-failing on whichever one happened to be picked first (with no
+        # fallback) means a network with no outbound IPv6 route breaks on every call to
+        # any dual-stack provider, not just occasionally.
+        last_exc: httpx.ConnectError | None = None
+        for ip in pinned_ips:
+            request.url = request.url.copy_with(host=ip)
+            try:
+                return super().handle_request(request)
+            except httpx.ConnectError as exc:
+                last_exc = exc
+        assert last_exc is not None  # pinned_ips is never empty (see _validated_ips)
+        raise last_exc
