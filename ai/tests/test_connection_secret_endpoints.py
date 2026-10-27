@@ -171,6 +171,160 @@ async def test_put_then_test_with_real_key_is_ok_true(internal_client, make_conn
     assert test_resp.json()["ok"] is True
 
 
+def test_list_connection_models_route_requires_internal_token():
+    resp = TestClient(runtime_app).get(
+        "/internal/v1/connections/00000000-0000-4000-8000-000000000000/models",
+        headers={"X-Company-Id": "company-1"},
+    )
+    assert resp.status_code == 401
+
+
+def test_test_connection_model_route_requires_internal_token():
+    resp = TestClient(runtime_app).post(
+        "/internal/v1/connections/00000000-0000-4000-8000-000000000000/test-model",
+        json={"model": "gpt-4o-mini"},
+        headers={"X-Company-Id": "company-1"},
+    )
+    assert resp.status_code == 401
+
+
+@requires_postgres
+async def test_list_connection_models_returns_ok_false_when_no_secret_stored(internal_client, make_connection):
+    client, company_id = internal_client
+    connection_id = make_connection(company_id)
+
+    resp = await client.get(f"/internal/v1/connections/{connection_id}/models")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["models"] == []
+
+
+@requires_postgres
+async def test_list_connection_models_returns_egress_blocked_when_host_not_allowlisted(
+    internal_client, make_connection
+):
+    client, company_id = internal_client
+    connection_id = make_connection(company_id, api_base="https://192.0.2.1")
+
+    resp = await client.get(f"/internal/v1/connections/{connection_id}/models")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["detail"].startswith("egress_blocked")
+    assert body["models"] == []
+
+
+@requires_postgres
+async def test_list_connection_models_unknown_connection_id_is_404(internal_client):
+    client, _company_id = internal_client
+    resp = await client.get(f"/internal/v1/connections/{uuid.uuid4()}/models")
+    assert resp.status_code == 404
+
+
+@requires_postgres
+async def test_test_connection_model_returns_ok_false_when_no_secret_stored(internal_client, make_connection):
+    client, company_id = internal_client
+    connection_id = make_connection(company_id)
+
+    resp = await client.post(f"/internal/v1/connections/{connection_id}/test-model", json={"model": "gpt-4o-mini"})
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False
+
+
+@requires_postgres
+async def test_test_connection_model_with_garbage_key_is_ok_false(
+    internal_client, make_connection, _cleanup_company_keys
+):
+    """Same true-negative reasoning as test_put_then_test_with_garbage_key_is_ok_false -
+    OpenAI deterministically rejects a malformed key, no live OPENAI_API_KEY needed."""
+    client, company_id = internal_client
+    _cleanup_company_keys(company_id)
+    connection_id = make_connection(company_id)
+
+    put_resp = await client.put(
+        f"/internal/v1/connections/{connection_id}/secret", json={"secret": "sk-not-a-real-key"}
+    )
+    assert put_resp.status_code == 204
+
+    test_resp = await client.post(
+        f"/internal/v1/connections/{connection_id}/test-model", json={"model": "gpt-4o-mini"}
+    )
+    assert test_resp.status_code == 200
+    assert test_resp.json()["ok"] is False
+
+
+@requires_openai_key
+@requires_postgres
+async def test_put_then_list_models_with_real_key_includes_gpt4o_mini(
+    internal_client, make_connection, _cleanup_company_keys
+):
+    client, company_id = internal_client
+    _cleanup_company_keys(company_id)
+    connection_id = make_connection(company_id)
+
+    put_resp = await client.put(
+        f"/internal/v1/connections/{connection_id}/secret", json={"secret": os.environ["OPENAI_API_KEY"]}
+    )
+    assert put_resp.status_code == 204
+
+    resp = await client.get(f"/internal/v1/connections/{connection_id}/models")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert "gpt-4o-mini" in body["models"]
+    assert body["models"] == sorted(body["models"])
+
+
+@requires_openai_key
+@requires_postgres
+async def test_put_then_test_model_with_real_key_and_real_model_is_ok_true(
+    internal_client, make_connection, _cleanup_company_keys
+):
+    client, company_id = internal_client
+    _cleanup_company_keys(company_id)
+    connection_id = make_connection(company_id)
+
+    put_resp = await client.put(
+        f"/internal/v1/connections/{connection_id}/secret", json={"secret": os.environ["OPENAI_API_KEY"]}
+    )
+    assert put_resp.status_code == 204
+
+    resp = await client.post(
+        f"/internal/v1/connections/{connection_id}/test-model", json={"model": "gpt-4o-mini"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+@requires_openai_key
+@requires_postgres
+async def test_put_then_test_model_with_real_key_but_bogus_model_is_ok_false(
+    internal_client, make_connection, _cleanup_company_keys
+):
+    """Regression guard for the exact bug that motivated this feature: a malformed model
+    string (double-prefixed, typo'd, etc.) must be caught here, not discovered only when a
+    real agent run hangs/fails."""
+    client, company_id = internal_client
+    _cleanup_company_keys(company_id)
+    connection_id = make_connection(company_id)
+
+    put_resp = await client.put(
+        f"/internal/v1/connections/{connection_id}/secret", json={"secret": os.environ["OPENAI_API_KEY"]}
+    )
+    assert put_resp.status_code == 204
+
+    resp = await client.post(
+        f"/internal/v1/connections/{connection_id}/test-model",
+        json={"model": "openai/openai/gpt-4o-mini"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False
+
+
 def test_delete_connection_secret_route_requires_internal_token():
     resp = TestClient(runtime_app).delete(
         "/internal/v1/connections/00000000-0000-4000-8000-000000000000/secret",

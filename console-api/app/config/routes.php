@@ -41,6 +41,8 @@ return function (Router $router): void {
     $admin('DELETE', '/connections/{id:[^/]+}', 'Connections', 'deleteConnection');
     $admin('PUT', '/connections/{id:[^/]+}/secret', 'Connections', 'putConnectionSecret');
     $admin('POST', '/connections/{id:[^/]+}/test', 'Connections', 'testConnection');
+    $admin('GET', '/connections/{id:[^/]+}/models', 'Connections', 'listConnectionModels');
+    $admin('POST', '/connections/{id:[^/]+}/test-model', 'Connections', 'testConnectionModel');
 
     // --- /agents --------------------------------------------------------------
     $admin('GET', '/agents', 'Agents', 'listAgents');

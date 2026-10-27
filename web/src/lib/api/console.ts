@@ -103,6 +103,19 @@ export function testConnection(id: string): Promise<{ ok: boolean; detail: strin
 	return apiFetch(`/connections/${id}/test`, { method: 'POST' });
 }
 
+export function listConnectionModels(
+	id: string
+): Promise<{ ok: boolean; detail: string | null; models: string[] }> {
+	return apiFetch(`/connections/${id}/models`);
+}
+
+export function testConnectionModel(
+	id: string,
+	model: string
+): Promise<{ ok: boolean; detail: string | null }> {
+	return apiFetch(`/connections/${id}/test-model`, { method: 'POST', body: { model } });
+}
+
 // ---- /agents ----------------------------------------------------------
 
 export function listAgents(): Promise<Agent[]> {

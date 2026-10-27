@@ -87,6 +87,28 @@ class RuntimeClient
     }
 
     /**
+     * GET /internal/v1/connections/{id}/models — real, free client.models.list() call,
+     * backs the agent editor's live Model dropdown (never a hardcoded list).
+     *
+     * @return array<string, mixed>
+     */
+    public function listConnectionModels(string $connectionId): array
+    {
+        return $this->request('GET', "connections/{$connectionId}/models", []);
+    }
+
+    /**
+     * POST /internal/v1/connections/{id}/test-model — real, minimal chat completion
+     * against one specific model string, used by ConnectionsController::testConnectionModel().
+     *
+     * @return array<string, mixed>
+     */
+    public function testConnectionModel(string $connectionId, string $model): array
+    {
+        return $this->request('POST', "connections/{$connectionId}/test-model", ['model' => $model]);
+    }
+
+    /**
      * POST /internal/v1/tools/{id}/test — proves a `kind: http` tool's configured URL is
      * reachable past the egress allowlist, used by ToolsController::testTool() (PRD §6.5).
      *

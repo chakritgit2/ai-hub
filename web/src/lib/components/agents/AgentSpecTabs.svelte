@@ -1,6 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listConnections, listTools, listSkills, listKnowledgeBases } from '$lib/api/console';
+	import {
+		listConnections,
+		listTools,
+		listSkills,
+		listKnowledgeBases,
+		listConnectionModels,
+		testConnectionModel
+	} from '$lib/api/console';
 	import type {
 		AgentIdentity,
 		Connection,
@@ -379,6 +386,87 @@
 	let connectionsError = $state<string | null>(null);
 	let usableConnections = $derived(connections.filter((c) => USABLE_CONNECTION_TYPES.has(c.type)));
 
+	// Live model dropdown (PRD follow-up: a free-typed model string had no validation at
+	// all - "openai/openai/gpt-4o-mini" went uncaught until a real run hung). Never a
+	// hardcoded list - fetched fresh per connection via GET /connections/{id}/models,
+	// which makes a real client.models.list() call (app/main_runtime.py:listConnectionModels).
+	type ModelProbe = { options: string[]; loading: boolean; error: string | null; requestId: number };
+	const blankModelProbe = (): ModelProbe => ({ options: [], loading: false, error: null, requestId: 0 });
+	let primaryModelProbe = $state<ModelProbe>(blankModelProbe());
+	let fallbackModelProbe = $state<ModelProbe>(blankModelProbe());
+	let modelProbeRequestCounter = 0;
+
+	// `requestId` guards against a stale response overwriting a fresher one - e.g. the user
+	// picks connection A then quickly switches to connection B before A's /models call
+	// returns; without this, A's response could land after B's and leave B's connection
+	// paired with A's model list in the dropdown.
+	async function fetchModelsFor(connectionId: string, probe: ModelProbe) {
+		const requestId = ++modelProbeRequestCounter;
+		probe.requestId = requestId;
+		probe.loading = true;
+		probe.error = null;
+		try {
+			const result = await listConnectionModels(connectionId);
+			if (probe.requestId !== requestId) return;
+			probe.options = result.ok ? result.models : [];
+			probe.error = result.ok ? null : (result.detail ?? 'Could not load the live model list.');
+		} catch (e) {
+			if (probe.requestId !== requestId) return;
+			probe.options = [];
+			probe.error = e instanceof Error ? e.message : 'Could not load the live model list.';
+		} finally {
+			if (probe.requestId === requestId) probe.loading = false;
+		}
+	}
+
+	let lastFetchedConnectionId: string | null = null;
+	$effect(() => {
+		const id = model.connection_id;
+		if (readonly) return;
+		if (!id) {
+			if (lastFetchedConnectionId !== null) {
+				lastFetchedConnectionId = null;
+				primaryModelProbe = blankModelProbe();
+			}
+			return;
+		}
+		if (id === lastFetchedConnectionId) return;
+		lastFetchedConnectionId = id;
+		fetchModelsFor(id, primaryModelProbe);
+	});
+
+	let lastFetchedFallbackConnectionId: string | null = null;
+	$effect(() => {
+		const id = model.fallback_connection_id;
+		if (readonly) return;
+		if (!id) {
+			if (lastFetchedFallbackConnectionId !== null) {
+				lastFetchedFallbackConnectionId = null;
+				fallbackModelProbe = blankModelProbe();
+			}
+			return;
+		}
+		if (id === lastFetchedFallbackConnectionId) return;
+		lastFetchedFallbackConnectionId = id;
+		fetchModelsFor(id, fallbackModelProbe);
+	});
+
+	// Model Test button (complements the dropdown - a model can be listed by the provider
+	// but not actually usable for chat completions) - same testResults-keyed-by-id /
+	// 'testing' / {ok, detail} shape as connections/+page.svelte's own Test button.
+	let modelTestResults = $state<Record<'primary' | 'fallback', { ok: boolean; detail: string | null } | 'testing'>>(
+		{} as Record<'primary' | 'fallback', { ok: boolean; detail: string | null } | 'testing'>
+	);
+
+	async function runModelTest(key: 'primary' | 'fallback', connectionId: string, modelName: string) {
+		modelTestResults[key] = 'testing';
+		try {
+			modelTestResults[key] = await testConnectionModel(connectionId, modelName);
+		} catch (e) {
+			modelTestResults[key] = { ok: false, detail: e instanceof Error ? e.message : 'Test failed.' };
+		}
+	}
+
 	let tools = $state<Tool[]>([]);
 	let toolsError = $state<string | null>(null);
 
@@ -635,16 +723,7 @@
 					{/if}
 				</label>
 
-				<label class="block">
-					<span class="text-sm font-medium text-neutral-700">Model</span>
-					<input
-						type="text"
-						bind:value={model.model}
-						placeholder="gpt-4o-mini"
-						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
-							focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-					/>
-				</label>
+				{@render modelPicker('model', 'connection_id', primaryModelProbe, 'primary', 'Model')}
 
 				<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
 					<label class="block">
@@ -698,16 +777,15 @@
 						</select>
 					</label>
 
-					<label class="mt-3 block">
-						<span class="text-sm font-medium text-neutral-700">Fallback model</span>
-						<input
-							type="text"
-							bind:value={model.fallback_model}
-							placeholder="gpt-4o-mini"
-							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
-								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-						/>
-					</label>
+					<div class="mt-3">
+						{@render modelPicker(
+							'fallback_model',
+							'fallback_connection_id',
+							fallbackModelProbe,
+							'fallback',
+							'Fallback model'
+						)}
+					</div>
 				</div>
 			</form>
 		{:else if activeTab === 'tools'}
@@ -981,6 +1059,64 @@
 		{/if}
 	</div>
 </div>
+
+{#snippet modelPicker(
+	fieldKey: 'model' | 'fallback_model',
+	connectionIdKey: 'connection_id' | 'fallback_connection_id',
+	probe: ModelProbe,
+	testKey: 'primary' | 'fallback',
+	label: string
+)}
+	<label class="block">
+		<span class="text-sm font-medium text-neutral-700">{label}</span>
+		{#if probe.options.length > 0}
+			<select
+				value=""
+				onchange={(e) => {
+					model[fieldKey] = (e.currentTarget as HTMLSelectElement).value;
+				}}
+				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+			>
+				<option value="" disabled>Pick from available models…</option>
+				{#each probe.options as m (m)}
+					<option value={m}>{m}</option>
+				{/each}
+			</select>
+		{/if}
+		{#if probe.loading}
+			<p class="mt-1 text-xs text-neutral-500">Loading available models…</p>
+		{:else if probe.error}
+			<p class="mt-1 text-xs text-neutral-500">
+				Could not load the live model list ({probe.error}) — type the model name manually below.
+			</p>
+		{/if}
+		<div class="mt-1 flex gap-2">
+			<input
+				type="text"
+				bind:value={model[fieldKey]}
+				placeholder="gpt-4o-mini"
+				class="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
+					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+			/>
+			<button
+				type="button"
+				disabled={!model[connectionIdKey] || !model[fieldKey].trim() || modelTestResults[testKey] === 'testing'}
+				onclick={() => runModelTest(testKey, model[connectionIdKey], model[fieldKey].trim())}
+				class="shrink-0 rounded-md border border-neutral-300 px-3 py-2 text-sm hover:bg-neutral-50
+					disabled:opacity-50"
+			>
+				{modelTestResults[testKey] === 'testing' ? 'Testing…' : 'Test'}
+			</button>
+		</div>
+		{#if modelTestResults[testKey] && modelTestResults[testKey] !== 'testing'}
+			{@const result = modelTestResults[testKey] as { ok: boolean; detail: string | null }}
+			<p class="mt-1 text-xs {result.ok ? 'text-success' : 'text-danger'}">
+				{result.ok ? '✓' : '✗'} {result.detail ?? (result.ok ? 'Works.' : 'Failed.')}
+			</p>
+		{/if}
+	</label>
+{/snippet}
 
 {#snippet guardrailCheckList(list: GuardrailCheckRow[], allowedTypes: GuardrailCheckType[], sectionLabel: string)}
 	<div class="space-y-3">

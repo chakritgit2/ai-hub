@@ -446,6 +446,13 @@ class ConnectionSecretInput(BaseModel):
 class TestResult(BaseModel):
     ok: bool
     detail: str | None = None
+    # Only populated by listConnectionModels - every other caller leaves this at its
+    # default, same shared-result-shape convention as testConnection/testTool.
+    models: list[str] = []
+
+
+class TestModelInput(BaseModel):
+    model: str
 
 
 @app.put("/internal/v1/connections/{id}/secret", status_code=204)
@@ -548,6 +555,128 @@ async def testConnection(id: str, claims: InternalAuth) -> Response:
         # The SDK retries and wraps any non-OpenAIError its transport raises into
         # APIConnectionError (see openai._base_client) — PinnedTransport's
         # EgressBlockedError ends up here as exc.__cause__, not as its own except clause.
+        if isinstance(exc.__cause__, EgressBlockedError):
+            return TestResult(ok=False, detail=f"egress_blocked: {exc.__cause__.reason}")
+        return TestResult(ok=False, detail=f"provider error: {exc}")
+
+    return TestResult(ok=True)
+
+
+@app.get("/internal/v1/connections/{id}/models", response_model=TestResult)
+async def listConnectionModels(id: str, claims: InternalAuth) -> Response:
+    """Real, free (no token cost) `client.models.list()` call - same mechanism
+    `testConnection` already uses to prove a connection works, just returning the model
+    ids instead of discarding them. Backs the agent editor's Model tab dropdown (PRD: a
+    user must be able to pick a real model, not guess/type a provider-specific string with
+    nothing to catch a typo until a real run fails)."""
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    connection = await resolve_connection(company_id, id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    allowlist: list = []
+    if connection.api_base:
+        try:
+            host, port = parse_host_port(connection.api_base)
+        except ValueError as exc:
+            return TestResult(ok=False, detail=str(exc))
+
+        allowlist = await list_egress_allowlist(company_id)
+        try:
+            await SafeHttpClient(allowlist).check_host(host, port)
+        except EgressBlockedError as exc:
+            return TestResult(ok=False, detail=f"egress_blocked: {exc.reason}")
+
+    try:
+        secret = await decrypt_connection_secret(company_id, id)
+        if secret is None:
+            return TestResult(ok=False, detail="no secret stored for this connection")
+
+        _connection_obj, llm = build_llm(
+            connection.type, {"api_key": secret, "url": connection.api_base, "egress_allowlist": allowlist}
+        )
+    except ValueError as exc:
+        return TestResult(ok=False, detail=str(exc))
+    except Exception as exc:  # surface as a clear upstream error, not a 500 crash
+        logger.exception("connection models list setup failed")
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+
+    def _list_all_model_ids() -> list[str]:
+        # Iterating the page object itself (not just its first `.data`) lets the SDK
+        # auto-fetch subsequent pages for any OpenAI-compatible provider that paginates
+        # `models.list()` - done here, inside the worker thread, so a multi-page provider
+        # doesn't block the event loop with synchronous follow-up HTTP calls.
+        return [model.id for model in llm.client.models.list()]
+
+    try:
+        model_ids = await asyncio.to_thread(_list_all_model_ids)
+    except openai.AuthenticationError as exc:
+        return TestResult(ok=False, detail=f"authentication failed: {exc}")
+    except openai.APIError as exc:
+        if isinstance(exc.__cause__, EgressBlockedError):
+            return TestResult(ok=False, detail=f"egress_blocked: {exc.__cause__.reason}")
+        return TestResult(ok=False, detail=f"provider error: {exc}")
+
+    return TestResult(ok=True, models=sorted(model_ids))
+
+
+@app.post("/internal/v1/connections/{id}/test-model", response_model=TestResult)
+async def testConnectionModel(id: str, body: TestModelInput, claims: InternalAuth) -> Response:
+    """Real, minimal (max_tokens=1) chat completion against one specific model string -
+    complements listConnectionModels: a model can be *listed* by the provider but not
+    actually usable for chat (embedding-only, deprecated-but-still-listed, permission-
+    scoped), or the string typed/picked could still be wrong in a way the list alone
+    doesn't prove. Same resolve/egress/secret sequence as testConnection."""
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    connection = await resolve_connection(company_id, id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+
+    allowlist: list = []
+    if connection.api_base:
+        try:
+            host, port = parse_host_port(connection.api_base)
+        except ValueError as exc:
+            return TestResult(ok=False, detail=str(exc))
+
+        allowlist = await list_egress_allowlist(company_id)
+        try:
+            await SafeHttpClient(allowlist).check_host(host, port)
+        except EgressBlockedError as exc:
+            return TestResult(ok=False, detail=f"egress_blocked: {exc.reason}")
+
+    try:
+        secret = await decrypt_connection_secret(company_id, id)
+        if secret is None:
+            return TestResult(ok=False, detail="no secret stored for this connection")
+
+        _connection_obj, llm = build_llm(
+            connection.type, {"api_key": secret, "url": connection.api_base, "egress_allowlist": allowlist}
+        )
+    except ValueError as exc:
+        return TestResult(ok=False, detail=str(exc))
+    except Exception as exc:  # surface as a clear upstream error, not a 500 crash
+        logger.exception("connection model test setup failed")
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
+
+    try:
+        await asyncio.to_thread(
+            llm.client.chat.completions.create,
+            model=body.model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1,
+        )
+    except openai.AuthenticationError as exc:
+        return TestResult(ok=False, detail=f"authentication failed: {exc}")
+    except openai.NotFoundError as exc:
+        return TestResult(ok=False, detail=f"model not found: {exc}")
+    except openai.APIError as exc:
         if isinstance(exc.__cause__, EgressBlockedError):
             return TestResult(ok=False, detail=f"egress_blocked: {exc.__cause__.reason}")
         return TestResult(ok=False, detail=f"provider error: {exc}")

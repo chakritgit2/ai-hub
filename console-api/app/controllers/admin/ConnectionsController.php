@@ -351,6 +351,66 @@ class ConnectionsController extends ControllerBase
         return $this->jsonResponse($result);
     }
 
+    public function listConnectionModels(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireAdminRole()) !== null) {
+            return $error;
+        }
+        if ($this->findConnection($id) === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        /** @var RuntimeClient $runtimeClient */
+        $runtimeClient = $this->getDI()->getShared('runtimeClient');
+
+        try {
+            $result = $runtimeClient->listConnectionModels($id);
+        } catch (RuntimeException $exception) {
+            return $this->jsonResponse(
+                ['error' => 'models_request_failed', 'message' => $exception->getMessage()],
+                502
+            );
+        }
+
+        return $this->jsonResponse($result);
+    }
+
+    public function testConnectionModel(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireAdminRole()) !== null) {
+            return $error;
+        }
+        if ($this->findConnection($id) === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $body = $this->request->getJsonRawBody(true) ?? [];
+        $model = $body['model'] ?? null;
+        if (!is_string($model) || trim($model) === '') {
+            return $this->jsonResponse(['error' => 'model_required'], 400);
+        }
+
+        /** @var RuntimeClient $runtimeClient */
+        $runtimeClient = $this->getDI()->getShared('runtimeClient');
+
+        try {
+            $result = $runtimeClient->testConnectionModel($id, $model);
+        } catch (RuntimeException $exception) {
+            return $this->jsonResponse(
+                ['error' => 'test_request_failed', 'message' => $exception->getMessage()],
+                502
+            );
+        }
+
+        return $this->jsonResponse($result);
+    }
+
     private function isUniqueViolation(Throwable $exception): bool
     {
         return $exception instanceof \PDOException && ($exception->errorInfo[0] ?? null) === '23505';

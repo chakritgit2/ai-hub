@@ -210,6 +210,10 @@ components:
       properties:
         ok: { type: boolean }
         detail: { type: string }
+        models:
+          type: array
+          items: { type: string }
+          description: Only populated by GET /connections/{id}/models.
 paths:
   /agents/compile:
     post:
@@ -286,6 +290,46 @@ paths:
       - { $ref: '#/components/parameters/IdParam' }
     post:
       operationId: testConnection
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestResult' }
+
+  /connections/{id}/models:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: listConnectionModels
+      summary: >-
+        Real client.models.list() call against the connection's own provider - backs the
+        agent editor Model tab's live model dropdown, never a hardcoded/static list.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestResult' }
+
+  /connections/{id}/test-model:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: testConnectionModel
+      summary: >-
+        Real, minimal (max_tokens=1) chat completion against one specific model string -
+        proves that exact model actually works for chat, which listing alone can't.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model]
+              properties:
+                model: { type: string }
       responses:
         "200":
           description: OK
