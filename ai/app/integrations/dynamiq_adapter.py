@@ -48,6 +48,13 @@ def _build_openai(config: dict[str, Any]) -> tuple[OpenAIConnection, BaseLLM]:
         llm_kwargs["temperature"] = config["temperature"]
     if config.get("max_tokens") is not None:
         llm_kwargs["max_tokens"] = config["max_tokens"]
+    # Provider-agnostic retry/fallback config (PRD §6.1/§11) built by the caller
+    # (app.services.compiler.build_agent) - forwarded as-is, same pattern as
+    # temperature/max_tokens above.
+    if config.get("error_handling") is not None:
+        llm_kwargs["error_handling"] = config["error_handling"]
+    if config.get("fallback") is not None:
+        llm_kwargs["fallback"] = config["fallback"]
     llm = OpenAILLM(connection=connection, model=config.get("model", "gpt-4o-mini"), **llm_kwargs)
     return connection, llm
 

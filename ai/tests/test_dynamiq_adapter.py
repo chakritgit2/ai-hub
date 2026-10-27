@@ -64,3 +64,26 @@ def test_build_openai_allowlisted_host_keeps_default_retries():
     )
 
     assert connection.connect().max_retries == openai.DEFAULT_MAX_RETRIES
+
+
+def test_build_openai_forwards_error_handling_and_fallback_to_the_llm():
+    """app.services.compiler.build_agent builds these objects (ErrorHandling/
+    FallbackConfig, PRD §6.1/§11) and hands them through `config` the same way it already
+    does temperature/max_tokens - this is the one place that must actually forward them
+    onto the constructed OpenAILLM node."""
+    from dynamiq.nodes import ErrorHandling
+
+    error_handling = ErrorHandling(max_retries=2, retry_interval_seconds=1.0, backoff_rate=2.0)
+    _connection, llm = _build_openai({"api_key": "sk-test", "error_handling": error_handling, "fallback": None})
+
+    assert llm.error_handling.max_retries == 2
+    assert llm.fallback is None
+
+
+def test_build_openai_without_error_handling_or_fallback_keeps_defaults():
+    """The common case (no fallback configured) must not be affected - a plain
+    OpenAILLM's defaults (no retries, no fallback) stay exactly as before."""
+    _connection, llm = _build_openai({"api_key": "sk-test"})
+
+    assert llm.error_handling.max_retries == 0
+    assert llm.fallback is None

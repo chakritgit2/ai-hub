@@ -376,6 +376,9 @@ export interface ModelSpec {
 	model: string;
 	temperature?: number;
 	max_tokens?: number;
+	// Optional provider fallback (PRD §6.1/§11) - both set together or neither.
+	fallback_connection_id?: string;
+	fallback_model?: string;
 }
 
 // Mirrors ai/app/services/agent_spec.py's GuardrailCheckSpec/GuardrailsSpec exactly.

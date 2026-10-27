@@ -232,11 +232,18 @@ async def _build_workflow(compiled_definition: dict, company_id: str) -> None:
     agents_by_state_id = {}
     for state_def in workflow_def["states"]:
         agent_compiled = state_def["agent_compiled_definition"]
+        has_fallback = agent_compiled.get("agent", {}).get("llm", {}).get("fallback") is not None
         agents_by_state_id[state_def["id"]] = await build_agent(
             agent_compiled,
             _COMPILE_TIME_PLACEHOLDER_API_KEY,
             company_id,
             knowledge_api_keys=_placeholder_knowledge_api_keys(agent_compiled),
+            # Same never-a-real-call self-proof rule as compiler.compile_spec's own
+            # build_agent call - without this, a state whose agent has a fallback model
+            # configured would build it with api_key=None, falling through to
+            # OpenAIConnection's own ambient-env-var default instead of staying a pure
+            # placeholder.
+            fallback_api_key=_COMPILE_TIME_PLACEHOLDER_API_KEY if has_fallback else None,
         )
 
     wire_orchestrator_states(orchestrator, workflow_def, agents_by_state_id)

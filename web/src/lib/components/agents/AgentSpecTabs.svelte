@@ -198,6 +198,8 @@
 		model: string;
 		temperature: string | number | null;
 		max_tokens: string | number | null;
+		fallback_connection_id: string;
+		fallback_model: string;
 	};
 
 	type TabId =
@@ -303,11 +305,19 @@
 		if (!isUnset(model.max_tokens) && (!Number.isInteger(Number(model.max_tokens)) || Number(model.max_tokens) <= 0)) {
 			return 'Model: max tokens must be a whole number greater than 0.';
 		}
+		const hasFallbackConnection = model.fallback_connection_id.trim() !== '';
+		const hasFallbackModel = model.fallback_model.trim() !== '';
+		if (hasFallbackConnection !== hasFallbackModel) {
+			return 'Model: fallback needs both a connection and a model name.';
+		}
 		return {
 			connection_id: model.connection_id,
 			model: model.model.trim(),
 			...(!isUnset(model.temperature) ? { temperature: Number(model.temperature) } : {}),
-			...(!isUnset(model.max_tokens) ? { max_tokens: Number(model.max_tokens) } : {})
+			...(!isUnset(model.max_tokens) ? { max_tokens: Number(model.max_tokens) } : {}),
+			...(hasFallbackConnection
+				? { fallback_connection_id: model.fallback_connection_id, fallback_model: model.fallback_model.trim() }
+				: {})
 		};
 	}
 
@@ -666,6 +676,39 @@
 					Only connections the compiler can build an LLM from today (OpenAI-compatible) are listed
 					(PRD §6.1).
 				</p>
+
+				<div class="border-t border-neutral-200 pt-5">
+					<h3 class="text-sm font-medium text-neutral-700">Fallback model (optional)</h3>
+					<p class="mt-1 text-xs text-neutral-500">
+						If the primary provider returns a 429 or 5xx, the run retries twice automatically,
+						then switches to this model if configured — the trace records which one answered.
+					</p>
+
+					<label class="mt-3 block">
+						<span class="text-sm font-medium text-neutral-700">Fallback connection</span>
+						<select
+							bind:value={model.fallback_connection_id}
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						>
+							<option value="">No fallback</option>
+							{#each usableConnections as connection (connection.id)}
+								<option value={connection.id}>{connection.name}</option>
+							{/each}
+						</select>
+					</label>
+
+					<label class="mt-3 block">
+						<span class="text-sm font-medium text-neutral-700">Fallback model</span>
+						<input
+							type="text"
+							bind:value={model.fallback_model}
+							placeholder="gpt-4o-mini"
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+				</div>
 			</form>
 		{:else if activeTab === 'tools'}
 			<div class="space-y-4" inert={readonly}>

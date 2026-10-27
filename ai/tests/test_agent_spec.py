@@ -58,6 +58,35 @@ def test_non_uuid_connection_id_is_rejected():
         AgentSpecDoc.model_validate({"identity": VALID_IDENTITY, "model": model})
 
 
+def test_fallback_model_without_fallback_connection_is_rejected():
+    model = {**VALID_MODEL, "fallback_model": "gpt-4o"}
+    with pytest.raises(ValidationError):
+        ModelSpec.model_validate(model)
+
+
+def test_fallback_connection_without_fallback_model_is_rejected():
+    model = {**VALID_MODEL, "fallback_connection_id": "3f2b8c1e-0000-4000-8000-000000000001"}
+    with pytest.raises(ValidationError):
+        ModelSpec.model_validate(model)
+
+
+def test_fallback_model_and_connection_together_is_accepted():
+    model = {
+        **VALID_MODEL,
+        "fallback_connection_id": "3f2b8c1e-0000-4000-8000-000000000001",
+        "fallback_model": "gpt-4o",
+    }
+    spec = ModelSpec.model_validate(model)
+    assert spec.fallback_connection_id == "3f2b8c1e-0000-4000-8000-000000000001"
+    assert spec.fallback_model == "gpt-4o"
+
+
+def test_non_uuid_fallback_connection_id_is_rejected():
+    model = {**VALID_MODEL, "fallback_connection_id": "not-a-uuid", "fallback_model": "gpt-4o"}
+    with pytest.raises(ValidationError):
+        ModelSpec.model_validate(model)
+
+
 def test_render_identity_prompt_includes_decline_and_handoff_instructions():
     identity = AgentIdentitySpec.model_validate(
         {

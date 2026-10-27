@@ -107,7 +107,7 @@
 		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-4 text-sm text-danger">
 			<p class="font-medium">This run ended in {run.status}</p>
 			<p class="mt-1 text-neutral-700">
-				Typical sequence per PRD §12: provider 429 → 2 retries → fallback model → 120s timeout.
+				Typical sequence per PRD §6.1: provider 429 → 2 retries → fallback model → 120s timeout.
 			</p>
 		</div>
 	{/if}
@@ -157,6 +157,11 @@
 								{STEP_TYPE_LABELS[step.step_type]}
 							</span>
 							<span class="font-medium text-neutral-800">{step.name ?? '—'}</span>
+							{#if step.detail?.is_fallback}
+								<span class="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+									Fallback model
+								</span>
+							{/if}
 							<span class="text-neutral-400">{step.status}</span>
 							{#if step.latency_ms !== null}
 								<span class="text-neutral-500">{step.latency_ms} ms</span>

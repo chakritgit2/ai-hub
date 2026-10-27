@@ -241,9 +241,10 @@ class ConnectionsController extends ControllerBase
                 "SELECT DISTINCT a.name
                  FROM console.agent_versions av
                  JOIN console.agents a ON a.id = av.agent_id
-                 WHERE av.spec -> 'model' ->> 'connection_id' = :connection_id",
+                 WHERE av.spec -> 'model' ->> 'connection_id' = :connection_id
+                    OR av.spec -> 'model' ->> 'fallback_connection_id' = :fallback_connection_id",
                 Enum::FETCH_ASSOC,
-                ['connection_id' => $id]
+                ['connection_id' => $id, 'fallback_connection_id' => $id]
             );
             if ($dependents !== []) {
                 return ['deleted' => false, 'dependents' => array_column($dependents, 'name')];

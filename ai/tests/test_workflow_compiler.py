@@ -149,6 +149,40 @@ async def test_compile_happy_path_constructs_a_real_graph_orchestrator(make_conn
 
 
 @requires_postgres
+async def test_compile_proves_a_state_agent_with_a_fallback_model_is_buildable(make_connection, make_agent_version):
+    """Regression guard: _build_workflow's own self-proof build_agent() call must thread
+    fallback_api_key through exactly like compiler.compile_spec's own self-proof call does
+    - a state's agent having a fallback configured must not touch a real ambient
+    OPENAI_API_KEY env var or crash with no key, during what is supposed to be a pure,
+    never-a-real-call compile-time proof (found by code-review before this shipped)."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    fallback_connection_id = make_connection(company_id, name="fallback-connection")
+    agent_version_id = make_agent_version(company_id, connection_id)
+
+    agent_compile_result = await compile_spec(
+        {
+            "identity": VALID_IDENTITY,
+            "model": {
+                "connection_id": connection_id,
+                "model": "gpt-4o-mini",
+                "fallback_connection_id": fallback_connection_id,
+                "fallback_model": "gpt-4o",
+            },
+        },
+        "developer",
+        company_id,
+    )
+    assert agent_compile_result["ok"] is True, agent_compile_result["errors"]
+    _publish(company_id, agent_version_id, agent_compile_result["compiled_definition"])
+
+    spec = _workflow_spec(connection_id, agent_version_id)
+    result = await compile_workflow_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+
+
+@requires_postgres
 async def test_multi_target_branch_compiles(make_connection, make_agent_version):
     """Proves the manager-routed branching case (2+ next_states, no condition) is
     constructible, even though it's never executed this slice. Reuses one published agent

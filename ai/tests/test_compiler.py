@@ -161,6 +161,135 @@ async def test_compile_rejects_cross_company_connection(make_connection):
 
 
 @requires_postgres
+async def test_compile_includes_fallback_in_compiled_definition(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    fallback_connection_id = make_connection(company_id, name="fallback-connection")
+    spec = _valid_spec(connection_id)
+    spec["model"]["fallback_connection_id"] = fallback_connection_id
+    spec["model"]["fallback_model"] = "gpt-4o"
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    fallback = result["compiled_definition"]["agent"]["llm"]["fallback"]
+    assert fallback["type"] == "dynamiq.nodes.llms.OpenAI"
+    assert fallback["model"] == "gpt-4o"
+    assert fallback["connection"]["connection_id"] == fallback_connection_id
+
+
+@requires_postgres
+async def test_compile_omits_fallback_key_when_not_configured(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+
+    result = await compile_spec(_valid_spec(connection_id), "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    assert "fallback" not in result["compiled_definition"]["agent"]["llm"]
+
+
+@requires_postgres
+async def test_compile_rejects_unknown_fallback_connection_id(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    spec = _valid_spec(connection_id)
+    spec["model"]["fallback_connection_id"] = str(uuid.uuid4())
+    spec["model"]["fallback_model"] = "gpt-4o"
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "model.fallback_connection_id"
+
+
+@requires_postgres
+async def test_compile_rejects_cross_company_fallback_connection(make_connection):
+    company_a = str(uuid.uuid4())
+    company_b = str(uuid.uuid4())
+    connection_id = make_connection(company_a)
+    fallback_connection_id = make_connection(company_b)
+    spec = _valid_spec(connection_id)
+    spec["model"]["fallback_connection_id"] = fallback_connection_id
+    spec["model"]["fallback_model"] = "gpt-4o"
+
+    result = await compile_spec(spec, "developer", company_a)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "model.fallback_connection_id"
+
+
+@requires_postgres
+async def test_compile_rejects_unsupported_fallback_connection_type(make_connection):
+    """Admin role, same reasoning as test_compile_allows_admin_past_the_allowlist_but_
+    still_fails_to_build - a developer would be rejected earlier by the node-type
+    allowlist (connection.type is itself scanned as a node type), masking the
+    llm_type_for_connection_type check this test actually targets."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    fallback_connection_id = make_connection(
+        company_id, connection_type="dynamiq.nodes.tools.python.Python", name="unsupported-fallback"
+    )
+    spec = _valid_spec(connection_id)
+    spec["model"]["fallback_connection_id"] = fallback_connection_id
+    spec["model"]["fallback_model"] = "gpt-4o"
+
+    result = await compile_spec(spec, "admin", company_id)
+
+    assert result["ok"] is False
+    assert result["errors"][0]["path"] == "model.fallback_connection_id"
+    assert "Unsupported connection type" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_build_agent_retries_every_llm_even_without_a_fallback_configured(make_connection):
+    """PRD §6.1/§11: 'two retries with backoff' is unconditional, not gated behind a
+    fallback being configured."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+
+    result = await compile_spec(_valid_spec(connection_id), "developer", company_id)
+    assert result["ok"] is True, result["errors"]
+
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
+
+    assert agent.llm.error_handling.max_retries == 2
+    assert agent.llm.fallback is None
+
+
+@requires_postgres
+async def test_build_agent_wires_native_fallback_onto_the_primary_llm(make_connection):
+    """Proves the native dynamiq FallbackConfig/FallbackTrigger mechanism
+    (dynamiq.nodes.llms.base.BaseLLM) is actually attached, not just recorded in
+    compiled_definition - this is what makes 'primary returns 5xx, run succeeds on
+    fallback' (PRD §11 acceptance test) work with no custom retry loop."""
+    from dynamiq.nodes.llms.base import FallbackTrigger
+
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    fallback_connection_id = make_connection(company_id, name="fallback-connection")
+    spec = _valid_spec(connection_id)
+    spec["model"]["fallback_connection_id"] = fallback_connection_id
+    spec["model"]["fallback_model"] = "gpt-4o"
+
+    result = await compile_spec(spec, "developer", company_id)
+    assert result["ok"] is True, result["errors"]
+
+    agent = await build_agent(
+        result["compiled_definition"], "sk-test-key", company_id, fallback_api_key="sk-fallback-key"
+    )
+
+    assert agent.llm.error_handling.max_retries == 2
+    assert agent.llm.fallback is not None
+    assert agent.llm.fallback.enabled is True
+    # litellm/dynamiq normalize the bare model name with the provider prefix it routes
+    # through internally - the compiled_definition itself still stores the raw "gpt-4o"
+    # (see test_compile_includes_fallback_in_compiled_definition).
+    assert agent.llm.fallback.llm.model == "openai/gpt-4o"
+    assert set(agent.llm.fallback.triggers) == {FallbackTrigger.RATE_LIMIT, FallbackTrigger.CONNECTION}
+
+
+@requires_postgres
 async def test_compile_rejects_disallowed_node_type_for_developer(make_connection):
     company_id = str(uuid.uuid4())
     connection_id = make_connection(company_id, connection_type="dynamiq.nodes.tools.python.Python")

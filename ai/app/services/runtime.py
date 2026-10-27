@@ -115,6 +115,11 @@ class _StepCollector(BaseCallbackHandler):
             "input": _step_text(input_data),
             "started": time.monotonic(),
             "usage": None,
+            # Stamped by dynamiq itself on the fallback LLM's own serialized form
+            # (dynamiq.nodes.llms.base.BaseLLM.to_dict) once a fallback (PRD §6.1/§11)
+            # has actually run - False for every ordinary node, including the primary
+            # LLM's own failed attempt.
+            "is_fallback": bool(serialized.get("is_fallback")),
         }
 
     def on_node_execute_run(self, serialized: dict[str, Any], **kwargs: Any) -> None:
@@ -152,6 +157,7 @@ class _StepCollector(BaseCallbackHandler):
                 cost_usd=usage.get("total_tokens_cost_usd"),
                 latency_ms=int((time.monotonic() - pending["started"]) * 1000),
                 error=error,
+                detail={"is_fallback": True} if pending["is_fallback"] else {},
             )
         )
 
@@ -427,6 +433,16 @@ async def _execute_agent_run_body(
     if secret is None:
         raise ValueError(f"no secret stored for connection {connection_id!r}")
 
+    # Independent of the primary connection's secret above - the fallback (PRD §6.1/§11)
+    # may point at a different connection/provider entirely.
+    fallback_def = agent_def["llm"].get("fallback")
+    fallback_api_key = None
+    if fallback_def is not None:
+        fallback_connection_id = fallback_def["connection"]["connection_id"]
+        fallback_api_key = await decrypt_connection_secret(company_id, fallback_connection_id)
+        if fallback_api_key is None:
+            raise ValueError(f"no secret stored for connection {fallback_connection_id!r}")
+
     memory = None
     user_id = None
     # Stays None unless memory is actually wired, so a client that sent a
@@ -459,7 +475,9 @@ async def _execute_agent_run_body(
         skill_registry = ConsoleSkillRegistry(skills=scoped_skills)
 
     egress_allowlist = None
-    if agent_def["llm"]["connection"].get("api_base"):
+    if agent_def["llm"]["connection"].get("api_base") or (fallback_def or {}).get("connection", {}).get(
+        "api_base"
+    ):
         # Only a custom api_base is a company-controlled SSRF vector worth the extra
         # query for - see app.integrations.safe_openai_connection.
         egress_allowlist = await list_egress_allowlist(company_id)
@@ -512,6 +530,7 @@ async def _execute_agent_run_body(
         run_id=run_id,
         allow_write_tools=allow_write_tools,
         stream_handler=stream_handler,
+        fallback_api_key=fallback_api_key,
     )
 
     usage_collector = _UsageCollector()
@@ -606,6 +625,17 @@ async def _execute_agent_run_body(
 
     latency_ms = int((time.monotonic() - started) * 1000)
     usage = usage_collector.total_usage()
+
+    # logs.runs.model should reflect whichever model actually produced this run's final
+    # output, not just what was configured as primary (PRD §11: "trace records it"). Uses
+    # the *last* llm step rather than "any" - a multi-call ReAct loop can fail over once
+    # and still recover onto the primary for later calls, so "any step used fallback"
+    # would mislabel a run that was mostly answered by the primary model. Per-step
+    # `detail.is_fallback` (Trace tab) stays accurate regardless either way.
+    llm_steps = [step for step in step_collector.steps if step.step_type == "llm"]
+    used_fallback = bool(llm_steps) and llm_steps[-1].detail.get("is_fallback")
+    if used_fallback and fallback_def is not None:
+        model_name = fallback_def["model"]
 
     await log_run(
         run_id=run_id,

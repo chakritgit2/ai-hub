@@ -22,7 +22,14 @@ export function blankIdentity(): AgentIdentity {
 }
 
 export function blankModelFormState(): ModelFormState {
-	return { connection_id: '', model: '', temperature: '', max_tokens: '' };
+	return {
+		connection_id: '',
+		model: '',
+		temperature: '',
+		max_tokens: '',
+		fallback_connection_id: '',
+		fallback_model: ''
+	};
 }
 
 /** The raw (non-form) ModelSpec shape for a brand-new spec with nothing filled in yet -
@@ -62,7 +69,9 @@ export function toModelFormState(m?: ModelSpec): ModelFormState {
 		connection_id: m?.connection_id ?? '',
 		model: m?.model ?? '',
 		temperature: m?.temperature ?? '',
-		max_tokens: m?.max_tokens ?? ''
+		max_tokens: m?.max_tokens ?? '',
+		fallback_connection_id: m?.fallback_connection_id ?? '',
+		fallback_model: m?.fallback_model ?? ''
 	};
 }
 

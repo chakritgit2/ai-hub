@@ -58,6 +58,28 @@ def test_step_collector_records_error_status():
     assert collector.steps[0].error == "boom"
 
 
+def test_step_collector_marks_fallback_llm_step_in_detail():
+    """PRD §6.1/§11: once the primary LLM fails and dynamiq's native FallbackConfig runs
+    the fallback LLM, that second node's own serialized form carries `is_fallback: True`
+    (dynamiq.nodes.llms.base.BaseLLM.to_dict) - _StepCollector must forward it into the
+    step's `detail` so the Trace tab can show which model actually answered."""
+    collector = _StepCollector()
+    primary_run_id, fallback_run_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+    primary_node = _node("llms", "gpt-4o-mini")
+    collector.on_node_start(primary_node, {"input": "hi"}, run_id=primary_run_id)
+    collector.on_node_error(primary_node, RuntimeError("503 service unavailable"), run_id=primary_run_id)
+
+    fallback_node = {**_node("llms", "gpt-4o"), "is_fallback": True}
+    collector.on_node_start(fallback_node, {"input": "hi"}, run_id=fallback_run_id)
+    collector.on_node_end(fallback_node, {"content": "hello"}, run_id=fallback_run_id)
+
+    assert [step.status for step in collector.steps] == ["error", "success"]
+    primary_step, fallback_step = collector.steps
+    assert primary_step.detail == {}
+    assert fallback_step.detail == {"is_fallback": True}
+
+
 def test_guardrail_run_steps_converts_check_events():
     events = [CheckEvent(stage="input", check="pii", action="mask", detail={"categories": ["email"]})]
 

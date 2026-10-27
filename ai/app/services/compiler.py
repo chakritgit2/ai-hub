@@ -65,13 +65,26 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
             [{"path": "model.connection_id", "message": "no connection with this id for this company"}]
         )
 
+    fallback_connection = None
+    if doc.model.fallback_connection_id is not None:
+        fallback_connection = await resolve_connection(company_id, doc.model.fallback_connection_id)
+        if fallback_connection is None:
+            return _failure(
+                [
+                    {
+                        "path": "model.fallback_connection_id",
+                        "message": "no connection with this id for this company",
+                    }
+                ]
+            )
+
     tools, tool_errors = await _resolve_tools(doc, company_id)
     skill_errors = await _validate_skills(doc, company_id)
     knowledge, knowledge_errors = await _resolve_knowledge(doc, company_id)
     if tool_errors or skill_errors or knowledge_errors:
         return _failure(tool_errors + skill_errors + knowledge_errors)
 
-    compiled_definition = _build_compiled_definition(doc, connection, tools, knowledge)
+    compiled_definition = _build_compiled_definition(doc, connection, fallback_connection, tools, knowledge)
     compiled_definition["guardrails"] = doc.guardrails.model_dump()
     compiled_definition["skills"] = doc.skills
     compiled_definition["memory"] = doc.memory.model_dump()
@@ -91,6 +104,14 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
         return _failure([{"path": "model.connection_id", "message": str(exc)}])
     compiled_definition["agent"]["llm"]["type"] = llm_type
 
+    if fallback_connection is not None:
+        try:
+            compiled_definition["agent"]["llm"]["fallback"]["type"] = llm_type_for_connection_type(
+                fallback_connection.type
+            )
+        except ValueError as exc:
+            return _failure([{"path": "model.fallback_connection_id", "message": str(exc)}])
+
     try:
         await build_agent(
             compiled_definition,
@@ -103,6 +124,7 @@ async def compile_spec(spec: dict, role: str, company_id: str) -> dict:
             # not a network call to a provider, consistent with resolve_connection/
             # resolve_tool/list_published_skills already hitting the DB during compile.
             knowledge_api_keys={kb.id: _COMPILE_TIME_PLACEHOLDER_API_KEY for kb, _ in knowledge},
+            fallback_api_key=_COMPILE_TIME_PLACEHOLDER_API_KEY if fallback_connection is not None else None,
         )
     except Exception as exc:  # proves compiled_definition is actually buildable
         logger.exception("agent spec compilation failed to construct an Agent")
@@ -253,9 +275,34 @@ def _tool_type(tool: ToolRow) -> str:
 def _build_compiled_definition(
     doc: AgentSpecDoc,
     connection: ConnectionRow,
+    fallback_connection: ConnectionRow | None,
     tools: list[ToolRow],
     knowledge: list[tuple[KnowledgeBaseRow, ConnectionRow]],
 ) -> dict:
+    llm_def = {
+        # Filled in once the allowlist check has passed — see compile_spec().
+        "type": None,
+        "model": doc.model.model,
+        "temperature": doc.model.temperature,
+        "max_tokens": doc.model.max_tokens,
+        "connection": {
+            "type": connection.type,
+            "connection_id": connection.id,
+            "name": connection.name,
+            "api_base": connection.api_base,
+        },
+    }
+    if fallback_connection is not None:
+        llm_def["fallback"] = {
+            "type": None,
+            "model": doc.model.fallback_model,
+            "connection": {
+                "type": fallback_connection.type,
+                "connection_id": fallback_connection.id,
+                "name": fallback_connection.name,
+                "api_base": fallback_connection.api_base,
+            },
+        }
     return {
         "version": 1,
         "agent": {
@@ -289,19 +336,7 @@ def _build_compiled_definition(
                 }
                 for kb, embedder_connection in knowledge
             ],
-            "llm": {
-                # Filled in once the allowlist check has passed — see compile_spec().
-                "type": None,
-                "model": doc.model.model,
-                "temperature": doc.model.temperature,
-                "max_tokens": doc.model.max_tokens,
-                "connection": {
-                    "type": connection.type,
-                    "connection_id": connection.id,
-                    "name": connection.name,
-                    "api_base": connection.api_base,
-                },
-            },
+            "llm": llm_def,
         },
     }
 
@@ -504,6 +539,7 @@ async def build_agent(
     run_id: str | None = None,
     allow_write_tools: bool = True,
     stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
+    fallback_api_key: str | None = None,
 ):
     """Constructs a real `dynamiq.nodes.agents.Agent` from a `compiled_definition`
     (PRD §6.1) - used two ways: `compile_spec`'s own proof-check above, with
@@ -544,13 +580,41 @@ async def build_agent(
     event - threaded through unconditionally whenever the caller has one (not gated on
     whether dynamiq is actually live-streaming LLM tokens through it), since the SSE
     consumer drains this same object either way.
+
+    `fallback_api_key` is the decrypted secret for `llm_def["fallback"]["connection"]`
+    (PRD §6.1/§11: "two retries with backoff, then the fallback model if configured") -
+    independent of `api_key` since the fallback connection may differ from the primary's.
+    Required whenever `compiled_definition`'s llm has a `fallback` entry; `None` whenever
+    it doesn't (the common case). Retry-with-backoff itself is unconditional on the
+    primary LLM, not gated on a fallback being configured - see `_PROVIDER_ERROR_*`
+    below.
     """
+    from dynamiq.nodes import ErrorHandling
     from dynamiq.nodes.agents import Agent
+    from dynamiq.nodes.llms.base import FallbackConfig, FallbackTrigger
     from dynamiq.skills.config import SkillsConfig
 
     agent_def = compiled_definition["agent"]
     llm_def = agent_def["llm"]
     connection_def = llm_def["connection"]
+
+    fallback_llm = None
+    fallback_def = llm_def.get("fallback")
+    if fallback_def is not None:
+        fallback_connection_def = fallback_def["connection"]
+        _fallback_connection, fallback_llm = build_llm(
+            fallback_connection_def["type"],
+            {
+                "api_key": fallback_api_key,
+                "model": fallback_def["model"],
+                # No separate fallback temperature/max_tokens field exists on ModelSpec -
+                # reuse the primary's.
+                "temperature": llm_def.get("temperature"),
+                "max_tokens": llm_def.get("max_tokens"),
+                "url": fallback_connection_def.get("api_base"),
+                "egress_allowlist": egress_allowlist,
+            },
+        )
 
     _connection, llm = build_llm(
         connection_def["type"],
@@ -568,6 +632,16 @@ async def build_agent(
             # reads this as "url" (see app/integrations/dynamiq_adapter.py).
             "url": connection_def.get("api_base"),
             "egress_allowlist": egress_allowlist,
+            "error_handling": ErrorHandling(max_retries=2, retry_interval_seconds=1.0, backoff_rate=2.0),
+            "fallback": (
+                FallbackConfig(
+                    llm=fallback_llm,
+                    enabled=True,
+                    triggers=[FallbackTrigger.RATE_LIMIT, FallbackTrigger.CONNECTION],
+                )
+                if fallback_llm is not None
+                else None
+            ),
         },
     )
 

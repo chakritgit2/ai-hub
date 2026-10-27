@@ -46,6 +46,12 @@ class ModelSpec(BaseModel):
     model: str = Field(min_length=1)
     temperature: float | None = None
     max_tokens: int | None = Field(default=None, gt=0)
+    # Optional provider fallback (PRD §6.1/§11): "Provider errors (429/5xx): two retries
+    # with backoff, then the fallback model if configured." Independent of connection_id -
+    # may point at the same connection (different model string) or a different one
+    # entirely (different provider/endpoint/secret).
+    fallback_connection_id: str | None = None
+    fallback_model: str | None = Field(default=None, min_length=1)
 
     @field_validator("connection_id")
     @classmethod
@@ -54,6 +60,21 @@ class ModelSpec(BaseModel):
 
         uuid.UUID(value)  # raises ValueError -> wrapped as a pydantic ValidationError
         return value
+
+    @field_validator("fallback_connection_id")
+    @classmethod
+    def _fallback_connection_id_is_uuid(cls, value: str | None) -> str | None:
+        import uuid
+
+        if value is not None:
+            uuid.UUID(value)
+        return value
+
+    @model_validator(mode="after")
+    def _fallback_fields_are_paired(self) -> "ModelSpec":
+        if bool(self.fallback_connection_id) != bool(self.fallback_model):
+            raise ValueError("fallback_connection_id and fallback_model must be set together")
+        return self
 
 
 GuardrailCheckType = Literal["max_length", "regex_blocklist", "pii", "valid_json", "valid_choices"]

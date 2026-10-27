@@ -90,6 +90,17 @@ async def _resolve_state_agent(
     if secret is None:
         raise ValueError(f"no secret stored for connection {connection_id!r}")
 
+    # Independent of the primary connection's secret above - the fallback (PRD §6.1/§11)
+    # may point at a different connection/provider entirely. Same shape as
+    # app.services.runtime.execute_agent_run's own resolution.
+    fallback_def = agent_def["llm"].get("fallback")
+    fallback_api_key = None
+    if fallback_def is not None:
+        fallback_connection_id = fallback_def["connection"]["connection_id"]
+        fallback_api_key = await decrypt_connection_secret(company_id, fallback_connection_id)
+        if fallback_api_key is None:
+            raise ValueError(f"no secret stored for connection {fallback_connection_id!r}")
+
     skill_registry = None
     if agent_compiled.get("skills"):
         full_registry = await get_console_skill_registry(company_id)
@@ -97,7 +108,9 @@ async def _resolve_state_agent(
         skill_registry = ConsoleSkillRegistry(skills=scoped_skills)
 
     egress_allowlist = None
-    if agent_def["llm"]["connection"].get("api_base"):
+    if agent_def["llm"]["connection"].get("api_base") or (fallback_def or {}).get("connection", {}).get(
+        "api_base"
+    ):
         egress_allowlist = await list_egress_allowlist(company_id)
 
     knowledge_api_keys = {}
@@ -134,6 +147,7 @@ async def _resolve_state_agent(
         egress_allowlist=egress_allowlist,
         run_id=run_id,
         allow_write_tools=allow_write_tools,
+        fallback_api_key=fallback_api_key,
     )
 
 
