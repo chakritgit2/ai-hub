@@ -33,7 +33,16 @@
 	// (e.g. restored from localStorage on a page that isn't this one). Written into the
 	// shared tenantId store (not just local state) so other pages - so far just the
 	// Agents list's tenant-pooled view - know which tenant is selected too.
+	//
+	// Gated on $currentUser being loaded: before /me resolves, `options` is the
+	// placeholder `sampleCompanies` (no real tenant_id values at all), so `current` is
+	// always undefined for a real persisted $companyId and this fell into the `else if`
+	// branch, overwriting a perfectly valid persisted $tenantId with '' every hard
+	// page load - the company_id/tenant_id race (confirmed live: a mutating request fired
+	// in that window used the wrong id and 404'd). Once $currentUser is null there is no
+	// real membership data to correct against yet, so there is nothing to do here.
 	$effect(() => {
+		if (!$currentUser) return;
 		const current = options.find((c) => c.id === $companyId);
 		if (current && current.tenant_id !== $tenantId) {
 			tenantId.set(current.tenant_id ?? '');
@@ -57,7 +66,15 @@
 	// company from a previous user) — neither is a real console.companies.id, so every
 	// X-Company-Id-scoped request 404s until it's corrected. Keep it pointed at a company
 	// the logged-in user actually belongs to as soon as we know what those are.
+	//
+	// Same $currentUser gate as the tenantId effect above, for the same reason: before
+	// /me resolves, `options` is the sampleCompanies placeholder, so a real persisted
+	// $companyId (e.g. restored from localStorage) never matches any of its ids and this
+	// clobbered it with the placeholder's first id every hard page load - the brief
+	// window any request fired in it would 404 with the wrong company. Nothing to correct
+	// against until $currentUser actually loads.
 	$effect(() => {
+		if (!$currentUser) return;
 		if (options.length > 0 && !options.some((c) => c.id === $companyId)) {
 			companyId.set(options[0].id);
 		}
