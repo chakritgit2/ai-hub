@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 	import {
 		updateWorkflow,
 		archiveWorkflow,
@@ -13,6 +14,7 @@
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
+	import YamlEditor from '$lib/components/YamlEditor.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -53,7 +55,7 @@
 		nameForm = { name: newWorkflow?.name ?? '', description: newWorkflow?.description ?? '' };
 		const latest = newVersions[0] ?? null;
 		versionId = latest && !latest.is_published ? latest.id : null;
-		specText = JSON.stringify(latest ? latest.spec : STARTER_SPEC, null, 2);
+		specText = stringifyYaml(latest ? latest.spec : STARTER_SPEC);
 		error = null;
 		publishErrors = [];
 		savedNotice = false;
@@ -83,13 +85,13 @@
 
 	function parseSpec(): { spec: Record<string, unknown> } | { error: string } {
 		try {
-			const parsed = JSON.parse(specText);
+			const parsed: unknown = parseYaml(specText);
 			if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-				return { error: 'Spec must be a JSON object.' };
+				return { error: 'Spec must be a YAML mapping (object).' };
 			}
 			return { spec: parsed as Record<string, unknown> };
 		} catch (e) {
-			return { error: e instanceof Error ? `Invalid JSON: ${e.message}` : 'Invalid JSON.' };
+			return { error: e instanceof Error ? `Invalid YAML: ${e.message}` : 'Invalid YAML.' };
 		}
 	}
 
@@ -172,7 +174,7 @@
 			const version = await createWorkflowVersion(workflow.id, { spec: base as Record<string, unknown> });
 			versions = await listWorkflowVersions(workflow.id);
 			versionId = version.id;
-			specText = JSON.stringify(version.spec, null, 2);
+			specText = stringifyYaml(version.spec);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to create a new version.';
 		} finally {
@@ -263,14 +265,10 @@
 				wired to the end of the workflow.
 			</p>
 
-			<textarea
+			<YamlEditor
 				bind:value={specText}
-				readonly={(versionId === null && latestVersion !== null) || workflow.status === 'archived'}
-				rows="20"
-				spellcheck="false"
-				class="mt-3 w-full rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 font-mono text-xs
-					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary disabled:opacity-50"
-			></textarea>
+				readOnly={(versionId === null && latestVersion !== null) || workflow.status === 'archived'}
+			/>
 
 			<div class="mt-3 flex gap-2">
 				<button
