@@ -6,7 +6,15 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		%sveltekit.head%
 	</head>
-	<body data-sveltekit-preload-data="hover" class="bg-bg text-neutral-900 font-sans">
+	<!-- "off", not "hover"/"tap": every tenant-pooled list page (Agents, Workflows,
+	Datasets, API Keys, Approvals, Knowledge Bases, Runs, Deployments, Evaluation)
+	switches $companyId to the clicked row's own company in an onclick handler right
+	before navigating to its single-company-scoped detail route (see
+	web/src/lib/stores/company.ts's withCompany() doc and e.g.
+	agents/+page.svelte's openAgent()) - preloading on hover/tap fires that detail
+	route's `load()` using whichever company was active *before* the click, so the
+	resulting 404 gets cached and served instead of a fresh, correctly-scoped fetch. -->
+	<body data-sveltekit-preload-data="off" class="bg-bg text-neutral-900 font-sans">
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>
