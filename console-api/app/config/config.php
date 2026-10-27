@@ -62,7 +62,7 @@ return new Config([
 
     // ai-runtime internal base URL, reachable only from console-api pods (PRD §11 NetworkPolicy).
     'aiRuntime' => [
-        'internalBaseUrl' => $env('AI_RUNTIME_INTERNAL_BASE_URL', 'http://ai-runtime:8081'),
+        'internalBaseUrl' => $env('AI_RUNTIME_INTERNAL_BASE_URL', 'http://ai-runtime:8080'),
         'publicBaseUrl' => $env('AI_RUNTIME_PUBLIC_BASE_URL', 'http://ai-runtime:8080'),
         'timeoutSeconds' => (int) $env('AI_RUNTIME_INTERNAL_TIMEOUT_SECONDS', 10),
     ],

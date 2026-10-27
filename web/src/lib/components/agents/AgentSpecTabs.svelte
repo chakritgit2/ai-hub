@@ -1069,36 +1069,34 @@
 )}
 	<label class="block">
 		<span class="text-sm font-medium text-neutral-700">{label}</span>
-		{#if probe.options.length > 0}
-			<select
-				value=""
-				onchange={(e) => {
-					model[fieldKey] = (e.currentTarget as HTMLSelectElement).value;
-				}}
-				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
-					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-			>
-				<option value="" disabled>Pick from available models…</option>
-				{#each probe.options as m (m)}
-					<option value={m}>{m}</option>
-				{/each}
-			</select>
-		{/if}
 		{#if probe.loading}
 			<p class="mt-1 text-xs text-neutral-500">Loading available models…</p>
 		{:else if probe.error}
 			<p class="mt-1 text-xs text-neutral-500">
-				Could not load the live model list ({probe.error}) — type the model name manually below.
+				Could not load the live model list ({probe.error}) — type the model name manually.
+			</p>
+		{:else if probe.options.length > 0}
+			<p class="mt-1 text-xs text-neutral-500">
+				Start typing to search {probe.options.length} available models, or enter one manually.
 			</p>
 		{/if}
 		<div class="mt-1 flex gap-2">
 			<input
 				type="text"
+				list={probe.options.length > 0 ? `${testKey}-model-options` : undefined}
 				bind:value={model[fieldKey]}
 				placeholder="gpt-4o-mini"
+				autocomplete="off"
 				class="w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			{#if probe.options.length > 0}
+				<datalist id="{testKey}-model-options">
+					{#each probe.options as m (m)}
+						<option value={m}></option>
+					{/each}
+				</datalist>
+			{/if}
 			<button
 				type="button"
 				disabled={!model[connectionIdKey] || !model[fieldKey].trim() || modelTestResults[testKey] === 'testing'}
