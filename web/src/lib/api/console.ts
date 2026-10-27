@@ -12,6 +12,7 @@ import type {
 	ApiKeyCreated,
 	Approval,
 	Company,
+	CompanyUser,
 	Connection,
 	ConnectionSecretInput,
 	DashboardSummary,
@@ -34,7 +35,6 @@ import type {
 	KnowledgeBase,
 	KnowledgeBaseInput,
 	Me,
-	Placeholder,
 	Run,
 	RunConversation,
 	RuntimeTokenResponse,
@@ -527,8 +527,8 @@ export function publishSkill(id: string): Promise<Skill> {
 
 // ---- /settings ------------------------------------------------------------
 
-export function listCompanyUsers(): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>('/settings/users');
+export function listCompanyUsers(): Promise<CompanyUser[]> {
+	return apiFetch<CompanyUser[]>('/settings/users');
 }
 
 export function listEgressAllowlist(): Promise<EgressAllowlistEntry[]> {
@@ -593,8 +593,8 @@ export function destroyCompanyDek(id: string): Promise<void> {
 	});
 }
 
-export function listCompanyMembers(id: string): Promise<Placeholder[]> {
-	return apiFetch<Placeholder[]>(`/companies/${id}/members`, { skipCompanyHeader: true });
+export function listCompanyMembers(id: string): Promise<CompanyUser[]> {
+	return apiFetch<CompanyUser[]>(`/companies/${id}/members`, { skipCompanyHeader: true });
 }
 
 // ---- /audit-logs (platform_admin) --------------------------------------------

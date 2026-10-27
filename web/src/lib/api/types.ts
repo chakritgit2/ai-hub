@@ -18,6 +18,13 @@ export interface Company {
 	monthly_budget_usd?: number;
 }
 
+export interface CompanyUser {
+	id: string;
+	email: string;
+	is_platform_admin: boolean;
+	role: 'admin' | 'developer' | 'viewer';
+}
+
 export interface AuditLogEntry {
 	id: string;
 	company_id: string | null;

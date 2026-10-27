@@ -17,7 +17,7 @@
 		listAuditLogs
 	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
-	import type { Placeholder, Company, Tenant, EgressAllowlistEntry, AuditLogEntry } from '$lib/api/types';
+	import type { CompanyUser, Company, Tenant, EgressAllowlistEntry, AuditLogEntry } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
@@ -34,7 +34,7 @@
 
 	let activeTab = $state<TabId>('users');
 
-	let users = $state<Placeholder[]>([]);
+	let users = $state<CompanyUser[]>([]);
 	let usersLoading = $state(true);
 	let usersError = $state<string | null>(null);
 
@@ -486,7 +486,36 @@
 				<p class="text-sm text-neutral-500">No users synced from SSO yet.</p>
 			</div>
 		{:else}
-			<pre class="rounded-lg border border-neutral-200 bg-white p-4 text-xs">{JSON.stringify(users, null, 2)}</pre>
+			<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
+				<table class="min-w-full divide-y divide-neutral-200 text-sm">
+					<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+						<tr>
+							<th class="px-4 py-2">Email</th>
+							<th class="px-4 py-2" title="This user's role within the current company.">Role</th>
+							<th class="px-4 py-2" title="Platform admins can also manage Tenants, Companies and Audit Log.">
+								Platform admin
+							</th>
+						</tr>
+					</thead>
+					<tbody class="divide-y divide-neutral-100">
+						{#each users as user (user.id)}
+							<tr>
+								<td class="px-4 py-2 text-neutral-800">{user.email}</td>
+								<td class="px-4 py-2 capitalize text-neutral-600">{user.role}</td>
+								<td class="px-4 py-2">
+									{#if user.is_platform_admin}
+										<span class="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary-700">
+											Yes
+										</span>
+									{:else}
+										<span class="text-neutral-400">—</span>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
 		{/if}
 	{:else if activeTab === 'egress'}
 		<div class="mb-4 flex items-center justify-between">
