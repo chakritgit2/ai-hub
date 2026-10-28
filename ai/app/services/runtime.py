@@ -42,7 +42,7 @@ from app.services.identity import DelegatedIdentityContext
 from app.services.quotas import QuotaExceededError, check_rate_limit, reconcile_quota, reserve_quota
 from app.services.run_steps import RunStep, guardrail_run_steps, log_run_steps
 from app.services.runs import RunUsage, log_run
-from app.services.streaming_events import extract_answer_delta
+from app.services.streaming_events import extract_answer_delta, with_answer_delta
 from app.services.tool_secrets import decrypt_tool_secret
 
 logger = logging.getLogger(__name__)
@@ -356,21 +356,6 @@ def attach_stream_completion(
     run_task.add_done_callback(_on_done)
 
 
-def _with_answer_delta(event: StreamingEventMessage, content: str) -> StreamingEventMessage:
-    """Rebuilds `event` with its answer-delta text replaced by `content` - same nested
-    `{"choices": [{"delta": {"content": ..., "step": "answer"}}]}` shape
-    `extract_answer_delta` parses (see streaming_events.py), every other field (run_id/
-    entity_id/source/event name) copied through unchanged so any other consumer
-    inspecting them sees a normal chunk."""
-    data = dict(event.data)
-    choices = list(data.get("choices") or [])
-    delta = dict(choices[0].get("delta") or {})
-    delta["content"] = content
-    choices[0] = {**choices[0], "delta": delta}
-    data["choices"] = choices
-    return event.model_copy(update={"data": data})
-
-
 async def _relay_masked_output_stream(
     raw_handler: AsyncStreamingIteratorCallbackHandler,
     stream_handler: AsyncStreamingIteratorCallbackHandler,
@@ -414,7 +399,8 @@ async def _relay_masked_output_stream(
         events.extend(outcome.events)
         if outcome.text:
             parts.append(outcome.text)
-            stream_handler.queue.put_nowait(_with_answer_delta(event, outcome.text))
+            masked_event = event.model_copy(update={"data": with_answer_delta(event.data, outcome.text)})
+            stream_handler.queue.put_nowait(masked_event)
     return "".join(parts), events
 
 
@@ -591,6 +577,37 @@ async def _execute_agent_run_body(
         if tool_secret is not None:
             tool_secrets[tool_def["id"]] = tool_secret
 
+    # Resolved before build_agent (not after, as an earlier version of this function did)
+    # because build_agent needs to know which handler tool instances should push PRD
+    # §6.5's `approval_required` event onto - it must be `raw_handler`, not the outer
+    # `stream_handler`, whenever the relay below is in play. A write-tool's approval
+    # marker (app.integrations.write_tool_gate._notify_pending) pushes directly onto
+    # whatever handler the tool was built with, bypassing per-chunk masking entirely -
+    # if that were still the outer `stream_handler`, it would race ahead of (or behind)
+    # answer-delta chunks that are still working their way through
+    # `_relay_masked_output_stream`'s extra async hop, delivering events to the client
+    # out of the order they actually happened in (found by code-review). Routing it
+    # through `raw_handler` instead means it rides the exact same single-consumer queue
+    # as the answer chunks, so `_relay_masked_output_stream`'s `async for` loop naturally
+    # preserves real production order when it forwards non-answer-delta events unchanged.
+    streamable_output = not guardrails.output or output_checks_are_chunk_streamable(
+        guardrails.output, default_on_error
+    )
+    streamed_live = stream_handler is not None and streamable_output
+    raw_handler: AsyncStreamingIteratorCallbackHandler | None = None
+    relay_task: "asyncio.Task[tuple[str, list[CheckEvent]]] | None" = None
+    if streamed_live and guardrails.output:
+        # Can't attach `stream_handler` directly here - its chunks need per-chunk masking
+        # first (PRD §6.4). `raw_handler` is what the agent (and, per the reasoning above,
+        # every tool it builds) actually writes to; `_relay_masked_output_stream` drains
+        # it, checks+masks each answer-delta chunk, and forwards the result onto the real
+        # `stream_handler` the caller is already iterating concurrently.
+        raw_handler = AsyncStreamingIteratorCallbackHandler(loop=stream_handler.loop)
+        relay_task = asyncio.create_task(
+            _relay_masked_output_stream(raw_handler, stream_handler, guardrails.output, default_on_error)
+        )
+    tool_stream_handler = raw_handler if raw_handler is not None else stream_handler
+
     agent = await build_agent(
         compiled_definition,
         secret,
@@ -603,41 +620,18 @@ async def _execute_agent_run_body(
         tool_secrets=tool_secrets,
         run_id=run_id,
         allow_write_tools=allow_write_tools,
-        stream_handler=stream_handler,
+        stream_handler=tool_stream_handler,
         fallback_api_key=fallback_api_key,
     )
 
     usage_collector = _UsageCollector()
     step_collector = _StepCollector()
     callbacks: list[BaseCallbackHandler] = [usage_collector, step_collector]
-    # Live streaming needs every configured output check to be safe to apply inline per
-    # chunk (see output_checks_are_chunk_streamable's docstring) - a check that could
-    # still block, or can't evaluate a partial chunk at all (valid_json/valid_choices),
-    # keeps the old conservative behavior (buffered: wait for the full output, check
-    # once, send one chunk). `agent.streaming` is a plain mutable field on the
-    # already-built Node (dynamiq/nodes/node.py), so setting it here needs no change to
-    # app.services.compiler.build_agent.
-    streamable_output = not guardrails.output or output_checks_are_chunk_streamable(
-        guardrails.output, default_on_error
-    )
-    streamed_live = stream_handler is not None and streamable_output
-    raw_handler: AsyncStreamingIteratorCallbackHandler | None = None
-    relay_task: "asyncio.Task[tuple[str, list[CheckEvent]]] | None" = None
+    # `agent.streaming` is a plain mutable field on the already-built Node (dynamiq/nodes/
+    # node.py), so setting it here needs no change to app.services.compiler.build_agent.
     if streamed_live:
         agent.streaming = StreamingConfig(enabled=True, mode=stream_mode)
-        if guardrails.output:
-            # Can't attach `stream_handler` directly to the agent here - its chunks need
-            # per-chunk masking first (PRD §6.4). `raw_handler` is what the agent
-            # actually writes to; `_relay_masked_output_stream` drains it, checks+masks
-            # each answer-delta chunk, and forwards the result onto the real
-            # `stream_handler` the caller is already iterating concurrently.
-            raw_handler = AsyncStreamingIteratorCallbackHandler(loop=stream_handler.loop)
-            callbacks.append(raw_handler)
-            relay_task = asyncio.create_task(
-                _relay_masked_output_stream(raw_handler, stream_handler, guardrails.output, default_on_error)
-            )
-        else:
-            callbacks.append(stream_handler)
+        callbacks.append(tool_stream_handler)
 
     # `Agent.run` is synchronous and, with memory attached, does blocking
     # psycopg I/O on top of the already-blocking LLM call - run it off the
@@ -648,6 +642,64 @@ async def _execute_agent_run_body(
     # input_data.user_id/session_id into the metadata it hands memory.add()
     # itself - verified against the installed dynamiq==0.65.0 source, no
     # separate `metadata={...}` duplication is needed here.
+    async def _fail_run(exc: Exception, output_events: list[CheckEvent]) -> None:
+        """Shared failure logging/raising - used both when `agent.run()` itself fails
+        (the main `except` below) and when the masking relay fails *after* a successful
+        run (PRD §6.4's masking is a security/audit property: serving or silently
+        dropping the log for content the relay never finished checking would be worse
+        than failing closed - found by code-review as an asymmetry between this
+        function's success and failure paths). `output_events` are whatever
+        output-stage guardrail events the relay managed to collect before the run (or
+        the relay itself) failed - always logged, never silently discarded, so a PII
+        mask that already fired on chunks actually sent to the client before a later
+        failure still gets a `logs.guardrail_events` row. Always raises; never returns.
+        """
+        latency_ms = int((time.monotonic() - started) * 1000)
+        usage = usage_collector.total_usage()
+        await log_run(
+            run_id=run_id,
+            company_id=company_id,
+            trace_id=trace_id,
+            status="error",
+            source=source,
+            agent_version_id=agent_version_id,
+            deployment_id=deployment_id,
+            agent_name=agent_name,
+            model=model_name,
+            input_text=input_outcome.text,
+            conversation_id=resolved_conversation_id,
+            usage=usage,
+            latency_ms=latency_ms,
+            error=str(exc),
+        )
+        await log_guardrail_events(company_id, run_id=run_id, events=[*input_outcome.events, *output_events])
+        await log_run_steps(
+            company_id,
+            run_id=run_id,
+            steps=[
+                *guardrail_run_steps(input_outcome.events, "guardrail_input"),
+                *step_collector.steps,
+                *guardrail_run_steps(output_events, "guardrail_output"),
+            ],
+        )
+        # Surfaced to run_deployment_agent's quota reconciliation below - a run that burned
+        # one or more real LLM calls before failing (e.g. a late tool-call error) must still
+        # count that spend against the deployment's daily quota, not be refunded in full as
+        # if nothing ran at all.
+        #
+        # Normalized to RuntimeError (unless it already is one, e.g. the explicit
+        # non-SUCCESS-status raise above, or a fake-agent test raising RuntimeError
+        # directly - both must keep their original message so existing callers/tests that
+        # match on it still see it) so that callers can distinguish "the live run itself
+        # failed" from a bug in the surrounding gateway code (which raises some other
+        # exception type from outside this try block and is never caught/normalized here).
+        if isinstance(exc, RuntimeError):
+            exc.partial_usage = usage
+            raise exc
+        wrapped = RuntimeError(str(exc))
+        wrapped.partial_usage = usage
+        raise wrapped from exc
+
     run_timeout = _effective_run_timeout(agent_def, get_settings())
     try:
         try:
@@ -684,54 +736,18 @@ async def _execute_agent_run_body(
                 raw_handler.done_event.set()
                 raw_handler.queue.put_nowait(StreamingEventMessage(data=None))
     except Exception as exc:
-        latency_ms = int((time.monotonic() - started) * 1000)
-        usage = usage_collector.total_usage()
+        relay_output_events: list[CheckEvent] = []
         if relay_task is not None:
-            # Best-effort drain so the task doesn't leak - this run already failed, its
-            # result is never used.
+            # The relay may well have completed normally despite agent.run() itself
+            # failing later (e.g. several chunks were already masked and streamed to
+            # the client before a late tool-call error) - its events must still be
+            # logged, not discarded, or a guardrail action the client actually received
+            # silently never shows up in logs.guardrail_events (found by code-review).
             try:
-                await relay_task
+                _drained_text, relay_output_events = await relay_task
             except Exception:
                 logger.exception("guardrail-masked output relay task failed during run-failure cleanup")
-        await log_run(
-            run_id=run_id,
-            company_id=company_id,
-            trace_id=trace_id,
-            status="error",
-            source=source,
-            agent_version_id=agent_version_id,
-            deployment_id=deployment_id,
-            agent_name=agent_name,
-            model=model_name,
-            input_text=input_outcome.text,
-            conversation_id=resolved_conversation_id,
-            usage=usage,
-            latency_ms=latency_ms,
-            error=str(exc),
-        )
-        await log_guardrail_events(company_id, run_id=run_id, events=input_outcome.events)
-        await log_run_steps(
-            company_id,
-            run_id=run_id,
-            steps=[*guardrail_run_steps(input_outcome.events, "guardrail_input"), *step_collector.steps],
-        )
-        # Surfaced to run_deployment_agent's quota reconciliation below - a run that burned
-        # one or more real LLM calls before failing (e.g. a late tool-call error) must still
-        # count that spend against the deployment's daily quota, not be refunded in full as
-        # if nothing ran at all.
-        #
-        # Normalized to RuntimeError (unless it already is one, e.g. the explicit
-        # non-SUCCESS-status raise above, or a fake-agent test raising RuntimeError
-        # directly - both must keep their original message so existing callers/tests that
-        # match on it still see it) so that callers can distinguish "the live run itself
-        # failed" from a bug in the surrounding gateway code (which raises some other
-        # exception type from outside this try block and is never caught/normalized here).
-        if isinstance(exc, RuntimeError):
-            exc.partial_usage = usage
-            raise
-        wrapped = RuntimeError(str(exc))
-        wrapped.partial_usage = usage
-        raise wrapped from exc
+        await _fail_run(exc, relay_output_events)
 
     if relay_task is not None:
         # Already checked+masked per chunk while streaming live (see
@@ -740,7 +756,16 @@ async def _execute_agent_run_body(
         # client actually received (a pattern split across a chunk boundary that each
         # individual chunk-level check missed), which would make the logged/returned
         # text diverge from what was actually streamed.
-        final_output, output_events = await relay_task
+        try:
+            final_output, output_events = await relay_task
+        except Exception as exc:
+            # The agent run itself succeeded - a bug in the relay/masking pipeline
+            # itself must not silently fall back to serving content that was never
+            # safely confirmed as checked (found by code-review: this used to be
+            # unguarded, so a relay bug would propagate as a bare, unlogged exception
+            # instead of the same fail-closed handling every other failure gets).
+            await _fail_run(exc, [])
+            raise  # pragma: no cover - _fail_run always raises; keeps this branch's type complete
         output_blocked = False  # structurally guaranteed - see output_checks_are_chunk_streamable
     else:
         output = result.output.get("content") if result.output else None

@@ -34,6 +34,33 @@ def extract_answer_delta(event_data: Any) -> str | None:
     return content if isinstance(content, str) and content else None
 
 
+def with_answer_delta(event_data: Any, content: str) -> Any:
+    """Rebuilds `event_data` with its answer-delta text replaced by `content` - the
+    write-side mirror of `extract_answer_delta`'s read above, same nested
+    `{"choices": [{"delta": {"content": ..., "step": "answer"}}]}` shape, kept in this
+    module per its own "written once here instead of duplicated per app" rule (an
+    earlier version of this lived in `app.services.runtime`, re-deriving the same
+    `choices[0]["delta"]` navigation this file already encodes - found by code-review).
+    Used by `runtime.py`'s `_relay_masked_output_stream` to forward a masked chunk in the
+    same wire shape the real one arrived in.
+
+    Only ever called right after `extract_answer_delta(event_data)` returned non-`None`
+    for this same `event_data`, which already guarantees `choices` is non-empty - the
+    `if not choices` guard below is purely defensive, in case a future change to
+    `extract_answer_delta` ever loosens that guarantee without this function being
+    revisited too (found by code-review: an earlier version had no such guard and would
+    raise `IndexError` on an empty `choices` list)."""
+    if not isinstance(event_data, dict):
+        return event_data
+    choices = list(event_data.get("choices") or [])
+    if not choices:
+        return event_data
+    delta = dict((choices[0] or {}).get("delta") or {})
+    delta["content"] = content
+    choices[0] = {**(choices[0] or {}), "delta": delta}
+    return {**event_data, "choices": choices}
+
+
 def extract_tool_step_event(event_data: Any) -> dict[str, Any] | None:
     """Only ever returns something when the run was started with `StreamingMode.ALL`
     (see `execute_agent_run`'s `stream_mode` docstring) - `StreamingMode.FINAL`

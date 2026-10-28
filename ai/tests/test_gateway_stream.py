@@ -410,3 +410,88 @@ async def test_stream_emits_approval_required_before_final(
     final_events = [e for e in events if e[0] == "final"]
     assert len(final_events) == 1
     assert events.index(approval_events[0]) < events.index(final_events[0])
+
+
+class _FakeStreamingAgentPushingApprovalRequired:
+    """Like `_FakeAgentPushingApprovalRequired` above, but also streams real answer
+    chunks *before* pushing the approval marker - onto whatever handler is actually in
+    `config.callbacks`, which is `raw_handler` (not the outer `stream_handler`) whenever
+    an output guardrail is configured and chunk-streamable (see runtime.py's
+    `tool_stream_handler`). Exercises the exact combination a real code-review finding
+    was about: a write tool's `approval_required` push used to bypass the masking relay
+    entirely by going straight to the outer `stream_handler`, letting it reach the client
+    out of the real production order relative to answer chunks still working their way
+    through `_relay_masked_output_stream`'s extra async hop."""
+
+    reply = "fake reply"
+
+    def __init__(self, **kwargs) -> None:
+        self.memory = kwargs.get("memory")
+
+    def run(self, input_data: dict, config=None, **_kwargs) -> SimpleNamespace:
+        if config is not None:
+            for callback in config.callbacks:
+                if not hasattr(callback, "on_node_execute_stream"):
+                    continue
+                for chunk_text in ("fake ", "reply"):
+                    stream_chunk = StreamChunk(
+                        choices=[
+                            StreamChunkChoice(
+                                delta=StreamChunkChoiceDelta(content=chunk_text, source="test-agent", step="answer")
+                            )
+                        ]
+                    )
+                    callback.on_node_execute_stream({}, chunk=stream_chunk.model_dump(), run_id=config.run_id)
+                callback.on_node_execute_stream(
+                    {},
+                    chunk={
+                        "dynamiq_console_event": "approval_required",
+                        "approval_id": "approval-1",
+                        "tool": "create-order",
+                    },
+                    run_id=config.run_id,
+                )
+        return SimpleNamespace(output={"content": type(self).reply}, status=RunnableStatus.SUCCESS)
+
+
+@pytest.fixture
+def fake_streaming_agent_pushing_approval_required(monkeypatch):
+    import dynamiq.nodes.agents
+
+    monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _FakeStreamingAgentPushingApprovalRequired)
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
+
+
+@requires_postgres
+async def test_stream_preserves_event_order_with_output_guardrail_and_approval_together(
+    fake_streaming_agent_pushing_approval_required, gateway_async_client, company_ids, make_company,
+    resolvable_agent_version, make_deployment, make_api_key
+) -> None:
+    company_id = company_ids()
+    make_company(company_id)
+    # on_error must be explicit here: left unset, it defaults to "block" for a gateway
+    # run (PRD §6.4's on_detector_error split, source="api") - the gateway equivalent of
+    # test_playground_run.py's chunk-safe streaming test, which gets away with leaving
+    # it unset only because Playground's default is "flag" instead.
+    guardrails = {
+        "output": [{"check_type": "regex_blocklist", "action": "mask", "on_error": "flag", "pattern": r"reply"}]
+    }
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    deployment_id, slug = make_deployment(company_id, version_id)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/stream", json={"input": "hi"}, headers={"Authorization": f"Bearer {full_key}"}
+    )
+
+    assert resp.status_code == 200
+    events = _parse_sse_events(resp.text)
+    token_events = [e for e in events if e[0] == "token"]
+    approval_events = [e for e in events if e[0] == "approval_required"]
+
+    assert "".join(event[1]["delta"] for event in token_events) == "fake [REDACTED]"
+    assert len(approval_events) == 1
+    # The fake agent above pushes the approval marker *after* both answer chunks, in
+    # real production order - it must still land after them here, not race ahead because
+    # it bypassed per-chunk masking (see this test's class docstring).
+    assert events.index(approval_events[0]) > max(events.index(event) for event in token_events)

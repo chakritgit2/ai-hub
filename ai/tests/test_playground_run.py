@@ -11,6 +11,8 @@ from dynamiq.nodes.agents.base import StreamChunk, StreamChunkChoice, StreamChun
 from dynamiq.runnables.base import RunnableStatus
 from fastapi.testclient import TestClient
 
+from app.core.db import get_company_session
+from app.db.tables import guardrail_events_table
 from app.main_runtime import app as runtime_app
 from app.main_runtime import require_runtime_auth
 from app.services import compiler
@@ -371,6 +373,117 @@ async def test_execute_agent_run_streams_live_with_masking_when_output_guardrail
     assert "".join(deltas) == "fake [REDACTED]"
     assert result["output"] == "fake [REDACTED]"
     assert any(event.check == "regex_blocklist" and event.action == "mask" for event in result["guardrail_events"])
+
+
+@requires_postgres
+async def test_execute_agent_run_logs_output_guardrail_events_even_when_the_run_later_fails(
+    company_ids, resolvable_agent_version, monkeypatch
+) -> None:
+    """A real code-review finding: output-stage guardrail events from chunks that were
+    already checked+masked+streamed to the client must still be logged even when the
+    overall run fails afterwards (e.g. a late tool-call error) - before this fix, the
+    masking relay's result was drained but discarded in the failure path, silently
+    losing the audit trail (PRD §6.4) for a mask that the client already received."""
+    import dynamiq.nodes.agents
+
+    class _FailsAfterStreaming:
+        def __init__(self, **kwargs) -> None:
+            self.memory = kwargs.get("memory")
+
+        def run(self, input_data: dict, config=None, **_kwargs) -> SimpleNamespace:
+            if config is not None:
+                for callback in config.callbacks:
+                    if not hasattr(callback, "on_node_execute_stream"):
+                        continue
+                    for chunk_text in ("fake ", "reply"):
+                        stream_chunk = StreamChunk(
+                            choices=[
+                                StreamChunkChoice(
+                                    delta=StreamChunkChoiceDelta(
+                                        content=chunk_text, source="test-agent", step="answer"
+                                    )
+                                )
+                            ]
+                        )
+                        callback.on_node_execute_stream({}, chunk=stream_chunk.model_dump(), run_id=config.run_id)
+            raise RuntimeError("late tool-call failure")
+
+    monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _FailsAfterStreaming)
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
+
+    company_id = company_ids()
+    guardrails = {"output": [{"check_type": "regex_blocklist", "action": "mask", "pattern": r"reply"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    handler = AsyncStreamingIteratorCallbackHandler(loop=asyncio.get_event_loop())
+
+    with pytest.raises(RuntimeError, match="late tool-call failure"):
+        await run_playground_agent(
+            "hi", agent_version_id=version_id, role="developer", company_id=company_id, stream_handler=handler
+        )
+    await _drain_with_timeout(handler)
+
+    async with get_company_session(company_id) as session:
+        rows = (
+            (
+                await session.execute(
+                    guardrail_events_table.select().where(guardrail_events_table.c.company_id == uuid.UUID(company_id))
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    assert any(row["stage"] == "output" and row["check"] == "regex_blocklist" for row in rows)
+
+
+@requires_postgres
+async def test_execute_agent_run_fails_closed_when_the_masking_relay_itself_fails(
+    fake_streaming_agent, company_ids, resolvable_agent_version, monkeypatch
+) -> None:
+    """A real code-review finding: before this fix, a bug inside the masking relay
+    itself (after the underlying agent run had already succeeded) propagated as a bare,
+    unlogged exception instead of the same fail-closed handling every other failure
+    gets - this proves it's now symmetric with the agent.run()-fails case."""
+    import app.services.runtime as runtime_module
+
+    real_run_checks = runtime_module.run_checks
+
+    async def _boom_on_output_stage(*args, **kwargs):
+        # Only the relay's output-stage call should fail - the input-stage check must
+        # still run for real, or the agent would never even be invoked.
+        if kwargs.get("stage") == "output":
+            raise RuntimeError("simulated relay bug")
+        return await real_run_checks(*args, **kwargs)
+
+    # runtime.py calls `run_checks` via its own `from ... import run_checks` binding,
+    # not `app.services.guardrails.run_checks` - must patch the name as runtime.py
+    # itself looks it up, or this has no effect on `_relay_masked_output_stream`'s call.
+    monkeypatch.setattr(runtime_module, "run_checks", _boom_on_output_stage)
+
+    company_id = company_ids()
+    guardrails = {"output": [{"check_type": "regex_blocklist", "action": "mask", "pattern": r"reply"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    handler = AsyncStreamingIteratorCallbackHandler(loop=asyncio.get_event_loop())
+
+    with pytest.raises(RuntimeError, match="simulated relay bug"):
+        await run_playground_agent(
+            "hi", agent_version_id=version_id, role="developer", company_id=company_id, stream_handler=handler
+        )
+
+    async with get_company_session(company_id) as session:
+        rows = (
+            (
+                await session.execute(
+                    guardrail_events_table.select().where(guardrail_events_table.c.company_id == uuid.UUID(company_id))
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    # The relay itself crashed before producing any output events - must not raise a
+    # second, different exception trying to log, and must not silently succeed either.
+    assert rows == []
 
 
 @requires_postgres

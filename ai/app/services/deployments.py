@@ -6,17 +6,39 @@ app.company_id` + the table's own RLS policy - unlike `console.connections`/
 that `ai_app` can read this table and that RLS correctly isolates by company_id (a
 cross-company id resolves to `None`, same as a nonexistent one).
 
-`resolve_deployment` also implements the PRD §4.4/§4.5 gateway config cache: console-api
-bumps `config_version` on every mutation (update/promote/publish - see
-`DeploymentsController.php`/`AgentsController.php`/`WorkflowsController.php`), so a cache
-hit only needs a cheap `config_version` comparison, not a full row refetch, and a DB error
-during that comparison falls back to the last-known row instead of failing the request
-(the "gateway keeps serving from cached config" brief-failover tolerance). This is an
-in-process cache (per ai-gateway/ai-runtime pod) - no cross-pod invalidation, bounded
-staleness only, same tradeoff the PRD's own "lost notification" sentence accepts."""
+`resolve_deployment` also implements the PRD §4.4/§4.5 gateway config cache: an
+in-process (per ai-gateway/ai-runtime pod) cache keyed by `(company_id, deployment_id)`,
+revalidated against the DB every `_CACHE_TTL_SECONDS`, with a DB error during
+revalidation falling back to the last-known row instead of failing the request (the
+"gateway keeps serving from cached config" brief-failover tolerance). No cross-pod
+invalidation - bounded staleness only, same tradeoff the PRD's own "lost notification"
+sentence accepts.
+
+Every revalidation is serialized per key through `_get_lock` - found by code-review to be
+necessary, not just an efficiency nicety: without it, concurrent callers for the same key
+each independently fetch and then unconditionally overwrite `_cache[key]`, so a slower
+fetch that started before a config change can land *after* a faster one that already
+picked up the change, silently regressing the cached row back to stale data (worse,
+briefly "resurrecting" an already-deleted deployment if its delete raced a read that
+started just before). The lock also collapses what would otherwise be N redundant DB
+round trips (one per concurrent caller) into one.
+
+Revalidation always refetches the full row rather than cheaply comparing `config_version`
+first and only refetching when it changed (console-api still bumps it on every mutation -
+`DeploymentsController.php`/`AgentsController.php`/`WorkflowsController.php` - the column
+just isn't read here any more). Deliberate, re-litigated once already via code-review:
+the two-phase version-check-then-maybe-refetch design pays 2 DB round trips on a cold
+cache or an actual config change (exactly the cases that matter most) and only saves 1 in
+the common "nothing changed" case - and even then it only saves transferring a handful of
+extra columns on an already-open connection, not an extra round trip. Round-trip count
+(what actually dominates latency here) is equal-or-better with a single always-fetch
+query in every case, so that's what this does; `config_version` remains useful as
+console-api's own audit/ordering signal even though this cache no longer reads it."""
+import asyncio
 import time
 import uuid
-from dataclasses import dataclass
+import weakref
+from dataclasses import dataclass, replace
 
 import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
@@ -24,6 +46,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.db import get_company_session
 
 _CACHE_TTL_SECONDS = 5.0
+# Bounds the cache's worst-case memory growth over a long-running pod's lifetime - entries
+# are otherwise only ever removed when a *later* lookup for that exact key discovers the
+# deployment is gone, so a deployment that's deleted (or just stops being queried) and
+# never looked up again would linger forever (found by code-review). Generous on purpose:
+# this project's realistic scale (companies × deployments per company) is nowhere near
+# this number - it exists as a backstop against a pathological case (e.g. a high-churn
+# test tenant), not a tuning knob for normal operation.
+_CACHE_MAX_ENTRIES = 2000
 
 
 @dataclass(frozen=True)
@@ -48,11 +78,60 @@ class DeploymentRow:
 @dataclass
 class _CacheEntry:
     row: DeploymentRow
-    config_version: int
     last_checked: float
+    # Separate from `last_checked` (when this entry was last revalidated against the DB,
+    # used for TTL staleness) - this tracks when it was last actually *read*, updated on
+    # every cache hit too, not just on a real refetch. `_evict_oldest_if_over_capacity`
+    # needs this distinction: a hot deployment revalidated 4.9s ago but read constantly
+    # in between would otherwise look "older" than a deployment fetched once a moment ago
+    # and never read again, and get evicted first - the wrong way around (found by
+    # code-review).
+    last_accessed: float
 
 
 _cache: dict[tuple[str, str], _CacheEntry] = {}
+# One lock per key. Uses a WeakValueDictionary, not a plain dict, so a key's Lock is
+# automatically dropped once nothing holds a reference to it any more (i.e. no caller is
+# currently inside `async with _get_lock(key):` for it) - the safe way to bound this,
+# found by code-review after first shipping this as a plain dict with a comment
+# explaining why *manual* eviction would be unsafe: popping a dict entry while the lock
+# it points to is still held could let a new caller construct a second, independent Lock
+# for the same key and run concurrently with the first, defeating the whole point of
+# locking per key. A `WeakValueDictionary` sidesteps that entirely - it only ever drops
+# an entry when the Lock object itself is already unreferenced and garbage, so a second
+# Lock for the same key can never coexist with a still-live first one.
+_locks: "weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _get_lock(key: tuple[str, str]) -> asyncio.Lock:
+    lock = _locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[key] = lock
+    return lock
+
+
+def _copy_for_caller(row: DeploymentRow) -> DeploymentRow:
+    """Defensive copy of `row`'s two mutable fields before handing it to a caller.
+    `@dataclass(frozen=True)` only blocks reassigning `DeploymentRow`'s own top-level
+    fields - it does not deep-freeze `allowed_origins`/`guardrail_overrides`. Before this
+    cache existed, every call built a brand new `DeploymentRow` from a fresh query, so
+    even a buggy in-place mutation by some future caller (e.g. `deployment.
+    allowed_origins.append(...)`) would only ever corrupt that one call's throwaway
+    object. Now the exact same row instance would otherwise be shared by every caller
+    within the cache's TTL window - returning a copy here restores the old "every caller
+    gets its own object" guarantee (found by code-review; no current caller actually
+    mutates these fields, but nothing stops a future one from doing so by mistake)."""
+    return replace(
+        row, allowed_origins=list(row.allowed_origins), guardrail_overrides=dict(row.guardrail_overrides)
+    )
+
+
+def _evict_oldest_if_over_capacity() -> None:
+    if len(_cache) <= _CACHE_MAX_ENTRIES:
+        return
+    oldest_key = min(_cache, key=lambda key: _cache[key].last_accessed)
+    _cache.pop(oldest_key, None)
 
 
 async def resolve_deployment_id_by_slug(company_id: str, slug: str) -> str | None:
@@ -70,24 +149,13 @@ async def resolve_deployment_id_by_slug(company_id: str, slug: str) -> str | Non
     return str(row[0]) if row is not None else None
 
 
-async def _fetch_config_version(company_id: str, deployment_id: str) -> int | None:
-    async with get_company_session(company_id) as session:
-        result = await session.execute(
-            sa.text("SELECT config_version FROM console.deployments WHERE id = :id AND company_id = :company_id"),
-            {"id": uuid.UUID(deployment_id), "company_id": uuid.UUID(company_id)},
-        )
-        row = result.one_or_none()
-
-    return row[0] if row is not None else None
-
-
-async def _fetch_deployment_row(company_id: str, deployment_id: str) -> tuple[DeploymentRow, int] | None:
+async def _fetch_deployment_row(company_id: str, deployment_id: str) -> DeploymentRow | None:
     async with get_company_session(company_id) as session:
         result = await session.execute(
             sa.text(
                 "SELECT id, agent_version_id, workflow_version_id, rate_limit_per_min, daily_token_limit, "
                 "daily_cost_limit_usd, allowed_origins, guardrail_overrides, output_mode, allow_write_tools, "
-                "conversation_ttl_days, enabled, config_version "
+                "conversation_ttl_days, enabled "
                 "FROM console.deployments WHERE id = :id AND company_id = :company_id"
             ),
             {"id": uuid.UUID(deployment_id), "company_id": uuid.UUID(company_id)},
@@ -97,7 +165,7 @@ async def _fetch_deployment_row(company_id: str, deployment_id: str) -> tuple[De
     if row is None:
         return None
 
-    deployment = DeploymentRow(
+    return DeploymentRow(
         id=str(row["id"]),
         agent_version_id=str(row["agent_version_id"]) if row["agent_version_id"] is not None else None,
         workflow_version_id=str(row["workflow_version_id"]) if row["workflow_version_id"] is not None else None,
@@ -111,49 +179,48 @@ async def _fetch_deployment_row(company_id: str, deployment_id: str) -> tuple[De
         conversation_ttl_days=row["conversation_ttl_days"],
         enabled=row["enabled"],
     )
-    return deployment, row["config_version"]
+
+
+def _is_fresh(entry: _CacheEntry | None) -> bool:
+    return entry is not None and (time.monotonic() - entry.last_checked) < _CACHE_TTL_SECONDS
 
 
 async def resolve_deployment(company_id: str, deployment_id: str) -> DeploymentRow | None:
     key = (company_id, deployment_id)
-    now = time.monotonic()
     cached = _cache.get(key)
+    if _is_fresh(cached):
+        cached.last_accessed = time.monotonic()
+        return _copy_for_caller(cached.row)
 
-    if cached is not None and (now - cached.last_checked) < _CACHE_TTL_SECONDS:
-        return cached.row
+    async with _get_lock(key):
+        # Re-check after acquiring the lock - another coroutine may have already
+        # refreshed this key while we were waiting for it (the thundering-herd case),
+        # in which case there's nothing left to do.
+        cached = _cache.get(key)
+        if _is_fresh(cached):
+            cached.last_accessed = time.monotonic()
+            return _copy_for_caller(cached.row)
 
-    try:
-        current_version = await _fetch_config_version(company_id, deployment_id)
-    except SQLAlchemyError:
-        if cached is not None:
-            # Also push last_checked forward, not just serve the stale row - otherwise a
-            # sustained outage (not just a "brief" one) makes every single request retry
-            # the DB immediately again instead of backing off for another TTL window,
-            # turning the cache into a retry storm against an already-struggling DB.
-            cached.last_checked = now
-            return cached.row
-        raise
+        try:
+            row = await _fetch_deployment_row(company_id, deployment_id)
+        except SQLAlchemyError:
+            if cached is not None:
+                # Also push last_checked forward, not just serve the stale row -
+                # otherwise a sustained outage (not just a "brief" one) makes every
+                # single request retry the DB immediately again instead of backing off
+                # for another TTL window, turning the cache into a retry storm against
+                # an already-struggling DB.
+                now = time.monotonic()
+                cached.last_checked = now
+                cached.last_accessed = now
+                return _copy_for_caller(cached.row)
+            raise
 
-    if current_version is None:
-        _cache.pop(key, None)
-        return None
+        if row is None:
+            _cache.pop(key, None)
+            return None
 
-    if cached is not None and cached.config_version == current_version:
-        cached.last_checked = now
-        return cached.row
-
-    try:
-        fetched = await _fetch_deployment_row(company_id, deployment_id)
-    except SQLAlchemyError:
-        if cached is not None:
-            cached.last_checked = now  # same backoff reasoning as above
-            return cached.row
-        raise
-
-    if fetched is None:
-        _cache.pop(key, None)
-        return None
-
-    row, version = fetched
-    _cache[key] = _CacheEntry(row=row, config_version=version, last_checked=now)
-    return row
+        now = time.monotonic()
+        _cache[key] = _CacheEntry(row=row, last_checked=now, last_accessed=now)
+        _evict_oldest_if_over_capacity()
+        return _copy_for_caller(row)
