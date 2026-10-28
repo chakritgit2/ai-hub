@@ -7,7 +7,7 @@
 		%sveltekit.head%
 		<style>
 			/* Covers the window where root +layout.ts's load() blocks on refreshCurrentUser()
-			   (see its comment) - nothing mounts into %sveltekit.body% until that resolves, so
+			   (see its comment) - nothing mounts into the page below until that resolves, so
 			   without this the page is a blank white flash on every hard reload. Inlined here
 			   (not app.css) so it paints before the JS bundle, and hardcoded rather than reading
 			   the --color-* custom properties since those are only defined once app.css loads. */
