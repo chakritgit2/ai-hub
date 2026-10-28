@@ -5,6 +5,31 @@
 		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		%sveltekit.head%
+		<style>
+			/* Covers the window where root +layout.ts's load() blocks on refreshCurrentUser()
+			   (see its comment) - nothing mounts into %sveltekit.body% until that resolves, so
+			   without this the page is a blank white flash on every hard reload. Inlined here
+			   (not app.css) so it paints before the JS bundle, and hardcoded rather than reading
+			   the --color-* custom properties since those are only defined once app.css loads. */
+			#app-loading {
+				position: fixed;
+				inset: 0;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: #f4f3ef;
+			}
+			#app-loading svg {
+				width: 2rem;
+				height: 2rem;
+				animation: app-loading-spin 0.8s linear infinite;
+			}
+			@keyframes app-loading-spin {
+				to {
+					transform: rotate(360deg);
+				}
+			}
+		</style>
 	</head>
 	<!-- "off", not "hover"/"tap": every tenant-pooled list page (Agents, Workflows,
 	Datasets, API Keys, Approvals, Knowledge Bases, Runs, Deployments, Evaluation)
@@ -16,5 +41,13 @@
 	resulting 404 gets cached and served instead of a fresh, correctly-scoped fetch. -->
 	<body data-sveltekit-preload-data="off" class="bg-bg text-neutral-900 font-sans">
 		<div style="display: contents">%sveltekit.body%</div>
+		<!-- Removed by root +layout.svelte's onMount once the app actually mounts - see the
+		     style block above for why this exists. -->
+		<div id="app-loading" aria-hidden="true">
+			<svg viewBox="0 0 24 24" fill="none" stroke="#0e6b66" stroke-width="2.5">
+				<circle cx="12" cy="12" r="9" stroke-opacity="0.25" />
+				<path d="M21 12a9 9 0 0 0-9-9" stroke-linecap="round" />
+			</svg>
+		</div>
 	</body>
 </html>

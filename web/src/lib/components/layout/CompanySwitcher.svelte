@@ -1,5 +1,11 @@
 <script lang="ts">
-	import { companyId, tenantId, sampleCompanies, type CompanyOption } from '$lib/stores/company';
+	import {
+		companyId,
+		tenantId,
+		sampleCompanies,
+		syncCompanyFromUser,
+		type CompanyOption
+	} from '$lib/stores/company';
 	import { currentUser } from '$lib/stores/auth';
 
 	// Real memberships from /me once logged in (getMe() now resolves company/tenant
@@ -28,27 +34,14 @@
 		)
 	);
 
-	// Keeps the tenant select in sync with whichever company is actually active - covers
-	// both the initial load and company_id being changed from outside this component
-	// (e.g. restored from localStorage on a page that isn't this one). Written into the
-	// shared tenantId store (not just local state) so other pages - so far just the
-	// Agents list's tenant-pooled view - know which tenant is selected too.
-	//
-	// Gated on $currentUser being loaded: before /me resolves, `options` is the
-	// placeholder `sampleCompanies` (no real tenant_id values at all), so `current` is
-	// always undefined for a real persisted $companyId and this fell into the `else if`
-	// branch, overwriting a perfectly valid persisted $tenantId with '' every hard
-	// page load - the company_id/tenant_id race (confirmed live: a mutating request fired
-	// in that window used the wrong id and 404'd). Once $currentUser is null there is no
-	// real membership data to correct against yet, so there is nothing to do here.
+	// Keeps companyId/tenantId pointed at a company the logged-in user actually belongs
+	// to. The root +layout.ts load already runs this once (via refreshCurrentUser) before
+	// any page's first fetch, which is what actually closes the company_id/tenant_id race
+	// (a stale id 404s against console-api) - this effect just keeps it correct live, e.g.
+	// if $currentUser changes without a full page reload. Gated on $currentUser being
+	// loaded: before /me resolves, there's no real membership data to correct against yet.
 	$effect(() => {
-		if (!$currentUser) return;
-		const current = options.find((c) => c.id === $companyId);
-		if (current && current.tenant_id !== $tenantId) {
-			tenantId.set(current.tenant_id ?? '');
-		} else if (!current && tenantOptions.length > 0 && !tenantOptions.some((t) => t.id === $tenantId)) {
-			tenantId.set(tenantOptions[0].id);
-		}
+		if ($currentUser) syncCompanyFromUser($currentUser.companies);
 	});
 
 	// Deliberately no separate Company control - picking a tenant jumps straight to its
@@ -61,24 +54,6 @@
 		const first = options.find((c) => (c.tenant_id ?? '') === newTenantId);
 		if (first) companyId.set(first.id);
 	}
-
-	// $companyId can be left over from the pre-login sampleCompanies placeholder (or an old
-	// company from a previous user) — neither is a real console.companies.id, so every
-	// X-Company-Id-scoped request 404s until it's corrected. Keep it pointed at a company
-	// the logged-in user actually belongs to as soon as we know what those are.
-	//
-	// Same $currentUser gate as the tenantId effect above, for the same reason: before
-	// /me resolves, `options` is the sampleCompanies placeholder, so a real persisted
-	// $companyId (e.g. restored from localStorage) never matches any of its ids and this
-	// clobbered it with the placeholder's first id every hard page load - the brief
-	// window any request fired in it would 404 with the wrong company. Nothing to correct
-	// against until $currentUser actually loads.
-	$effect(() => {
-		if (!$currentUser) return;
-		if (options.length > 0 && !options.some((c) => c.id === $companyId)) {
-			companyId.set(options[0].id);
-		}
-	});
 </script>
 
 <label class="flex items-center gap-2 text-sm">

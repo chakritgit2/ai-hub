@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { browser } from '$app/environment';
 
 const STORAGE_KEY = 'dynamiq-console.company-id';
@@ -79,4 +79,25 @@ export function companyById(id: string): CompanyOption | undefined {
 export function withCompany<T>(id: string, fn: () => Promise<T>): Promise<T> {
 	companyId.set(id);
 	return fn();
+}
+
+/**
+ * Points `companyId`/`tenantId` at a company the user actually belongs to, called right
+ * after `getMe()` resolves (see stores/auth.ts's refreshCurrentUser and
+ * CompanySwitcher.svelte). `companyId` can be left over from the pre-login
+ * `sampleCompanies` placeholder or a previous user's company - neither is a real
+ * console.companies.id, so every X-Company-Id-scoped request 404s until this runs. Called
+ * from the root `+layout.ts` load (which SvelteKit always resolves before any child
+ * page's load()/onMount() fires) so every page sees a corrected id from its very first
+ * fetch, instead of each page racing it independently.
+ */
+export function syncCompanyFromUser(companies: Array<{ company_id: string; tenant_id: string }>): void {
+	if (companies.length === 0) return;
+	const current = companies.find((c) => c.company_id === get(companyId));
+	if (current) {
+		if (current.tenant_id !== get(tenantId)) tenantId.set(current.tenant_id);
+		return;
+	}
+	companyId.set(companies[0].company_id);
+	tenantId.set(companies[0].tenant_id);
 }

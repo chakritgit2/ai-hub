@@ -5,6 +5,7 @@ import { getMe } from "$lib/api/console";
 import { ApiError } from "$lib/api/client";
 import { ssoLoginUrl } from "$lib/config/sso";
 import { authToken } from "$lib/stores/token";
+import { syncCompanyFromUser } from "$lib/stores/company";
 
 export { authToken };
 
@@ -19,7 +20,11 @@ export const currentUser = writable<Me | null>(null);
 export async function refreshCurrentUser(): Promise<void> {
   if (!browser) return;
   try {
-    currentUser.set(await getMe());
+    const user = await getMe();
+    currentUser.set(user);
+    // Must run before the caller proceeds (see root +layout.ts's load()) - this is what
+    // closes the company_id race, not just a UI nicety.
+    syncCompanyFromUser(user.companies);
   } catch (err) {
     // Only a real 401 means the session is gone — a network blip or 5xx
     // shouldn't wipe out a user we know is still logged in.

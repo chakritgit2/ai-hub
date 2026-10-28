@@ -6,15 +6,16 @@
 	import Header from '$lib/components/layout/Header.svelte';
 	import CompanySwitcher from '$lib/components/layout/CompanySwitcher.svelte';
 	import { headerContent } from '$lib/stores/header';
-	import { authToken } from '$lib/stores/token';
-	import { refreshCurrentUser } from '$lib/stores/auth';
 
+	// Session restore on a hard reload now happens in +layout.ts's load() instead of here -
+	// SvelteKit resolves that before this component (or any child route) ever mounts, which
+	// is what closes the company_id race (see +layout.ts).
 	let { children }: { children: Snippet } = $props();
 
-	// Restores the session on a hard reload — /dev-login is the only place that sets
-	// authToken directly, this just re-fetches /me for whatever it already has stored.
+	// This component only mounts once that load() resolves, so "we've mounted" is exactly
+	// the signal the static #app-loading spinner in app.html is waiting for.
 	onMount(() => {
-		if ($authToken) refreshCurrentUser();
+		document.getElementById('app-loading')?.remove();
 	});
 </script>
 
