@@ -348,6 +348,32 @@ async def test_execute_agent_run_does_not_stream_when_output_guardrails_present(
 
 
 @requires_postgres
+async def test_execute_agent_run_streams_live_with_masking_when_output_guardrail_is_chunk_safe(
+    fake_streaming_agent, company_ids, resolvable_agent_version
+) -> None:
+    """The gateway-config-cache-adjacent fix: a chunk-safe, non-block output guardrail
+    (mask/flag, not valid_json/valid_choices) must no longer fall back to the old
+    "buffer everything, send one chunk" behavior - it should stream live with each chunk
+    masked inline (PRD §6.4 "every chunk passes fast checks... before sending")."""
+    company_id = company_ids()
+    guardrails = {"output": [{"check_type": "regex_blocklist", "action": "mask", "pattern": r"reply"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    handler = AsyncStreamingIteratorCallbackHandler(loop=asyncio.get_event_loop())
+
+    result = await run_playground_agent(
+        "hi", agent_version_id=version_id, role="developer", company_id=company_id, stream_handler=handler
+    )
+    deltas = await _drain_with_timeout(handler)
+
+    assert result["streamed_live"] is True
+    # fake_streaming_agent pushes "fake " then "reply" as two separate chunks - masking
+    # must apply per chunk, independently, not just once at the end.
+    assert "".join(deltas) == "fake [REDACTED]"
+    assert result["output"] == "fake [REDACTED]"
+    assert any(event.check == "regex_blocklist" and event.action == "mask" for event in result["guardrail_events"])
+
+
+@requires_postgres
 async def test_execute_agent_run_streamed_live_false_when_input_blocked(
     fake_streaming_agent, company_ids, resolvable_agent_version
 ) -> None:

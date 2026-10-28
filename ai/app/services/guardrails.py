@@ -42,6 +42,39 @@ _PII_PATTERNS: dict[str, re.Pattern] = {
     "account_number": re.compile(r"\b\d{10,15}\b"),
 }
 
+# Check types whose result against one arrived-so-far text chunk means the same thing it
+# would against the full text (PRD §6.4 "every chunk passes fast checks... before
+# sending"). Excluded:
+# - `valid_json`/`valid_choices`: a partial chunk is never complete JSON or a full choice
+#   string, so running them chunk-by-chunk would reject every chunk up until the very
+#   last one - meaningless before the output is actually complete.
+# - `max_length`: it's a property of the *complete* output, not of any one small delta -
+#   `len(delta) > max_length` almost never trips against a handful of streamed characters
+#   even when the full assembled answer badly exceeds the limit, which would silently
+#   defeat the check rather than just run it less precisely (found by code-review before
+#   this was called done).
+_CHUNK_SAFE_CHECK_TYPES: frozenset[str] = frozenset({"regex_blocklist", "pii"})
+
+
+def output_checks_are_chunk_streamable(checks: list["GuardrailCheckSpec"]) -> bool:
+    """Whether every check in `checks` can run inline against one streamed chunk at a
+    time without needing to un-send an already-emitted token (see runtime.py's
+    `streamed_live`). Both `action == "block"` and `on_error == "block"` are excluded
+    regardless of check_type - a chunk already sent to the client can't be recalled, so a
+    mid-stream block needs its own abort-the-stream handling, not built yet (today's
+    conservative buffered fallback - wait for the full output, check once, send one
+    chunk - still applies whenever any check could trigger one). `on_error` must be
+    checked too, not just `action`: a check configured `action="mask"`/`"flag"` but
+    `on_error="block"` (an independent field - GuardrailCheckSpec allows this exact
+    combination) still produces `blocked=True` from `run_checks` if `_run_one` itself
+    raises for some chunk, which `_relay_masked_output_stream` has no way to safely
+    handle mid-stream (found by code-review before this was called done - an earlier
+    version of this function only checked `action`)."""
+    return all(
+        check.check_type in _CHUNK_SAFE_CHECK_TYPES and check.action != "block" and check.on_error != "block"
+        for check in checks
+    )
+
 
 @dataclass(frozen=True)
 class CheckEvent:

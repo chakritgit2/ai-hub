@@ -3,7 +3,7 @@ import uuid
 from app.core.db import get_company_session
 from app.db.tables import guardrail_events_table
 from app.services.agent_spec import GuardrailCheckSpec
-from app.services.guardrails import CheckEvent, log_guardrail_events, run_checks
+from app.services.guardrails import CheckEvent, log_guardrail_events, output_checks_are_chunk_streamable, run_checks
 
 from .markers import requires_postgres
 
@@ -11,6 +11,47 @@ from .markers import requires_postgres
 def _check(**kwargs) -> GuardrailCheckSpec:
     defaults = {"check_type": "max_length", "action": "block", "max_length": 10}
     return GuardrailCheckSpec(**{**defaults, **kwargs})
+
+
+def test_output_checks_are_chunk_streamable_true_for_mask_regex_and_pii():
+    checks = [_check(check_type="regex_blocklist", action="mask", pattern=r"x", max_length=None), _check(check_type="pii", action="flag", max_length=None)]
+    assert output_checks_are_chunk_streamable(checks) is True
+
+
+def test_output_checks_are_chunk_streamable_false_when_any_check_blocks():
+    checks = [_check(check_type="regex_blocklist", action="block", pattern=r"x", max_length=None)]
+    assert output_checks_are_chunk_streamable(checks) is False
+
+
+def test_output_checks_are_chunk_streamable_false_when_on_error_blocks():
+    """A real code-review finding: `action="mask"`/`"flag"` alone doesn't guarantee
+    `run_checks` can never return `blocked=True` - `on_error="block"` is an independent
+    field that does exactly that if the check itself raises. Must be excluded too, not
+    just a blocking `action`."""
+    checks = [_check(check_type="pii", action="mask", on_error="block", max_length=None)]
+    assert output_checks_are_chunk_streamable(checks) is False
+
+
+def test_output_checks_are_chunk_streamable_false_for_max_length():
+    """Another real code-review finding: max_length is a property of the complete
+    output, not of one small streamed delta - chunk-by-chunk checking would silently
+    never trigger it for a realistically-sized limit."""
+    checks = [_check(check_type="max_length", action="flag", max_length=500)]
+    assert output_checks_are_chunk_streamable(checks) is False
+
+
+def test_output_checks_are_chunk_streamable_false_for_valid_json_and_valid_choices():
+    assert output_checks_are_chunk_streamable([_check(check_type="valid_json", action="flag", max_length=None)]) is False
+    assert (
+        output_checks_are_chunk_streamable(
+            [_check(check_type="valid_choices", action="flag", max_length=None, choices=["a", "b"])]
+        )
+        is False
+    )
+
+
+def test_output_checks_are_chunk_streamable_true_for_empty_list():
+    assert output_checks_are_chunk_streamable([]) is True
 
 
 async def test_max_length_triggers_when_text_too_long():
