@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 import uuid
 from types import SimpleNamespace
 
@@ -9,14 +10,16 @@ import pytest
 from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler, BaseStreamingCallbackHandler
 from dynamiq.nodes.agents.base import StreamChunk, StreamChunkChoice, StreamChunkChoiceDelta
 from dynamiq.runnables.base import RunnableStatus
+from dynamiq.types.cancellation import CancellationToken
 from fastapi.testclient import TestClient
 
 from app.core.db import get_company_session
-from app.db.tables import guardrail_events_table
+from app.db.tables import guardrail_events_table, runs_table
 from app.main_runtime import app as runtime_app
 from app.main_runtime import require_runtime_auth
-from app.services import compiler
-from app.services.runtime import run_deployment_agent, run_playground_agent
+from app.services import compiler, run_registry
+from app.services.agent_spec import GuardrailsSpec
+from app.services.runtime import execute_agent_run, resolve_and_compile, run_deployment_agent, run_playground_agent
 from app.services.streaming_events import extract_answer_delta as _extract_answer_delta
 
 from .markers import fake_runtime_claims, requires_openai_key, requires_postgres
@@ -134,6 +137,33 @@ def fake_agent_pushing_approval_required(monkeypatch):
     import dynamiq.nodes.agents
 
     monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _FakeAgentPushingApprovalRequired)
+    monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
+
+
+class _FakeCancellableAgent:
+    """Polls `config.cancellation` the same way a real dynamiq node does via
+    `check_cancellation` (dynamiq.types.cancellation, PRD Goal #6) - lets a test prove
+    `POST /ai/v1/runs/{id}/cancel` (app.services.run_registry) actually reaches a run
+    that's genuinely still "in progress" inside `asyncio.to_thread(agent.run, ...)`, not
+    just one that already returned."""
+
+    def __init__(self, **kwargs) -> None:
+        self.memory = kwargs.get("memory")
+
+    def run(self, input_data: dict, config=None, **_kwargs) -> SimpleNamespace:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if config is not None and config.cancellation.is_canceled:
+                return SimpleNamespace(output=None, status=RunnableStatus.CANCELED)
+            time.sleep(0.01)
+        return SimpleNamespace(output={"content": "fake reply"}, status=RunnableStatus.SUCCESS)
+
+
+@pytest.fixture
+def fake_cancellable_agent(monkeypatch):
+    import dynamiq.nodes.agents
+
+    monkeypatch.setattr(dynamiq.nodes.agents, "Agent", _FakeCancellableAgent)
     monkeypatch.setattr(compiler, "build_llm", lambda *_args, **_kwargs: (None, None))
 
 
@@ -610,5 +640,224 @@ async def test_playground_stream_emits_approval_required_before_final(
         final_events = [e for e in events if e[0] == "final"]
         assert len(final_events) == 1
         assert events.index(approval_events[0]) < events.index(final_events[0])
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+@requires_postgres
+async def test_playground_stream_emits_run_started_first(
+    fake_streaming_agent, company_ids, resolvable_agent_version
+) -> None:
+    """The one and only way a client learns the id to later call
+    POST /ai/v1/runs/{id}/cancel with (PRD Goal #6) - must arrive before any token."""
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(
+        company_id, agent_version_id=version_id
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            resp = await client.post("/ai/v1/playground/stream", json={"input": "hi"})
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+
+        assert events[0][0] == "run_started"
+        assert uuid.UUID(events[0][1]["run_id"])
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+# ---------------------------------------------------------------------------
+# Cancellation (PRD Goal #6 "stop generating", POST /ai/v1/runs/{id}/cancel)
+# ---------------------------------------------------------------------------
+
+
+async def _cancel_once_registered(run_id: str, company_id: str, agent_version_id: str) -> None:
+    """Polls `run_registry.request_cancel` until the target run has actually registered
+    itself - right before `agent.run()` starts, well after `_execute_agent_run_body` has
+    finished its own real resolve/compile/secret-decrypt work - rather than racing a fixed
+    sleep against however long that happens to take."""
+    for _ in range(300):
+        if run_registry.request_cancel(run_id, company_id=company_id, agent_version_id=agent_version_id):
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail("run was never registered for cancellation")
+
+
+@requires_postgres
+async def test_execute_agent_run_returns_cancelled_when_signaled_mid_run(
+    fake_cancellable_agent, company_ids, resolvable_agent_version
+) -> None:
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+    run_id = str(uuid.uuid4())
+
+    run_task = asyncio.create_task(
+        run_playground_agent(
+            "hi", agent_version_id=version_id, role="developer", company_id=company_id, run_id=run_id
+        )
+    )
+    await _cancel_once_registered(run_id, company_id, version_id)
+    result = await run_task
+
+    assert result["cancelled"] is True
+    assert result["output"] is None
+
+    async with get_company_session(company_id) as session:
+        row = (
+            await session.execute(runs_table.select().where(runs_table.c.id == uuid.UUID(run_id)))
+        ).mappings().one()
+    assert row["status"] == "cancelled"
+
+
+@requires_postgres
+async def test_eval_source_runs_are_never_registered_for_external_cancellation(
+    fake_agent, company_ids, resolvable_agent_version, monkeypatch
+) -> None:
+    """A real code-review finding: `run_registry` must only ever accept Playground-sourced
+    runs - `app.services.eval_runner` calls `execute_agent_run` per dataset item against
+    the same `agent_version_id` a Playground session for that company could hold a runtime
+    token for, and eval runs have their own independent cancellation bookkeeping
+    (`request_eval_run_cancellation`) - registering them here too would let a Playground
+    token holder cancel an unrelated in-progress eval item just by guessing its run_id."""
+    import app.services.runtime as runtime_module
+
+    register_calls: list[tuple] = []
+    monkeypatch.setattr(
+        runtime_module.run_registry, "register", lambda *args, **kwargs: register_calls.append((args, kwargs))
+    )
+
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+
+    await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)
+    assert len(register_calls) == 1
+
+    register_calls.clear()
+    compiled_definition = await resolve_and_compile(company_id, version_id, "developer")
+    guardrails = GuardrailsSpec.model_validate(compiled_definition["guardrails"])
+    await execute_agent_run(
+        compiled_definition,
+        guardrails,
+        company_id=company_id,
+        agent_version_id=version_id,
+        source="eval",
+        input_text="hi",
+        external_user_id=None,
+        conversation_id=None,
+        deployment_id=None,
+    )
+    assert register_calls == []
+
+
+def test_cancel_run_requires_runtime_token() -> None:
+    resp = TestClient(runtime_app).post(f"/ai/v1/runs/{uuid.uuid4()}/cancel")
+    assert resp.status_code == 401
+
+
+def test_cancel_run_malformed_id_is_404(runtime_client, monkeypatch) -> None:
+    import app.main_runtime as main_runtime_module
+
+    monkeypatch.setattr(main_runtime_module, "CANCEL_REGISTRATION_GRACE_SECONDS", 0)
+    resp = runtime_client.post("/ai/v1/runs/not-a-uuid/cancel")
+    assert resp.status_code == 404
+
+
+def test_cancel_run_unknown_id_is_404(runtime_client, monkeypatch) -> None:
+    import app.main_runtime as main_runtime_module
+
+    monkeypatch.setattr(main_runtime_module, "CANCEL_REGISTRATION_GRACE_SECONDS", 0)
+    resp = runtime_client.post(f"/ai/v1/runs/{uuid.uuid4()}/cancel")
+    assert resp.status_code == 404
+
+
+def test_cancel_run_fails_fast_once_the_target_run_has_already_finished(runtime_client) -> None:
+    """Regression: without run_registry.has_finished, a cancel call arriving just after
+    its target run completed would block for the full CANCEL_REGISTRATION_GRACE_SECONDS
+    before returning 404, unable to tell "already over" apart from "not registered yet"
+    (found by code-review). Uses the real default grace window (not monkeypatched to 0)
+    to prove the fast-fail path itself, not just that a shortened window is fast."""
+    run_id = str(uuid.uuid4())
+    run_registry.register(
+        run_id, company_id="", agent_version_id="00000000-0000-0000-0000-000000000000", token=CancellationToken()
+    )
+    run_registry.unregister(run_id)
+
+    started = time.monotonic()
+    resp = runtime_client.post(f"/ai/v1/runs/{run_id}/cancel")
+    elapsed = time.monotonic() - started
+
+    assert resp.status_code == 404
+    assert elapsed < 1.0
+
+
+def test_cancel_run_succeeds_for_a_run_matching_the_token_claims(runtime_client) -> None:
+    """Exercises the real route -> run_registry wiring directly, without needing a real
+    in-flight agent run concurrently - test_execute_agent_run_returns_cancelled_when_
+    signaled_mid_run above already proves the dynamiq-level cancellation itself works end
+    to end. runtime_client's default claims (conftest.py) are company_id="",
+    agent_version_id="00000000-0000-0000-0000-000000000000" - must match exactly."""
+    run_id = str(uuid.uuid4())
+    token = CancellationToken()
+    run_registry.register(
+        run_id, company_id="", agent_version_id="00000000-0000-0000-0000-000000000000", token=token
+    )
+    try:
+        resp = runtime_client.post(f"/ai/v1/runs/{run_id}/cancel")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "cancel_requested"}
+        assert token.is_canceled is True
+    finally:
+        run_registry.unregister(run_id)
+
+
+def test_cancel_run_is_404_for_a_run_belonging_to_a_different_agent_version(runtime_client, monkeypatch) -> None:
+    import app.main_runtime as main_runtime_module
+
+    monkeypatch.setattr(main_runtime_module, "CANCEL_REGISTRATION_GRACE_SECONDS", 0)
+    run_id = str(uuid.uuid4())
+    token = CancellationToken()
+    run_registry.register(run_id, company_id="", agent_version_id=str(uuid.uuid4()), token=token)
+    try:
+        resp = runtime_client.post(f"/ai/v1/runs/{run_id}/cancel")
+        assert resp.status_code == 404
+        assert token.is_canceled is False
+    finally:
+        run_registry.unregister(run_id)
+
+
+@requires_postgres
+async def test_playground_stream_ends_with_cancelled_event_when_the_run_is_signaled(
+    fake_cancellable_agent, company_ids, resolvable_agent_version, monkeypatch
+) -> None:
+    """Route-level proof that `runPlaygroundStream` itself (not just `execute_agent_run`
+    directly, covered above) turns a cancellation into a `cancelled` SSE event instead of
+    `final`. The route's own `uuid4()` call is pinned to a known `run_id` so the test can
+    target `_cancel_once_registered` at it deterministically, rather than scraping
+    `run_registry`'s internals for "whatever just got registered" (flaky under full-suite
+    load - a prior version of this test did that and was found to occasionally pick up an
+    unrelated run). A real second, concurrent HTTP call to `POST /ai/v1/runs/{id}/cancel`
+    is unnecessary here - `test_cancel_run_succeeds_for_a_run_matching_the_token_claims`
+    above already proves that route reaches `run_registry` correctly; this test's job is
+    only to prove `runPlaygroundStream` reacts to a cancelled run with a `cancelled` event
+    instead of `final`."""
+    import app.main_runtime as main_runtime_module
+
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id)
+    run_id = str(uuid.uuid4())
+    monkeypatch.setattr(main_runtime_module, "uuid4", lambda: uuid.UUID(run_id))
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(
+        company_id, agent_version_id=version_id
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            request_task = asyncio.create_task(client.post("/ai/v1/playground/stream", json={"input": "hi"}))
+            await _cancel_once_registered(run_id, company_id, version_id)
+            resp = await request_task
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+        assert events[-1][0] == "cancelled"
+        assert events[-1][1]["run_id"] == run_id
     finally:
         runtime_app.dependency_overrides.pop(require_runtime_auth, None)

@@ -19,8 +19,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import openai
@@ -76,6 +77,7 @@ from app.services.knowledge_bases import (
     resolve_knowledge_base,
     upsert_kb_document,
 )
+from app.services import run_registry
 from app.services.runtime import attach_stream_completion, resolve_and_compile, run_playground_agent
 from app.services.streaming_events import extract_answer_delta, extract_approval_required_event
 from app.services.tool_secrets import decrypt_tool_secret, delete_tool_secret, upsert_tool_secret
@@ -245,12 +247,19 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
     `stream_handler` param when the resolved agent version has no output guardrails
     configured (see `execute_agent_run`'s docstring for why) - falls back to the existing
     buffer-then-guardrail-check flow (unchanged) and emits the already-redacted-if-needed
-    text as a single `token` event otherwise, so the client always sees the same three
-    event types (`token`, `final`, `error`) regardless of which path actually ran. Also
-    emits PRD §6.5's `approval_required` event (`{"approval_id": <id>, "tool": <name>}`)
-    the instant an `access_level: write` tool call creates a `pending`
+    text as a single `token` event otherwise, so the client always sees the same event
+    types (`run_started`, `token`, `final`/`cancelled`, `error`) regardless of which path
+    actually ran. Also emits PRD §6.5's `approval_required` event (`{"approval_id": <id>,
+    "tool": <name>}`) the instant an `access_level: write` tool call creates a `pending`
     `runtime.tool_approvals` row - see `app.main_gateway.streamDeployment`'s own docstring
     for the full explanation, shared identically by both streams.
+
+    `run_started` (PRD Goal #6 "stop generating") fires first, before the agent run task
+    is even created, carrying `{"run_id": <id>}` - the only way a client learns which id
+    to later call `POST /ai/v1/runs/{id}/cancel` with, since nothing before this feature
+    existed ever surfaced a run's id mid-flight (only `trace_id`, in the terminal event).
+    A cancelled run ends the stream with a `cancelled` event instead of `final` - see
+    `execute_agent_run`'s docstring for how a cancel request turns into that result key.
 
     Auth/validation are unaffected by streaming: `RuntimeAuth`'s `Depends` and
     `RunRequest`'s `conversation_id` validator both resolve before this function body ever
@@ -258,8 +267,11 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
     a malformed `conversation_id` is still a 422.
     """
     stream_handler = AsyncStreamingIteratorCallbackHandler(loop=asyncio.get_running_loop())
+    run_id = str(uuid4())
 
     async def event_generator():
+        yield {"event": "run_started", "data": json.dumps({"run_id": run_id})}
+
         run_task = asyncio.create_task(
             run_playground_agent(
                 body.input,
@@ -270,6 +282,7 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
                 conversation_id=body.conversation_id,
                 claims=body.user.claims if body.user else {},
                 identity_sub=body.user.external_id if body.user else claims["user_id"],
+                run_id=run_id,
                 stream_handler=stream_handler,
             )
         )
@@ -292,6 +305,13 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
         except Exception as exc:  # surface as a clear upstream error, same shape as runPlayground's 502
             logger.exception("playground stream run failed")
             yield {"event": "error", "data": json.dumps({"error": "upstream_error", "detail": str(exc)})}
+            return
+
+        if result.get("cancelled"):
+            yield {
+                "event": "cancelled",
+                "data": json.dumps({"run_id": run_id, "trace_id": result.get("trace_id")}),
+            }
             return
 
         if not result.get("streamed_live") and result.get("output"):
@@ -355,9 +375,47 @@ async def runPlaygroundWorkflow(body: WorkflowRunRequest, claims: RuntimeAuth) -
     return WorkflowRunResult(**result)
 
 
+# A client can legitimately call cancelRun the instant it receives `run_started` off the
+# SSE stream (app.main_runtime.runPlaygroundStream) - well before app.services.runtime's
+# _execute_agent_run_body has finished resolving/compiling the agent version and
+# decrypting its connection secret (real Postgres/DEK work) and actually registered this
+# run_id in app.services.run_registry. A short bounded retry here closes that real race
+# instead of silently dropping an early "stop" click as a 404 - a module constant so
+# tests asserting the genuine-404 cases (unknown id / wrong company-or-agent-version) can
+# monkeypatch it down for speed.
+CANCEL_REGISTRATION_GRACE_SECONDS = 2.0
+_CANCEL_POLL_INTERVAL_SECONDS = 0.05
+
+
 @app.post("/ai/v1/runs/{id}/cancel")
 async def cancelRun(id: str, claims: RuntimeAuth) -> Response:
-    return _not_implemented("cancelRun")
+    """"Stop generating" for a live Playground run (PRD Goal #6).
+
+    REAL: signals the real in-flight run's dynamiq `CancellationToken` via
+    `app.services.run_registry` - cooperative, not a hard interrupt (dynamiq's own
+    `check_cancellation` checkpoints throughout its ReAct loop still have to be reached,
+    same caveat eval runs' cancel already documents). A malformed id, an id that was
+    never an active run on this process, or one that belongs to a different company/
+    agent version than the caller's own runtime token all look identical (404) - same
+    PRD §12 "don't reveal existence" convention every other resolver in this codebase
+    already applies, and also simply correct here: a run that already finished or was
+    never ours has nothing left to cancel either way.
+    """
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="not_found")
+
+    deadline = time.monotonic() + CANCEL_REGISTRATION_GRACE_SECONDS
+    while True:
+        cancelled = run_registry.request_cancel(
+            id, company_id=claims["company_id"], agent_version_id=claims["agent_version_id"]
+        )
+        if cancelled:
+            return JSONResponse(content={"status": "cancel_requested"})
+        # A run that already finished (and was unregistered) has nothing left to catch -
+        # fail fast instead of waiting out the rest of the grace window for no reason.
+        if run_registry.has_finished(id) or time.monotonic() >= deadline:
+            raise HTTPException(status_code=404, detail="not_found")
+        await asyncio.sleep(_CANCEL_POLL_INTERVAL_SECONDS)
 
 
 # --------------------------------------------------------------------------

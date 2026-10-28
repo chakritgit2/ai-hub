@@ -152,9 +152,12 @@ paths:
     post:
       operationId: runPlaygroundStream
       summary: >
-        Run a given agent version over SSE. Events: token, step (thought/tool_call/tool_result),
-        guardrail, approval_required (write-tool call awaiting human decision, PRD §6.5 -
-        {"approval_id", "tool"}), final, error, usage; heartbeat every 15s (PRD §6.2).
+        Run a given agent version over SSE. Events: run_started ({"run_id"}, fires first -
+        PRD Goal #6, the id to call POST /ai/v1/runs/{id}/cancel with), token,
+        step (thought/tool_call/tool_result), guardrail, approval_required (write-tool call
+        awaiting human decision, PRD §6.5 - {"approval_id", "tool"}), final, cancelled
+        ({"run_id", "trace_id"}, in place of final when cancelRun was called in time),
+        error, usage; heartbeat every 15s (PRD §6.2).
       security: [{ runtimeToken: [] }]
       requestBody:
         content:
@@ -171,9 +174,23 @@ paths:
     parameters: [{ $ref: '#/components/parameters/IdParam' }]
     post:
       operationId: cancelRun
+      summary: >-
+        "Stop generating" for a live Playground run (PRD Goal #6) - signals the run's
+        dynamiq CancellationToken (app.services.run_registry). Cooperative, not a hard
+        interrupt, same caveat as the eval runs' own POST /evals/{id}/cancel. A run that
+        was never active on this process (already finished, never existed, or belongs to
+        a different company/agent version than this token's) is indistinguishable from an
+        unknown id (PRD §12).
       security: [{ runtimeToken: [] }]
       responses:
-        "200": { description: OK }
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { status: { type: string, enum: [cancel_requested] } }
+        "404": { description: 'not an active run for this token''s company/agent version' }
 
   /v1/deployments/{slug}/run:
     parameters: [{ $ref: '#/components/parameters/Slug' }]

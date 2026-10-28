@@ -40,12 +40,21 @@ from app.services.egress_allowlist import list_egress_allowlist
 from app.services.guardrails import CheckEvent, log_guardrail_events, output_checks_are_chunk_streamable, run_checks
 from app.services.identity import DelegatedIdentityContext
 from app.services.quotas import QuotaExceededError, check_rate_limit, reconcile_quota, reserve_quota
+from app.services import run_registry
 from app.services.run_steps import RunStep, guardrail_run_steps, log_run_steps
 from app.services.runs import RunUsage, log_run
 from app.services.streaming_events import extract_answer_delta, with_answer_delta
 from app.services.tool_secrets import decrypt_tool_secret
 
 logger = logging.getLogger(__name__)
+
+
+class _RunCancelled(Exception):
+    """Internal sentinel raised once `agent.run()` comes back with
+    `RunnableStatus.CANCELED` (PRD Goal #6 "stop generating") - caught right where
+    `RuntimeError`/other failures already are, so the existing output-events-draining
+    logic is shared, but routed to `_cancel_run` instead of `_fail_run` since a requested
+    cancellation is an expected outcome, not a failure to report as `status="error"`."""
 
 
 class _UsageCollector(BaseCallbackHandler):
@@ -288,7 +297,17 @@ async def execute_agent_run(
 
     Returns `{"output": str, "trace_id": str, "latency_ms": int,
     "conversation_id": str | None, "guardrail_events": list, "tokens_in": int | None,
-    "tokens_out": int | None, "cost_usd": float | None, "streamed_live": bool}`.
+    "tokens_out": int | None, "cost_usd": float | None, "streamed_live": bool}`, plus
+    `"cancelled": True` (with `"output": None`) when a `POST /ai/v1/runs/{id}/cancel`
+    call (PRD Goal #6 "stop generating", `app.services.run_registry`) signals this run's
+    dynamiq `CancellationToken` while `agent.run()` is still in flight - dynamiq's own
+    cooperative `check_cancellation` checkpoints throughout its ReAct loop
+    (`dynamiq.nodes.agents.agent`) raise `CanceledException` there, which this function
+    turns into a clean `status="cancelled"` `logs.runs` row and a normal return, not an
+    exception - a requested stop is an expected outcome, not a failure. Every other
+    return omits the `cancelled` key entirely (falsy via `.get("cancelled")`, same
+    convention `streamed_live`'s absence-means-False equivalents don't need here since it
+    just doesn't exist on those paths).
     """
     run_id = run_id or str(uuid4())
     trace_id = str(uuid4())
@@ -642,25 +661,23 @@ async def _execute_agent_run_body(
     # input_data.user_id/session_id into the metadata it hands memory.add()
     # itself - verified against the installed dynamiq==0.65.0 source, no
     # separate `metadata={...}` duplication is needed here.
-    async def _fail_run(exc: Exception, output_events: list[CheckEvent]) -> None:
-        """Shared failure logging/raising - used both when `agent.run()` itself fails
-        (the main `except` below) and when the masking relay fails *after* a successful
-        run (PRD §6.4's masking is a security/audit property: serving or silently
-        dropping the log for content the relay never finished checking would be worse
-        than failing closed - found by code-review as an asymmetry between this
-        function's success and failure paths). `output_events` are whatever
-        output-stage guardrail events the relay managed to collect before the run (or
-        the relay itself) failed - always logged, never silently discarded, so a PII
-        mask that already fired on chunks actually sent to the client before a later
-        failure still gets a `logs.guardrail_events` row. Always raises; never returns.
-        """
-        latency_ms = int((time.monotonic() - started) * 1000)
-        usage = usage_collector.total_usage()
+    async def _persist_run_outcome(
+        status: str, output_events: list[CheckEvent], *, error: str | None, usage: RunUsage, latency_ms: int
+    ) -> None:
+        """Shared `logs.runs`/`logs.guardrail_events`/`logs.run_steps` write, used by both
+        `_fail_run` (status="error") and `_cancel_run` (status="cancelled") - kept as one
+        place specifically so the two outcomes can never silently drift apart in schema or
+        content (found by code-review: they used to be two independent ~25-line blocks).
+        `output_events` are whatever output-stage guardrail events the masking relay
+        managed to collect before the run (or the relay itself) ended - always logged,
+        never silently discarded, so a PII mask that already fired on chunks actually sent
+        to the client before a later failure/cancel still gets a `logs.guardrail_events`
+        row (PRD §6.4's masking is a security/audit property)."""
         await log_run(
             run_id=run_id,
             company_id=company_id,
             trace_id=trace_id,
-            status="error",
+            status=status,
             source=source,
             agent_version_id=agent_version_id,
             deployment_id=deployment_id,
@@ -670,7 +687,7 @@ async def _execute_agent_run_body(
             conversation_id=resolved_conversation_id,
             usage=usage,
             latency_ms=latency_ms,
-            error=str(exc),
+            error=error,
         )
         await log_guardrail_events(company_id, run_id=run_id, events=[*input_outcome.events, *output_events])
         await log_run_steps(
@@ -682,6 +699,15 @@ async def _execute_agent_run_body(
                 *guardrail_run_steps(output_events, "guardrail_output"),
             ],
         )
+
+    async def _fail_run(exc: Exception, output_events: list[CheckEvent]) -> None:
+        """Shared failure logging/raising - used both when `agent.run()` itself fails
+        (the main `except` below) and when the masking relay fails *after* a successful
+        run (see `_persist_run_outcome`'s docstring for why `output_events` always still
+        gets logged). Always raises; never returns."""
+        latency_ms = int((time.monotonic() - started) * 1000)
+        usage = usage_collector.total_usage()
+        await _persist_run_outcome("error", output_events, error=str(exc), usage=usage, latency_ms=latency_ms)
         # Surfaced to run_deployment_agent's quota reconciliation below - a run that burned
         # one or more real LLM calls before failing (e.g. a late tool-call error) must still
         # count that spend against the deployment's daily quota, not be refunded in full as
@@ -700,7 +726,49 @@ async def _execute_agent_run_body(
         wrapped.partial_usage = usage
         raise wrapped from exc
 
+    async def _cancel_run(output_events: list[CheckEvent]) -> dict:
+        """Mirrors `_fail_run`'s logging, but for a requested "stop generating" (PRD
+        Goal #6): `status="cancelled"`, not `"error"`, and returns normally instead of
+        raising - a client-requested stop is an expected outcome the caller should treat
+        like any other clean completion (`execute_agent_run`'s own docstring documents the
+        `cancelled` key this adds to the return dict), not a 502."""
+        latency_ms = int((time.monotonic() - started) * 1000)
+        usage = usage_collector.total_usage()
+        await _persist_run_outcome("cancelled", output_events, error=None, usage=usage, latency_ms=latency_ms)
+        return {
+            "output": None,
+            "trace_id": trace_id,
+            "latency_ms": latency_ms,
+            "conversation_id": resolved_conversation_id,
+            "guardrail_events": [*input_outcome.events, *output_events],
+            "tokens_in": usage.tokens_in,
+            "tokens_out": usage.tokens_out,
+            "cost_usd": usage.cost_usd,
+            "streamed_live": streamed_live,
+            "cancelled": True,
+        }
+
     run_timeout = _effective_run_timeout(agent_def, get_settings())
+    # `RunnableConfig()` always auto-creates its own `CancellationConfig`/`CancellationToken`
+    # (dynamiq.types.cancellation) - registering *that* token (rather than constructing a
+    # separate one) is what lets `POST /ai/v1/runs/{id}/cancel` (app.main_runtime,
+    # app.services.run_registry) reach this exact in-flight run's own dynamiq checkpoints.
+    #
+    # Only `source == "playground"` runs are registered: `POST /ai/v1/runs/{id}/cancel`'s
+    # own contract (ai-public.yaml) is a Playground-only "stop generating" button, auth'd
+    # by a runtime token scoped to one `agent_version_id` - but `app.services.eval_runner`
+    # calls this same function per dataset item against that *same* agent_version_id, with
+    # its own independent cancellation bookkeeping (`request_eval_run_cancellation`,
+    # `runtime.eval_runs.status`). Registering every source here would let a Playground
+    # token holder cancel an unrelated in-progress eval item just by guessing/observing
+    # its run_id (found by code-review) - `run_deployment_agent` ("api" source) is excluded
+    # for the same reason: no deployment-facing cancel contract exists at all today.
+    is_cancellable_run = source == "playground"
+    agent_run_config = RunnableConfig(callbacks=callbacks)
+    if is_cancellable_run:
+        run_registry.register(
+            run_id, company_id=company_id, agent_version_id=agent_version_id, token=agent_run_config.cancellation.token
+        )
     try:
         try:
             result = await asyncio.wait_for(
@@ -711,7 +779,7 @@ async def _execute_agent_run_body(
                         "user_id": user_id,
                         "session_id": resolved_conversation_id,
                     },
-                    config=RunnableConfig(callbacks=callbacks),
+                    config=agent_run_config,
                 ),
                 timeout=run_timeout,
             )
@@ -719,10 +787,14 @@ async def _execute_agent_run_body(
             # it returns a RunnableResult with status=FAILURE and the error captured in
             # .error instead. Confirmed live: a bad connection secret produced a 200 with
             # empty output until this check was added, silently hiding a real run failure.
+            if result.status == RunnableStatus.CANCELED:
+                raise _RunCancelled()
             if result.status != RunnableStatus.SUCCESS:
                 message = result.error.message if result.error else f"agent run ended with status {result.status}"
                 raise RuntimeError(message)
         finally:
+            if is_cancellable_run:
+                run_registry.unregister(run_id)
             # Lets _relay_masked_output_stream's `async for` loop over raw_handler
             # terminate on every exit path (success or failure) - same contract
             # execute_agent_run's own `finally: stream_handler.done_event.set()` already
@@ -747,6 +819,8 @@ async def _execute_agent_run_body(
                 _drained_text, relay_output_events = await relay_task
             except Exception:
                 logger.exception("guardrail-masked output relay task failed during run-failure cleanup")
+        if isinstance(exc, _RunCancelled):
+            return await _cancel_run(relay_output_events)
         await _fail_run(exc, relay_output_events)
 
     if relay_task is not None:
@@ -840,6 +914,7 @@ async def run_playground_agent(
     deployment_id: str | None = None,
     claims: dict | None = None,
     identity_sub: str | None = None,
+    run_id: str | None = None,
     stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
 ) -> dict:
     """Resolve `agent_version_id`, compile it live, build a real Agent from the
@@ -865,6 +940,14 @@ async def run_playground_agent(
 
     `stream_handler` (PRD Goal #6) is passed straight through to `execute_agent_run` -
     see its docstring for the guardrail-conditional live-streaming behavior.
+
+    `run_id` (PRD Goal #6 "stop generating") lets a caller generate the id *before*
+    calling this - `app.main_runtime.runPlaygroundStream` needs to hand the client a
+    `run_id` to later call `POST /ai/v1/runs/{id}/cancel` with the moment the stream
+    starts, well before this function (or `execute_agent_run`) would otherwise mint one
+    internally. Defaults to `None` (a fresh uuid4, same as every caller before this
+    parameter existed) for the non-streaming `runPlayground` route, which has no
+    in-flight window a client could ever target with a cancel call.
     """
     compiled_definition = await resolve_and_compile(company_id, agent_version_id, role)
     guardrails = GuardrailsSpec.model_validate(compiled_definition["guardrails"])
@@ -881,6 +964,7 @@ async def run_playground_agent(
         deployment_id=deployment_id,
         identity_claims=claims,
         identity_sub=identity_sub,
+        run_id=run_id,
         stream_handler=stream_handler,
     )
 
