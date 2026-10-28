@@ -390,7 +390,9 @@ export type GuardrailAction = 'block' | 'mask' | 'flag';
 export interface GuardrailCheckSpec {
 	check_type: GuardrailCheckType;
 	action: GuardrailAction;
-	on_error: 'block' | 'flag';
+	// null means "use the context default" (PRD §6.4: block for the gateway/API, flag
+	// for Playground) - resolved by ai/app/services/guardrails.py's run_checks, not here.
+	on_error: 'block' | 'flag' | null;
 	fallback_message?: string | null;
 	// check_type === 'max_length'
 	max_length?: number | null;

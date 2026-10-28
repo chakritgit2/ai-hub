@@ -99,6 +99,32 @@ async def test_blocked_input_never_reaches_the_agent(recording_agent, company_id
 
 
 @requires_postgres
+async def test_playground_run_defaults_an_unset_on_error_to_flag_end_to_end(
+    recording_agent, company_ids, resolvable_agent_version, monkeypatch
+):
+    """PRD §6.4's gateway/playground on_detector_error split, proven through the real
+    `source="playground"` wiring in runtime.py (not just run_checks in isolation, see
+    test_guardrails.py's unit-level coverage of the same resolution) - a check that
+    raises and leaves `on_error` unset must flag, not block, a Playground run."""
+    import app.services.guardrails as guardrails_module
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    company_id = company_ids()
+    guardrails = {"input": [{"check_type": "max_length", "action": "block", "on_error": None, "max_length": 5}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    monkeypatch.setattr(guardrails_module, "_run_one", _raise)
+
+    result = await run_playground_agent(
+        "this input is way too long", agent_version_id=version_id, role="developer", company_id=company_id
+    )
+
+    assert recording_agent.calls != []
+    assert result["guardrail_events"][0].action == "flag"
+
+
+@requires_postgres
 async def test_masked_input_is_what_the_agent_actually_sees(recording_agent, company_ids, resolvable_agent_version):
     company_id = company_ids()
     guardrails = {"input": [{"check_type": "pii", "action": "mask"}]}

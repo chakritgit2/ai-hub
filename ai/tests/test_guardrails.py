@@ -15,12 +15,12 @@ def _check(**kwargs) -> GuardrailCheckSpec:
 
 def test_output_checks_are_chunk_streamable_true_for_mask_regex_and_pii():
     checks = [_check(check_type="regex_blocklist", action="mask", pattern=r"x", max_length=None), _check(check_type="pii", action="flag", max_length=None)]
-    assert output_checks_are_chunk_streamable(checks) is True
+    assert output_checks_are_chunk_streamable(checks, default_on_error="flag") is True
 
 
 def test_output_checks_are_chunk_streamable_false_when_any_check_blocks():
     checks = [_check(check_type="regex_blocklist", action="block", pattern=r"x", max_length=None)]
-    assert output_checks_are_chunk_streamable(checks) is False
+    assert output_checks_are_chunk_streamable(checks, default_on_error="flag") is False
 
 
 def test_output_checks_are_chunk_streamable_false_when_on_error_blocks():
@@ -29,7 +29,17 @@ def test_output_checks_are_chunk_streamable_false_when_on_error_blocks():
     field that does exactly that if the check itself raises. Must be excluded too, not
     just a blocking `action`."""
     checks = [_check(check_type="pii", action="mask", on_error="block", max_length=None)]
-    assert output_checks_are_chunk_streamable(checks) is False
+    assert output_checks_are_chunk_streamable(checks, default_on_error="flag") is False
+
+
+def test_output_checks_are_chunk_streamable_false_when_on_error_unset_and_context_default_blocks():
+    """PRD §6.4's gateway/playground on_detector_error split: a check that leaves
+    on_error unset (None) resolves to whatever the caller's context default is - a
+    gateway/API run's "block" default must disqualify it from chunk streaming even
+    though the raw field value isn't literally "block"."""
+    checks = [_check(check_type="pii", action="mask", on_error=None, max_length=None)]
+    assert output_checks_are_chunk_streamable(checks, default_on_error="block") is False
+    assert output_checks_are_chunk_streamable(checks, default_on_error="flag") is True
 
 
 def test_output_checks_are_chunk_streamable_false_for_max_length():
@@ -37,21 +47,27 @@ def test_output_checks_are_chunk_streamable_false_for_max_length():
     output, not of one small streamed delta - chunk-by-chunk checking would silently
     never trigger it for a realistically-sized limit."""
     checks = [_check(check_type="max_length", action="flag", max_length=500)]
-    assert output_checks_are_chunk_streamable(checks) is False
+    assert output_checks_are_chunk_streamable(checks, default_on_error="flag") is False
 
 
 def test_output_checks_are_chunk_streamable_false_for_valid_json_and_valid_choices():
-    assert output_checks_are_chunk_streamable([_check(check_type="valid_json", action="flag", max_length=None)]) is False
     assert (
         output_checks_are_chunk_streamable(
-            [_check(check_type="valid_choices", action="flag", max_length=None, choices=["a", "b"])]
+            [_check(check_type="valid_json", action="flag", max_length=None)], default_on_error="flag"
+        )
+        is False
+    )
+    assert (
+        output_checks_are_chunk_streamable(
+            [_check(check_type="valid_choices", action="flag", max_length=None, choices=["a", "b"])],
+            default_on_error="flag",
         )
         is False
     )
 
 
 def test_output_checks_are_chunk_streamable_true_for_empty_list():
-    assert output_checks_are_chunk_streamable([]) is True
+    assert output_checks_are_chunk_streamable([], default_on_error="flag") is True
 
 
 async def test_max_length_triggers_when_text_too_long():
@@ -201,6 +217,26 @@ async def test_on_error_flag_lets_the_run_continue(monkeypatch):
 
     assert outcome.blocked is False
     assert outcome.events[0].action == "flag"
+
+
+async def test_on_error_unset_resolves_to_the_caller_s_default_on_error(monkeypatch):
+    """PRD §6.4's gateway/playground split: a check with no explicit on_error defers to
+    whatever `default_on_error` the caller passes - runtime.py resolves that from
+    `source` (block for gateway/API/eval, flag for Playground), not run_checks itself."""
+    import app.services.guardrails as guardrails_module
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(guardrails_module, "_run_one", _raise)
+    check = _check(check_type="max_length", action="block", on_error=None, max_length=5)
+
+    gateway_outcome = await run_checks("irrelevant", [check], stage="input", default_on_error="block")
+    assert gateway_outcome.blocked is True
+
+    playground_outcome = await run_checks("irrelevant", [check], stage="input", default_on_error="flag")
+    assert playground_outcome.blocked is False
+    assert playground_outcome.events[0].action == "flag"
 
 
 @requires_postgres

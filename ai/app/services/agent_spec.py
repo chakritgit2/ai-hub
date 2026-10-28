@@ -96,7 +96,11 @@ class GuardrailCheckSpec(BaseModel):
     # type and fail compilation for every spec that uses guardrails.
     check_type: GuardrailCheckType
     action: GuardrailAction
-    on_error: Literal["block", "flag"] = "flag"
+    # None means "use the caller's context default" (PRD §6.4: block for the gateway,
+    # flag for Playground - app.services.guardrails.run_checks's `default_on_error`
+    # param resolves it per run). An explicit "block"/"flag" always wins regardless of
+    # context - this is an override, not a suggestion.
+    on_error: Literal["block", "flag"] | None = None
     fallback_message: str | None = None
 
     # check_type == "max_length"

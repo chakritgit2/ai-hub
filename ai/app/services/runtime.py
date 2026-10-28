@@ -375,6 +375,7 @@ async def _relay_masked_output_stream(
     raw_handler: AsyncStreamingIteratorCallbackHandler,
     stream_handler: AsyncStreamingIteratorCallbackHandler,
     output_checks: list[GuardrailCheckSpec],
+    default_on_error: str,
 ) -> tuple[str, list[CheckEvent]]:
     """Drains `raw_handler` (what the agent actually writes to), runs `output_checks`
     against each answer-delta chunk inline (PRD §6.4: "every chunk passes fast checks...
@@ -392,13 +393,15 @@ async def _relay_masked_output_stream(
     with what the client already received (e.g. the same cross-chunk-boundary case above)
     and would make the logged/returned text diverge from the real stream.
 
-    Only ever invoked when `output_checks_are_chunk_streamable(output_checks)` is true -
-    no configured check can have `action="block"` or `on_error="block"` (see that
-    function's own docstring for why both matter), so `run_checks` below can never
-    return `blocked=True`; nothing here handles that case because it is structurally
-    unreachable. Caller must set `raw_handler.done_event` once the run is over (success or
-    failure) so this loop actually terminates - mirrors `execute_agent_run`'s own
-    `stream_handler.done_event` contract, just one level further in.
+    Only ever invoked when `output_checks_are_chunk_streamable(output_checks,
+    default_on_error)` is true (with this *same* `default_on_error`) - no configured
+    check can have an effective `action="block"` or `on_error="block"` (see that
+    function's own docstring for why both matter, including why `default_on_error` must
+    match), so `run_checks` below can never return `blocked=True`; nothing here handles
+    that case because it is structurally unreachable. Caller must set
+    `raw_handler.done_event` once the run is over (success or failure) so this loop
+    actually terminates - mirrors `execute_agent_run`'s own `stream_handler.done_event`
+    contract, just one level further in.
     """
     parts: list[str] = []
     events: list[CheckEvent] = []
@@ -407,7 +410,7 @@ async def _relay_masked_output_stream(
         if delta is None:
             stream_handler.queue.put_nowait(event)
             continue
-        outcome = await run_checks(delta, output_checks, stage="output")
+        outcome = await run_checks(delta, output_checks, stage="output", default_on_error=default_on_error)
         events.extend(outcome.events)
         if outcome.text:
             parts.append(outcome.text)
@@ -452,12 +455,20 @@ async def _execute_agent_run_body(
         effective_claims["playground"] = True
     identity_context = DelegatedIdentityContext(sub=effective_sub, claims=effective_claims, act=act, run_id=run_id)
 
+    # PRD §6.4: "on_detector_error: block (gateway default) or flag (Playground
+    # default)" - only matters for a check that leaves its own on_error unset (None),
+    # see GuardrailCheckSpec.on_error's docstring. "eval" (app.services.eval_runner)
+    # isn't named in the PRD line - treated like the gateway/API, not Playground, since
+    # an eval run is unattended/automated the same way, not an admin interactively
+    # watching the output.
+    default_on_error = "flag" if source == "playground" else "block"
+
     agent_def = compiled_definition["agent"]
     connection_id = agent_def["llm"]["connection"]["connection_id"]
     agent_name = agent_def["name"]
     model_name = agent_def["llm"]["model"]
 
-    input_outcome = await run_checks(input_text, guardrails.input, stage="input")
+    input_outcome = await run_checks(input_text, guardrails.input, stage="input", default_on_error=default_on_error)
     if input_outcome.blocked:
         latency_ms = int((time.monotonic() - started) * 1000)
         # logs.runs row must exist before logs.guardrail_events.run_id can reference it
@@ -606,7 +617,9 @@ async def _execute_agent_run_body(
     # once, send one chunk). `agent.streaming` is a plain mutable field on the
     # already-built Node (dynamiq/nodes/node.py), so setting it here needs no change to
     # app.services.compiler.build_agent.
-    streamable_output = not guardrails.output or output_checks_are_chunk_streamable(guardrails.output)
+    streamable_output = not guardrails.output or output_checks_are_chunk_streamable(
+        guardrails.output, default_on_error
+    )
     streamed_live = stream_handler is not None and streamable_output
     raw_handler: AsyncStreamingIteratorCallbackHandler | None = None
     relay_task: "asyncio.Task[tuple[str, list[CheckEvent]]] | None" = None
@@ -621,7 +634,7 @@ async def _execute_agent_run_body(
             raw_handler = AsyncStreamingIteratorCallbackHandler(loop=stream_handler.loop)
             callbacks.append(raw_handler)
             relay_task = asyncio.create_task(
-                _relay_masked_output_stream(raw_handler, stream_handler, guardrails.output)
+                _relay_masked_output_stream(raw_handler, stream_handler, guardrails.output, default_on_error)
             )
         else:
             callbacks.append(stream_handler)
@@ -731,7 +744,9 @@ async def _execute_agent_run_body(
         output_blocked = False  # structurally guaranteed - see output_checks_are_chunk_streamable
     else:
         output = result.output.get("content") if result.output else None
-        output_outcome = await run_checks(output or "", guardrails.output, stage="output")
+        output_outcome = await run_checks(
+            output or "", guardrails.output, stage="output", default_on_error=default_on_error
+        )
         final_output = output_outcome.fallback_message if output_outcome.blocked else output_outcome.text
         output_events = output_outcome.events
         output_blocked = output_outcome.blocked

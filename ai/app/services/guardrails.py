@@ -56,22 +56,29 @@ _PII_PATTERNS: dict[str, re.Pattern] = {
 _CHUNK_SAFE_CHECK_TYPES: frozenset[str] = frozenset({"regex_blocklist", "pii"})
 
 
-def output_checks_are_chunk_streamable(checks: list["GuardrailCheckSpec"]) -> bool:
+def output_checks_are_chunk_streamable(checks: list["GuardrailCheckSpec"], default_on_error: str) -> bool:
     """Whether every check in `checks` can run inline against one streamed chunk at a
     time without needing to un-send an already-emitted token (see runtime.py's
-    `streamed_live`). Both `action == "block"` and `on_error == "block"` are excluded
-    regardless of check_type - a chunk already sent to the client can't be recalled, so a
-    mid-stream block needs its own abort-the-stream handling, not built yet (today's
-    conservative buffered fallback - wait for the full output, check once, send one
-    chunk - still applies whenever any check could trigger one). `on_error` must be
-    checked too, not just `action`: a check configured `action="mask"`/`"flag"` but
-    `on_error="block"` (an independent field - GuardrailCheckSpec allows this exact
-    combination) still produces `blocked=True` from `run_checks` if `_run_one` itself
-    raises for some chunk, which `_relay_masked_output_stream` has no way to safely
-    handle mid-stream (found by code-review before this was called done - an earlier
-    version of this function only checked `action`)."""
+    `streamed_live`). Both `action == "block"` and an *effective* `on_error == "block"`
+    are excluded regardless of check_type - a chunk already sent to the client can't be
+    recalled, so a mid-stream block needs its own abort-the-stream handling, not built
+    yet (today's conservative buffered fallback - wait for the full output, check once,
+    send one chunk - still applies whenever any check could trigger one). `on_error` must
+    be checked too, not just `action`: a check configured `action="mask"`/`"flag"` but an
+    effective `on_error` of "block" (an independent field - GuardrailCheckSpec allows
+    this exact combination) still produces `blocked=True` from `run_checks` if
+    `_run_one` itself raises for some chunk, which `_relay_masked_output_stream` has no
+    way to safely handle mid-stream (found by code-review before this was called done -
+    an earlier version of this function only checked `action`).
+
+    `default_on_error` must be the same value the caller will actually pass to
+    `run_checks` (see its own docstring) - a check whose own `on_error` is `None`
+    resolves to this context default, e.g. a gateway run's default of "block" disqualifies
+    every check left unset, even though the raw field value isn't literally "block"."""
     return all(
-        check.check_type in _CHUNK_SAFE_CHECK_TYPES and check.action != "block" and check.on_error != "block"
+        check.check_type in _CHUNK_SAFE_CHECK_TYPES
+        and check.action != "block"
+        and (check.on_error or default_on_error) != "block"
         for check in checks
     )
 
@@ -94,12 +101,24 @@ class GuardrailOutcome:
     events: list[CheckEvent] = field(default_factory=list)
 
 
-async def run_checks(text: str, checks: list[GuardrailCheckSpec], stage: str) -> GuardrailOutcome:
+async def run_checks(
+    text: str,
+    checks: list[GuardrailCheckSpec],
+    stage: str,
+    default_on_error: str = "flag",
+) -> GuardrailOutcome:
     """Runs `checks` against `text` in order, stage is "input" or "output" (for logging
     only - callers choose which list to pass). Stops at the first `block` (no point
     running further checks once the run is already going to be rejected); `mask` carries
     its redacted text forward into subsequent checks; `flag` passes the text through
     unchanged but still records the event.
+
+    `default_on_error` (PRD §6.4: "block" for the gateway, "flag" for Playground) only
+    applies to a check whose own `on_error` is `None` - an explicit "block"/"flag" on the
+    check always wins, this is purely the fallback for a check that never specified one.
+    Defaults to "flag" here so every existing direct caller/test that doesn't care about
+    the gateway-vs-playground distinction keeps today's behavior unchanged; runtime.py's
+    real callers pass the context-correct value explicitly.
     """
     events: list[CheckEvent] = []
     working_text = text
@@ -110,7 +129,7 @@ async def run_checks(text: str, checks: list[GuardrailCheckSpec], stage: str) ->
             action = check.action if triggered else None
         except Exception as exc:  # noqa: BLE001 - one bad check (bug in _run_one) must route through on_error, not crash every check still in the loop
             triggered, detail, masked_text = True, {"error": str(exc)}, None
-            action = check.on_error
+            action = check.on_error or default_on_error
 
         if not triggered:
             continue

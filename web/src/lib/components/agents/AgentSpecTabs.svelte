@@ -92,7 +92,11 @@
 	type GuardrailCheckRow = GuardrailCheckSpec & { choicesText?: string };
 
 	function newGuardrailCheck(allowedTypes: GuardrailCheckType[]): GuardrailCheckRow {
-		return { check_type: allowedTypes[0], action: 'flag', on_error: 'flag' };
+		// on_error: null ("use the default for where this runs" - PRD §6.4: block for the
+		// gateway/API, flag for Playground) rather than hardcoding 'flag' - an explicit
+		// backend default here would always override the context-sensitive one, since
+		// `run_checks`'s default only ever applies when on_error is genuinely unset.
+		return { check_type: allowedTypes[0], action: 'flag', on_error: null };
 	}
 
 	/** Clears whichever type-specific fields don't apply to `newType`, so switching a check's
@@ -1148,7 +1152,15 @@
 						</label>
 						<label class="block">
 							<span class="text-xs font-medium text-neutral-600">On error</span>
-							<select bind:value={check.on_error} class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm">
+							<select
+								value={check.on_error ?? ''}
+								onchange={(e) => {
+									const value = (e.currentTarget as HTMLSelectElement).value;
+									check.on_error = value === '' ? null : (value as 'block' | 'flag');
+								}}
+								class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm"
+							>
+								<option value="">Default (block for API, flag for Playground)</option>
 								<option value="flag">flag</option>
 								<option value="block">block</option>
 							</select>
