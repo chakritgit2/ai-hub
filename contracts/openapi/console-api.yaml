@@ -343,7 +343,7 @@ components:
           type: array
           items: { type: string }
         judge_model: { type: string, nullable: true }
-        status: { type: string, enum: [queued, running, completed, failed] }
+        status: { type: string, enum: [queued, running, completed, failed, cancelled] }
         est_cost_usd: { type: number, format: float, nullable: true }
         summary:
           type: object
@@ -1213,6 +1213,20 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/EvalResult' } } } } }
         "404": { description: not found }
+  /evals/{id}/cancel:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: cancelEvalRun
+      summary: >-
+        Flips a queued/running eval run to "cancelled" (PRD §6.7) - forwarded to
+        ai-runtime's real POST /internal/v1/evals/{id}/cancel (ai-internal.yaml), which is
+        cooperative rather than a hard interrupt once a run has already started.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EvalRun' } } } }
+        "404": { description: not found }
+        "409": { description: eval run already completed or failed }
   /evals/compare:
     get:
       operationId: compareEvalRuns

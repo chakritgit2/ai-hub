@@ -126,7 +126,7 @@ components:
           type: array
           items: { type: string }
         judge_model: { type: string, nullable: true }
-        status: { type: string, enum: [queued, running, completed, failed] }
+        status: { type: string, enum: [queued, running, completed, failed, cancelled] }
         est_cost_usd: { type: number, format: float, nullable: true }
     KbImportFile:
       type: object
@@ -479,8 +479,14 @@ paths:
       - { $ref: '#/components/parameters/IdParam' }
     post:
       operationId: cancelEvalRun
-      x-phase: 3
-      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Placeholder' } } } } }
+      summary: >-
+        Flips a queued/running eval run to "cancelled" (PRD §6.7). Cooperative, not a hard
+        interrupt - see ai/app/services/eval_runner.py's run_eval docstring for exactly
+        how far this reaches once a job has started.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EvalRun' } } } }
+        "404": { description: no such eval run for this company }
+        "409": { description: eval run already completed or failed }
 
   /approvals/{id}:
     parameters:

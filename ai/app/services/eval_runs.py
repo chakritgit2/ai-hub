@@ -118,6 +118,31 @@ async def update_eval_run_status(
         )
 
 
+async def request_eval_run_cancellation(company_id: str, eval_run_id: str) -> EvalRunRow | None:
+    """Flips status to `"cancelled"` iff it's still `"queued"`/`"running"` - a single
+    conditional `UPDATE ... RETURNING`, so a concurrent cancel request and a `run_eval`
+    status write can't race into an inconsistent state. Returns `None` if the row doesn't
+    exist at all; returns the row unchanged (still `"completed"`/`"failed"`) if it already
+    reached a terminal state, so the caller can tell "not found" apart from "too late to
+    cancel" without a separate read. See `eval_runner.py::run_eval`'s own docstring for
+    how far this cancellation actually reaches once a job has started."""
+    async with get_company_session(company_id) as session:
+        row = (
+            await session.execute(
+                eval_runs_table.update()
+                .where(
+                    eval_runs_table.c.id == uuid.UUID(eval_run_id),
+                    eval_runs_table.c.status.in_(("queued", "running")),
+                )
+                .values(status="cancelled", updated_at=sa.func.now())
+                .returning(eval_runs_table)
+            )
+        ).mappings().one_or_none()
+        if row is not None:
+            return _row_to_eval_run(dict(row))
+    return await get_eval_run(company_id, eval_run_id)
+
+
 async def insert_eval_results(company_id: str, eval_run_id: str, results: list[EvalResultInput]) -> None:
     """Bulk-inserts every dataset item's result row for a run in one statement rather
     than N round trips - called once, at the end of `eval_runner.run_eval`."""

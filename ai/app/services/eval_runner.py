@@ -384,6 +384,7 @@ async def _run_item(
     compiled_definition: dict,
     guardrails: GuardrailsSpec,
     company_id: str,
+    eval_run_id: str,
     agent_version_id: str,
     item: DatasetItemRow,
 ) -> _ItemRun:
@@ -393,6 +394,26 @@ async def _run_item(
     # see execute_agent_run's own docstring for exactly which failures still log first.
     run_id = str(uuid4())
     async with semaphore:
+        # All ~100 of this run's items are already scheduled as tasks before any of them
+        # starts (run_eval's single asyncio.gather call) - the semaphore only throttles
+        # how many run *concurrently*, it doesn't stop the rest from eventually running.
+        # Re-checking here, inside the semaphore, is what actually makes a mid-run cancel
+        # cut real LLM spend: at most _EVAL_CONCURRENCY items already past this check can
+        # still complete, every item behind them sees "cancelled" and skips its own LLM
+        # call entirely instead of all ~100 running to completion regardless (see
+        # run_eval's own docstring for the rest of this feature's cancellation story).
+        current = await get_eval_run(company_id, eval_run_id)
+        if current is not None and current.status == "cancelled":
+            return _ItemRun(
+                dataset_item_id=item.id,
+                question=item.question,
+                expected_answer=item.expected_answer,
+                context=item.context,
+                run_id=run_id,
+                answer=None,
+                cost_usd=None,
+                error="cancelled",
+            )
         try:
             result = await execute_agent_run(
                 compiled_definition,
@@ -505,13 +526,29 @@ async def run_eval(company_id: str, eval_run_id: str) -> dict:
     """ARQ job body (`app/jobs/run_eval.py`). Never lets an eval crash the ARQ job loop -
     the whole body is wrapped in `try/except Exception`, with `status` forced to
     `"failed"` on any unhandled error, same discipline `kb_indexer.py::index_kb_document`
-    already established for KB indexing jobs."""
-    try:
-        await update_eval_run_status(company_id, eval_run_id, status="running")
+    already established for KB indexing jobs.
 
+    Cancellation (`request_eval_run_cancellation`, PRD's `/evals/{id}/cancel`) is
+    cooperative, not a hard interrupt - no per-task cancellation token exists anywhere in
+    this codebase (same gap `app/services/runs.py`'s docstring documents for `logs.runs`/
+    live agent runs). Checked at three points: here, before starting at all (skips the
+    run entirely if it was cancelled while still queued); inside `_run_item` itself,
+    right before each item's own LLM call (every item behind whichever ones already
+    passed that check when cancellation landed sees it and skips its own LLM call, since
+    all items are scheduled as tasks up front - the semaphore only throttles how many run
+    *concurrently*, so without this per-item check a mid-run cancel would still let every
+    remaining item run to completion); and right before the final status write (reports
+    "cancelled" instead of "completed" if any item saw the cancellation)."""
+    try:
         eval_run = await get_eval_run(company_id, eval_run_id)
         if eval_run is None:
             raise LookupError(f"eval_run_id {eval_run_id!r} not found for this company")
+        if eval_run.status == "cancelled":
+            # Cancelled while still "queued", before the ARQ worker got to it - the
+            # cheapest case to respect, see this function's docstring for the other two.
+            return {"status": "cancelled"}
+
+        await update_eval_run_status(company_id, eval_run_id, status="running")
 
         items = await list_dataset_items(company_id, eval_run.dataset_id)
         compiled_definition = await resolve_and_compile(company_id, eval_run.agent_version_id, eval_run.role)
@@ -540,11 +577,14 @@ async def run_eval(company_id: str, eval_run_id: str) -> dict:
         # first avoids the race without touching the vendored dynamiq library.
         if items:
             first_run = await _run_item(
-                semaphore, compiled_definition, guardrails, company_id, eval_run.agent_version_id, items[0]
+                semaphore, compiled_definition, guardrails, company_id, eval_run_id, eval_run.agent_version_id, items[0]
             )
             rest_runs = await asyncio.gather(
                 *[
-                    _run_item(semaphore, compiled_definition, guardrails, company_id, eval_run.agent_version_id, item)
+                    _run_item(
+                        semaphore, compiled_definition, guardrails, company_id, eval_run_id,
+                        eval_run.agent_version_id, item
+                    )
                     for item in items[1:]
                 ]
             )
@@ -603,7 +643,14 @@ async def run_eval(company_id: str, eval_run_id: str) -> dict:
         await insert_eval_results(company_id, eval_run_id, result_rows)
 
         summary = _build_summary(item_runs, scores_by_item, requested_metrics, skipped_unsupported, metric_errors)
-        await update_eval_run_status(company_id, eval_run_id, status="completed", summary=summary)
+        # _run_item's own per-item check already stopped any item behind the cancellation
+        # from making its own LLM call - this is just the final bookkeeping: it must not be
+        # stomped back to "completed" by this write, whatever results did finish (either
+        # before the cancel landed, or the handful of items already past _run_item's check
+        # when it did) are still worth keeping either way.
+        final_run = await get_eval_run(company_id, eval_run_id)
+        final_status = "cancelled" if final_run is not None and final_run.status == "cancelled" else "completed"
+        await update_eval_run_status(company_id, eval_run_id, status=final_status, summary=summary)
         return summary
     except Exception as exc:  # noqa: BLE001 - see docstring: never crash the ARQ job loop
         await update_eval_run_status(company_id, eval_run_id, status="failed", error=str(exc))

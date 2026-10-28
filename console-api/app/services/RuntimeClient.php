@@ -293,6 +293,29 @@ class RuntimeClient
     }
 
     /**
+     * POST /internal/v1/evals/{id}/cancel - flips a `"queued"`/`"running"` eval run to
+     * `"cancelled"` (PRD §6.7), used by EvalsController::cancelEvalRun(). Documents 404
+     * (no such run for this company) and 409 (already reached a terminal state) as real,
+     * distinguishable outcomes - same requestWithStatus() shape as decideApproval()'s
+     * 404/409 pair just below.
+     *
+     * @return array<string, mixed>
+     */
+    public function cancelEvalRun(string $evalRunId): array
+    {
+        [$statusCode, $decoded] = $this->requestWithStatus('POST', "evals/{$evalRunId}/cancel", []);
+
+        if ($statusCode === 200) {
+            return $decoded;
+        }
+        if ($statusCode === 404 || $statusCode === 409) {
+            throw new EvalRequestInvalidException($statusCode, (string) ($decoded['detail'] ?? 'invalid'));
+        }
+
+        throw new RuntimeException("RuntimeClient: POST evals/{$evalRunId}/cancel failed with status {$statusCode}");
+    }
+
+    /**
      * POST /internal/v1/approvals/{id} - approve/reject a write tool call from the console
      * (PRD §6.5), used by ApprovalsController::decideApproval(). `decidedBy` is sent
      * explicitly (the console user's id) since the internal JWT itself carries no user

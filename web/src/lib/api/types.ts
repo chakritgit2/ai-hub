@@ -310,7 +310,7 @@ export interface EvalRun {
 	role: string;
 	metrics: string[];
 	judge_model: string | null;
-	status: 'queued' | 'running' | 'completed' | 'failed';
+	status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 	est_cost_usd: number | null;
 	summary: EvalRunSummary | null;
 	error: string | null;

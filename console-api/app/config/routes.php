@@ -115,7 +115,7 @@ return function (Router $router): void {
     $admin('POST', '/datasets/{id:[^/]+}/import', 'Datasets', 'importDatasetItems');
 
     // --- /evals (estimateEvalCost/createEvalRun/listEvalRuns/getEvalRun/
-    // getEvalRunResults/compareEvalRuns all real now) ---------------------------
+    // getEvalRunResults/compareEvalRuns/cancelEvalRun all real now) -------------
     // Registration order alone does NOT make the literal '/evals/compare' win over
     // '/evals/{id:[^/]+}' - confirmed live (a standalone Phalcon\Mvc\Router::handle()
     // script) that Phalcon 5.9's router resolved GET /evals/compare to
@@ -132,6 +132,7 @@ return function (Router $router): void {
     $admin('POST', '/evals', 'Evals', 'createEvalRun');
     $admin('GET', '/evals/{id:[0-9a-fA-F-]+}', 'Evals', 'getEvalRun');
     $admin('GET', '/evals/{id:[0-9a-fA-F-]+}/results', 'Evals', 'getEvalRunResults');
+    $admin('POST', '/evals/{id:[0-9a-fA-F-]+}/cancel', 'Evals', 'cancelEvalRun');
 
     // --- /approvals (x-phase: 2) ----------------------------------------------
     $admin('GET', '/approvals', 'Approvals', 'listApprovals');

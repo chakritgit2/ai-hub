@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
-	import { getEvalRun, getEvalRunResults } from '$lib/api/console';
+	import { getEvalRun, getEvalRunResults, cancelEvalRun } from '$lib/api/console';
 	import type { EvalRun, EvalResult } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 
@@ -9,6 +9,8 @@
 	let results = $state<EvalResult[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let cancelling = $state(false);
+	let cancelError = $state<string | null>(null);
 
 	async function load(id: string) {
 		loading = true;
@@ -23,6 +25,23 @@
 	}
 
 	onMount(() => load($page.params.id ?? ''));
+
+	// Cooperative cancel (see cancelEvalRun's own doc comment) - a 409 means it already
+	// reached completed/failed before this request landed (e.g. two tabs open), which
+	// reload() below surfaces correctly either way since it re-fetches the real status.
+	async function cancel() {
+		if (!evalRun) return;
+		cancelling = true;
+		cancelError = null;
+		try {
+			evalRun = await cancelEvalRun(evalRun.id);
+		} catch (e) {
+			cancelError = e instanceof Error ? e.message : 'Failed to cancel this eval run.';
+			await load($page.params.id ?? '');
+		} finally {
+			cancelling = false;
+		}
+	}
 
 	$effect(() => {
 		headerContent.set({ menu: 'Evaluation', title: 'Eval run detail' });
@@ -91,37 +110,63 @@
 				<p class="text-sm text-neutral-700">
 					Still {evalRun.status} — results aren't ready yet.
 				</p>
-				<button
-					type="button"
-					class="mt-3 rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
-					onclick={() => load($page.params.id ?? '')}
-				>
-					Refresh
-				</button>
+				{#if cancelError}
+					<p class="mt-2 text-sm text-danger">{cancelError}</p>
+				{/if}
+				<div class="mt-3 flex gap-2">
+					<button
+						type="button"
+						class="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
+						onclick={() => load($page.params.id ?? '')}
+					>
+						Refresh
+					</button>
+					<button
+						type="button"
+						disabled={cancelling}
+						class="rounded-md border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10
+							disabled:cursor-not-allowed disabled:opacity-50"
+						onclick={cancel}
+					>
+						{cancelling ? 'Cancelling…' : 'Cancel run'}
+					</button>
+				</div>
 			</div>
 		{:else if evalRun.status === 'failed'}
 			<div class="rounded-md border border-danger/30 bg-danger/5 p-4">
 				<p class="text-sm font-medium text-danger">This eval run failed</p>
 				<p class="mt-1 text-sm text-neutral-700">{evalRun.error ?? 'Unknown error.'}</p>
 			</div>
-		{:else if evalRun.summary}
-			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-				{#each tiles as tile (tile.label)}
-					<div class="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
-						<p class="text-xs font-medium uppercase tracking-wide text-neutral-500">{tile.label}</p>
-						<p class="mt-2 text-2xl font-semibold text-neutral-900">{tile.value}</p>
-					</div>
-				{/each}
-			</div>
-			{#if evalRun.summary.skipped_metrics.length > 0 || Object.keys(evalRun.summary.metric_errors).length > 0}
-				<div class="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-warning-dark">
-					{#if evalRun.summary.skipped_metrics.length > 0}
-						<p>Not executed (requested but unsupported): {evalRun.summary.skipped_metrics.join(', ')}</p>
+		{:else}
+			{#if evalRun.status === 'cancelled'}
+				<div class="rounded-md border border-neutral-300 bg-neutral-50 p-4">
+					<p class="text-sm font-medium text-neutral-700">This eval run was cancelled.</p>
+					{#if evalRun.summary}
+						<p class="mt-1 text-sm text-neutral-600">
+							The results below reflect whatever finished before it was cancelled.
+						</p>
 					{/if}
-					{#each Object.entries(evalRun.summary.metric_errors) as [metric, message]}
-						<p>{metric} failed to score: {message}</p>
+				</div>
+			{/if}
+			{#if evalRun.summary}
+				<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+					{#each tiles as tile (tile.label)}
+						<div class="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
+							<p class="text-xs font-medium uppercase tracking-wide text-neutral-500">{tile.label}</p>
+							<p class="mt-2 text-2xl font-semibold text-neutral-900">{tile.value}</p>
+						</div>
 					{/each}
 				</div>
+				{#if evalRun.summary.skipped_metrics.length > 0 || Object.keys(evalRun.summary.metric_errors).length > 0}
+					<div class="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs text-warning-dark">
+						{#if evalRun.summary.skipped_metrics.length > 0}
+							<p>Not executed (requested but unsupported): {evalRun.summary.skipped_metrics.join(', ')}</p>
+						{/if}
+						{#each Object.entries(evalRun.summary.metric_errors) as [metric, message]}
+							<p>{metric} failed to score: {message}</p>
+						{/each}
+					</div>
+				{/if}
 			{/if}
 		{/if}
 

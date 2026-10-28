@@ -218,6 +218,46 @@ final class RuntimeClientTest extends TestCase
         self::assertSame('company-1', $capturedRequest->getHeaderLine('X-Company-Id'));
     }
 
+    public function testCancelEvalRunSendsSignedTokenAndReturnsDecodedResult(): void
+    {
+        /** @var Request|null $capturedRequest */
+        $capturedRequest = null;
+        $history = static function ($request) use (&$capturedRequest): void {
+            $capturedRequest = $request;
+        };
+
+        $mock = new MockHandler([new Response(200, [], json_encode(['id' => 'run-1', 'status' => 'cancelled']))]);
+        $stack = HandlerStack::create($mock);
+        $stack->push(\GuzzleHttp\Middleware::tap($history));
+        $http = new Client(['handler' => $stack, 'base_uri' => 'http://ai-runtime.invalid/internal/v1/']);
+
+        $client = $this->makeRuntimeClient($http, 'company-1');
+
+        $result = $client->cancelEvalRun('run-1');
+
+        self::assertSame(['id' => 'run-1', 'status' => 'cancelled'], $result);
+        self::assertNotNull($capturedRequest);
+        self::assertSame('POST', $capturedRequest->getMethod());
+        self::assertSame('/internal/v1/evals/run-1/cancel', $capturedRequest->getUri()->getPath());
+        self::assertSame('company-1', $capturedRequest->getHeaderLine('X-Company-Id'));
+    }
+
+    public function testCancelEvalRunThrowsEvalRequestInvalidExceptionOnConflict(): void
+    {
+        $mock = new MockHandler([new Response(409, [], json_encode(['detail' => 'eval_run_already_completed']))]);
+        $http = new Client(['handler' => HandlerStack::create($mock)]);
+
+        $client = $this->makeRuntimeClient($http, 'company-1');
+
+        try {
+            $client->cancelEvalRun('run-1');
+            self::fail('Expected an EvalRequestInvalidException');
+        } catch (\ConsoleApi\Services\EvalRequestInvalidException $exception) {
+            self::assertSame(409, $exception->getStatusCode());
+            self::assertSame('eval_run_already_completed', $exception->getMessage());
+        }
+    }
+
     public function testCompileAgentSpecWithoutCompanyContextThrows(): void
     {
         $mock = new MockHandler([new Response(200, [], '{}')]);

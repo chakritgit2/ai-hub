@@ -102,11 +102,16 @@
 		completed: 'bg-primary/10 text-primary-700',
 		failed: 'bg-danger/10 text-danger',
 		running: 'bg-warning/10 text-warning-dark',
-		queued: 'bg-neutral-100 text-neutral-600'
+		queued: 'bg-neutral-100 text-neutral-600',
+		cancelled: 'bg-neutral-200 text-neutral-700'
 	};
 
 	function summarySnippet(run: EvalRun): string {
-		if (run.status !== 'completed' || !run.summary) {
+		// A cancelled run can still carry a real partial summary (whatever finished before
+		// the cancel landed) - same data shape evaluation/[id]'s detail page already shows
+		// tiles for, so this list view shouldn't flatten it to "—" just because the status
+		// isn't "completed".
+		if ((run.status !== 'completed' && run.status !== 'cancelled') || !run.summary) {
 			return '—';
 		}
 		const scores = Object.entries(run.summary.mean_scores);

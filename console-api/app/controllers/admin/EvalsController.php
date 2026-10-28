@@ -186,6 +186,38 @@ class EvalsController extends ControllerBase
         return $this->jsonResponse($result, 201);
     }
 
+    public function cancelEvalRun(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        // Not requireMembership() - same write-role gate createEvalRun() uses, since this
+        // changes a run's state (PRD §7.2: viewer is read-only everywhere).
+        if (($error = $this->requireWriteRole()) !== null) {
+            return $error;
+        }
+        if (!$this->isUuid($id)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        /** @var RuntimeClient $runtimeClient */
+        $runtimeClient = $this->getDI()->getShared('runtimeClient');
+        try {
+            $result = $runtimeClient->cancelEvalRun($id);
+        } catch (EvalRequestInvalidException $exception) {
+            $error = $exception->getStatusCode() === 409 ? 'already_terminal' : 'not_found';
+
+            return $this->jsonResponse(['error' => $error, 'message' => $exception->getMessage()], $exception->getStatusCode());
+        } catch (RuntimeException $exception) {
+            return $this->jsonResponse(
+                ['error' => 'cancel_eval_run_failed', 'message' => $exception->getMessage()],
+                502
+            );
+        }
+
+        return $this->jsonResponse($result);
+    }
+
     public function getEvalRun(string $id): Response
     {
         if (($error = $this->requireCompanyId()) !== null) {

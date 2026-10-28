@@ -15,7 +15,12 @@ from app.services import eval_runner as eval_runner_module
 from app.services.agent_spec import GuardrailsSpec
 from app.services.datasets import DatasetItemRow, list_dataset_items, resolve_dataset
 from app.services.eval_runner import _run_item, _tokens_for_item, estimate_eval_cost, run_eval
-from app.services.eval_runs import create_eval_run, get_eval_run
+from app.services.eval_runs import (
+    create_eval_run,
+    get_eval_run,
+    request_eval_run_cancellation,
+    update_eval_run_status,
+)
 from app.services.model_pricing import get_model_pricing
 
 from .markers import fake_internal_claims, requires_postgres
@@ -191,7 +196,18 @@ def test_tokens_for_item_treats_empty_string_answer_as_zero_length():
     assert with_empty_context.judge_input == with_missing_context.judge_input
 
 
-async def test_run_item_disallows_write_tools(monkeypatch) -> None:
+@pytest.fixture
+def fake_not_cancelled(monkeypatch):
+    """Stands in for `get_eval_run` for `_run_item` tests that don't involve a real
+    `eval_runs` row - `_run_item` checks it for cancellation before every item's LLM call
+    (see its own comment)."""
+    async def _fake(*_args, **_kwargs):
+        return SimpleNamespace(status="running")
+
+    monkeypatch.setattr(eval_runner_module, "get_eval_run", _fake)
+
+
+async def test_run_item_disallows_write_tools(monkeypatch, fake_not_cancelled) -> None:
     """An eval run is unattended - no human is watching to approve/reject a write-tool
     call - so `_run_item` must pass `allow_write_tools=False` to `execute_agent_run`
     (fails the tool call immediately, same as a deployment that disallows write tools)
@@ -207,9 +223,35 @@ async def test_run_item_disallows_write_tools(monkeypatch) -> None:
     monkeypatch.setattr(eval_runner_module, "execute_agent_run", _fake_execute_agent_run)
 
     item = DatasetItemRow(id="item-1", question="Q", expected_answer=None, context=None, tags=[])
-    await _run_item(asyncio.Semaphore(1), {}, GuardrailsSpec(), "company-1", "agent-version-1", item)
+    await _run_item(asyncio.Semaphore(1), {}, GuardrailsSpec(), "company-1", "eval-run-1", "agent-version-1", item)
 
     assert captured["allow_write_tools"] is False
+
+
+async def test_run_item_skips_llm_call_when_already_cancelled(monkeypatch) -> None:
+    """The per-item cancellation check (added after finding the fan-out would otherwise
+    let every remaining item run to completion regardless of a mid-run cancel) must skip
+    execute_agent_run entirely, not just annotate its result afterward - a skipped item
+    costs nothing, a called-then-discarded one still would."""
+    called = False
+
+    async def _fake_execute_agent_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {"output": "fake answer", "cost_usd": 0.0}
+
+    async def _fake_cancelled(*_args, **_kwargs):
+        return SimpleNamespace(status="cancelled")
+
+    monkeypatch.setattr(eval_runner_module, "execute_agent_run", _fake_execute_agent_run)
+    monkeypatch.setattr(eval_runner_module, "get_eval_run", _fake_cancelled)
+
+    item = DatasetItemRow(id="item-1", question="Q", expected_answer=None, context=None, tags=[])
+    result = await _run_item(asyncio.Semaphore(1), {}, GuardrailsSpec(), "company-1", "eval-run-1", "agent-version-1", item)
+
+    assert called is False
+    assert result.error == "cancelled"
+    assert result.answer is None
 
 
 async def test_estimate_eval_cost_happy_path(
@@ -660,3 +702,126 @@ async def test_run_eval_missing_eval_run_marks_status_failed(company_ids):
 
     assert result["status"] == "failed"
     assert "not found" in result["error"]
+
+
+async def test_request_eval_run_cancellation_flips_queued_to_cancelled(
+    company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match"], None, None
+    )
+
+    result = await request_eval_run_cancellation(company_id, eval_run.id)
+
+    assert result is not None
+    assert result.status == "cancelled"
+    assert (await get_eval_run(company_id, eval_run.id)).status == "cancelled"
+
+
+async def test_request_eval_run_cancellation_is_noop_for_terminal_status(
+    company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    """A run that already reached "completed"/"failed" can't be cancelled - the caller
+    (main_runtime.py's cancelEvalRun) uses this unchanged terminal status to respond 409
+    instead of silently pretending the cancel worked."""
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match"], None, None
+    )
+    await update_eval_run_status(company_id, eval_run.id, status="completed", summary={})
+
+    result = await request_eval_run_cancellation(company_id, eval_run.id)
+
+    assert result is not None
+    assert result.status == "completed"
+
+
+async def test_request_eval_run_cancellation_returns_none_for_unknown_id(company_ids):
+    company_id = company_ids()
+    assert await request_eval_run_cancellation(company_id, str(uuid.uuid4())) is None
+
+
+async def test_run_eval_skips_execution_when_cancelled_before_start(
+    company_ids, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    """A cancel request that lands while the job is still "queued" (before the ARQ worker
+    picked it up) is the one case run_eval can respect for free, without needing to
+    interrupt anything already in flight - see run_eval's own docstring."""
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    make_dataset_item(company_id, dataset_id, question="Q1", expected_answer="4")
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match"], None, None
+    )
+    await update_eval_run_status(company_id, eval_run.id, status="cancelled")
+
+    result = await run_eval(company_id, eval_run.id)
+
+    assert result == {"status": "cancelled"}
+    assert (await get_eval_run(company_id, eval_run.id)).status == "cancelled"
+    assert await _fetch_eval_results(company_id, eval_run.id) == {}
+
+
+async def test_run_eval_per_item_check_stops_items_behind_a_mid_run_cancel(
+    scoring_fake_agent, company_ids, make_dataset, make_dataset_item, resolvable_agent_version, monkeypatch
+):
+    """A cancel request landing after the item fan-out already started can't recall
+    item 1's LLM call (already past its own per-item check by the time this fakes the
+    cancel landing), but every item behind it must see it and skip their own LLM call -
+    without `_run_item`'s per-item check, this is the scenario where every item would
+    run to completion regardless (see run_eval's and _run_item's own comments). The
+    final status write must also not stomp "cancelled" back to "completed", and item 1's
+    already-finished work must not be thrown away."""
+    company_id = company_ids()
+    dataset_id = make_dataset(company_id)
+    make_dataset_item(company_id, dataset_id, question="Q1", expected_answer="4")
+    make_dataset_item(company_id, dataset_id, question="Q2", expected_answer="Bangkok")
+    make_dataset_item(company_id, dataset_id, question="Q3", expected_answer="X")
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    scoring_fake_agent.replies = {"Q1": "4", "Q2": "Bangkok", "Q3": "X"}
+
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match"], None, None
+    )
+
+    real_get_eval_run = get_eval_run
+    calls = {"n": 0}
+
+    async def fake_get_eval_run(cid, eval_run_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # run_eval's own top-of-function fetch - needs the real row (dataset_id,
+            # agent_version_id, metrics, ...), not just a status.
+            return await real_get_eval_run(cid, eval_run_id)
+        if calls["n"] == 2:
+            # Item 1 (run alone, before the rest fan out - see run_eval's cold-start-race
+            # comment) own per-item check - let it through so at least one item does real
+            # work before the simulated cancel lands.
+            return SimpleNamespace(status="running")
+        # Every check after that simulates a cancel request landing right after item 1
+        # started - items 2 and 3 (fanned out together, after item 1 finishes) must both
+        # see this and skip their own LLM call. Also what run_eval's own final check sees.
+        return SimpleNamespace(status="cancelled")
+
+    monkeypatch.setattr(eval_runner_module, "get_eval_run", fake_get_eval_run)
+
+    summary = await run_eval(company_id, eval_run.id)
+
+    assert summary["item_count"] == 3
+    assert summary["success_count"] == 1
+    assert summary["failure_count"] == 2
+    assert summary["mean_scores"]["exact_match"] == 1.0  # only item 1 was eligible to score
+    assert scoring_fake_agent.calls == ["Q1"]  # items 2/3 never reached the fake agent
+
+    updated = await real_get_eval_run(company_id, eval_run.id)
+    assert updated.status == "cancelled"
+    assert updated.summary["mean_scores"]["exact_match"] == 1.0
+
+    results = await _fetch_eval_results(company_id, eval_run.id)
+    assert len(results) == 3

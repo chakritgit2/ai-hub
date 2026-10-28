@@ -6,6 +6,7 @@ import pytest
 from app import main_runtime as main_runtime_module
 from app.main_runtime import app as runtime_app
 from app.main_runtime import require_internal_auth
+from app.services.eval_runs import create_eval_run, update_eval_run_status
 
 from .markers import fake_internal_claims, requires_postgres
 
@@ -220,3 +221,51 @@ async def test_create_eval_run_endpoint_uncompilable_agent_version_is_422(
     )
     assert resp.status_code == 422
     assert fake_arq_pool.enqueued == []
+
+
+async def test_cancel_eval_run_endpoint_happy_path(
+    internal_client, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    client, company_id = internal_client
+    dataset_id = make_dataset(company_id)
+    make_dataset_item(company_id, dataset_id)
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match"], None, None
+    )
+    assert eval_run.status == "queued"
+
+    resp = await client.post(f"/internal/v1/evals/{eval_run.id}/cancel")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+
+
+async def test_cancel_eval_run_endpoint_already_terminal_is_409(
+    internal_client, make_dataset, make_dataset_item, resolvable_agent_version
+):
+    client, company_id = internal_client
+    dataset_id = make_dataset(company_id)
+    make_dataset_item(company_id, dataset_id)
+    agent_version_id = await resolvable_agent_version(company_id, model="gpt-4o-mini")
+    eval_run = await create_eval_run(
+        company_id, agent_version_id, dataset_id, "developer", ["exact_match"], None, None
+    )
+    await update_eval_run_status(company_id, eval_run.id, status="completed", summary={})
+
+    resp = await client.post(f"/internal/v1/evals/{eval_run.id}/cancel")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "eval_run_already_completed"
+
+
+async def test_cancel_eval_run_endpoint_unknown_id_is_404(internal_client):
+    client, _company_id = internal_client
+    resp = await client.post(f"/internal/v1/evals/{uuid.uuid4()}/cancel")
+    assert resp.status_code == 404
+
+
+async def test_cancel_eval_run_endpoint_malformed_id_is_404(internal_client):
+    client, _company_id = internal_client
+    resp = await client.post("/internal/v1/evals/not-a-uuid/cancel")
+    assert resp.status_code == 404

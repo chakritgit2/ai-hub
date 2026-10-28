@@ -65,6 +65,7 @@ from app.services.eval_runner import (
     estimate_eval_cost,
 )
 from app.services.eval_runs import create_eval_run as create_eval_run_row
+from app.services.eval_runs import request_eval_run_cancellation
 from app.services.kb_export import export_knowledge_base_zip
 from app.services.kb_search import search_knowledge_base
 from app.services.knowledge_bases import (
@@ -1075,10 +1076,35 @@ async def createEvalRun(body: CreateEvalRunRequest, claims: InternalAuth) -> Res
     )
 
 
-@app.post("/internal/v1/evals/{id}/cancel")
+@app.post("/internal/v1/evals/{id}/cancel", response_model=EvalRunResponse)
 async def cancelEvalRun(id: str, claims: InternalAuth) -> Response:
-    """Phase 3."""
-    return _not_implemented("cancelEvalRun")
+    """Flips a `"queued"`/`"running"` eval run to `"cancelled"` - see
+    `request_eval_run_cancellation`'s own docstring for the race-free single-UPDATE
+    shape, and `eval_runner.run_eval`'s docstring for how far this actually reaches
+    once a job has started (cooperative, not a hard interrupt)."""
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="not_found")
+
+    eval_run = await request_eval_run_cancellation(company_id, id)
+    if eval_run is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    if eval_run.status != "cancelled":
+        # Already reached a terminal state (completed/failed) before this request landed.
+        raise HTTPException(status_code=409, detail=f"eval_run_already_{eval_run.status}")
+
+    return JSONResponse(
+        content=EvalRunResponse(
+            id=eval_run.id,
+            agent_version_id=eval_run.agent_version_id,
+            dataset_id=eval_run.dataset_id,
+            role=eval_run.role,
+            metrics=eval_run.metrics,
+            judge_model=eval_run.judge_model,
+            status=eval_run.status,
+            est_cost_usd=eval_run.est_cost_usd,
+        ).model_dump()
+    )
 
 
 class DecideApprovalRequest(BaseModel):

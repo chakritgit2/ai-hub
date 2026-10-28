@@ -391,6 +391,15 @@ export function compareEvalRuns(a: string, b: string): Promise<EvalRunComparison
 	return apiFetch<EvalRunComparison>(`/evals/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
 }
 
+/**
+ * Forwards to ai-runtime (PRD §6.7) - cooperative, not a hard interrupt: see
+ * eval_runner.py's run_eval docstring for exactly how far this reaches once a run has
+ * already started. 409 (ApiError) if the run already reached a terminal state.
+ */
+export function cancelEvalRun(id: string): Promise<EvalRun> {
+	return apiFetch<EvalRun>(`/evals/${id}/cancel`, { method: 'POST' });
+}
+
 // ---- /approvals (PRD §6.5) --------------------------------------------------
 
 export function listApprovals(): Promise<Approval[]> {
