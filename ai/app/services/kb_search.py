@@ -63,7 +63,16 @@ async def search_knowledge_base(company_id: str, kb_id: str, query: str, top_k: 
         raise ValueError("embedder_connection_secret_not_found")
 
     _connection, embedder = build_embedder(connection_row.type, {"api_key": secret, "url": connection_row.api_base})
-    embedded = await embedder.embed_text_async(query)
+    try:
+        embedded = await embedder.embed_text_async(query)
+    except Exception as exc:
+        # Every other provider-touching endpoint in this codebase (testConnection,
+        # listConnectionModels, testTool) cleanly reports a bad/expired embedder secret
+        # or provider outage instead of letting it propagate - this call was the one
+        # exception, surfacing as an unhandled 500 (502 through console-api) with no
+        # useful detail. A plain ValueError so main_runtime's existing `except ValueError`
+        # branch maps it to a clean 422, same as the vector-store-missing case below.
+        raise ValueError(f"embedder_request_failed: {exc}") from exc
     query_embedding = embedded["embedding"]
 
     table_name = kb_vector_table_name(company_id, kb_id)

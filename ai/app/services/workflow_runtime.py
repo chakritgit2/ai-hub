@@ -321,7 +321,7 @@ async def run_deployment_workflow(
 
     rate_limit = await check_rate_limit(deployment_id, deployment.rate_limit_per_min)
     if not rate_limit.allowed:
-        raise QuotaExceededError("rate_limit", reset_at=None)
+        raise QuotaExceededError("rate_limit", reset_at=rate_limit.reset_at)
 
     budget_check = await check_monthly_budget_not_exceeded(company_id)
     if not budget_check.allowed:

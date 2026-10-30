@@ -414,8 +414,13 @@ async def cancelRun(id: str, claims: RuntimeAuth) -> Response:
 
     deadline = time.monotonic() + CANCEL_REGISTRATION_GRACE_SECONDS
     while True:
+        # .get(), not claims["agent_version_id"]: a workflow-shaped runtime token (now
+        # also accepted by verify_runtime_token) has no such claim - workflow runs never
+        # register() with run_registry in the first place (no streaming/cancel support
+        # yet), so this correctly falls through to the same 404 a genuinely-unknown id
+        # gets, instead of an unhandled KeyError/500.
         cancelled = run_registry.request_cancel(
-            id, company_id=claims["company_id"], agent_version_id=claims["agent_version_id"]
+            id, company_id=claims["company_id"], agent_version_id=claims.get("agent_version_id")
         )
         if cancelled:
             return JSONResponse(content={"status": "cancel_requested"})

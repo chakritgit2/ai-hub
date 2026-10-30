@@ -80,6 +80,35 @@ def test_verify_runtime_token_rejects_missing_claims(monkeypatch):
         verify_runtime_token(token)
 
 
+def test_verify_runtime_token_accepts_a_workflow_shaped_token(monkeypatch):
+    """TokenIssuer::issueWorkflowRuntimeToken puts `workflow_version_id` in the JWT, never
+    `agent_version_id` - this token shape used to be rejected outright with "missing
+    claims ['agent_version_id']", making runPlaygroundWorkflow unreachable end to end."""
+    private_key, keys = _keypair_and_jwks()
+    _patch_jwks(monkeypatch, keys)
+
+    claims = _runtime_claims()
+    del claims["agent_version_id"]
+    claims["workflow_version_id"] = "workflow-version-1"
+    token = _sign(private_key, claims)
+
+    verified = verify_runtime_token(token)
+    assert verified["workflow_version_id"] == "workflow-version-1"
+    assert "agent_version_id" not in verified
+
+
+def test_verify_runtime_token_rejects_a_token_with_neither_version_claim(monkeypatch):
+    private_key, keys = _keypair_and_jwks()
+    _patch_jwks(monkeypatch, keys)
+
+    claims = _runtime_claims()
+    del claims["agent_version_id"]
+    token = _sign(private_key, claims)  # no workflow_version_id either
+
+    with pytest.raises(InvalidTokenError):
+        verify_runtime_token(token)
+
+
 def test_verify_runtime_token_rejects_expired(monkeypatch):
     private_key, keys = _keypair_and_jwks()
     _patch_jwks(monkeypatch, keys)

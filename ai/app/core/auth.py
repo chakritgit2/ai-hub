@@ -76,12 +76,21 @@ def _verify(token: str, *, audience: str, issuer: str) -> dict:
 
 
 def verify_runtime_token(token: str) -> dict:
+    """Shared by every Playground endpoint (`RuntimeAuth` in main_runtime.py) - both the
+    agent-shaped token console-api's `POST /runtime-token` issues (carries
+    `agent_version_id`) and the workflow-shaped one `POST /workflow-runtime-token` issues
+    (carries `workflow_version_id` instead, never both - TokenIssuer.php's own two
+    methods are mutually exclusive). Requiring `agent_version_id` unconditionally here
+    used to reject every valid workflow token outright ("missing claims
+    ['agent_version_id']"), making runPlaygroundWorkflow unreachable end to end."""
     settings = get_settings()
     payload = _verify(token, audience=settings.RUNTIME_TOKEN_AUD, issuer=settings.CONSOLE_INTERNAL_JWT_ISSUER)
 
-    missing = [c for c in ("company_id", "user_id", "role", "agent_version_id") if c not in payload]
+    missing = [c for c in ("company_id", "user_id", "role") if c not in payload]
     if missing:
         raise InvalidTokenError(f"invalid_token: missing claims {missing}")
+    if "agent_version_id" not in payload and "workflow_version_id" not in payload:
+        raise InvalidTokenError("invalid_token: missing claims ['agent_version_id' or 'workflow_version_id']")
 
     return payload
 

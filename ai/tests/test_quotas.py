@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 import pytest
 import redis.exceptions
@@ -29,10 +30,16 @@ async def test_rate_limit_allows_then_blocks_at_limit(deployment_id) -> None:
     for _ in range(3):
         result = await check_rate_limit(deployment_id, rate_limit_per_min=3)
         assert result.allowed
+        assert result.reset_at is None  # only set on the rejected call
 
     blocked = await check_rate_limit(deployment_id, rate_limit_per_min=3)
     assert not blocked.allowed
     assert blocked.limit == 3
+    # Callers used to always get reset_at=None here (app.services.runtime/
+    # workflow_runtime hardcoded it on the 429 path) - a client can't back off
+    # intelligently without a real value.
+    assert blocked.reset_at is not None
+    assert blocked.reset_at > datetime.now(blocked.reset_at.tzinfo)
 
 
 @requires_redis
@@ -54,6 +61,23 @@ async def test_reserve_quota_without_limits_skips_redis_and_always_allows(deploy
     )
     assert reservation.allowed
     assert reservation.reserved_tokens == 0
+
+
+@requires_redis
+async def test_reserve_quota_does_not_crash_for_a_model_litellm_cant_price(deployment_id) -> None:
+    """litellm.cost_per_token() raises a plain Exception for any model it has no price
+    mapping for (confirmed live against a real deployment whose agent version's model
+    string litellm didn't recognize) - this used to propagate uncaught all the way out to
+    an unhandled 500 on every gateway call to that deployment, for any deployment with a
+    daily_token_limit/daily_cost_limit_usd configured. Token-based limiting must still
+    work even though cost is unknown."""
+    reservation = await reserve_quota(
+        deployment_id, "not-a-real-model/nonexistent", max_tokens=600, daily_token_limit=1000,
+        daily_cost_limit_usd=None,
+    )
+    assert reservation.allowed
+    assert reservation.reserved_tokens == 600
+    assert reservation.reserved_cost_usd == 0.0
 
 
 @requires_redis

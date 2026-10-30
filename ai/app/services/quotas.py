@@ -62,6 +62,9 @@ def _cost_key(deployment_id: str, today: str) -> str:
 class RateLimitResult:
     allowed: bool
     limit: int | None = None
+    # The fixed window's own end - set only when allowed=False, so a 429 caller can back
+    # off intelligently instead of guessing (this used to always be None at the call site).
+    reset_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -120,7 +123,9 @@ async def check_rate_limit(deployment_id: str, rate_limit_per_min: int) -> RateL
         logger.warning("rate limit check failed open: Redis unavailable", exc_info=True)
         return RateLimitResult(allowed=True)
 
-    return RateLimitResult(allowed=count <= rate_limit_per_min, limit=rate_limit_per_min)
+    allowed = count <= rate_limit_per_min
+    reset_at = datetime.fromtimestamp((minute_bucket + 1) * 60, tz=_BANGKOK) if not allowed else None
+    return RateLimitResult(allowed=allowed, limit=rate_limit_per_min, reset_at=reset_at)
 
 
 async def reserve_quota(
@@ -139,7 +144,21 @@ async def reserve_quota(
         return QuotaReservation(allowed=True)
 
     estimated_tokens = max_tokens or _DEFAULT_MAX_TOKENS_ESTIMATE
-    _prompt_cost, completion_cost_per_token = cost_per_token(model, prompt_tokens=0, completion_tokens=1)
+    try:
+        _prompt_cost, completion_cost_per_token = cost_per_token(model, prompt_tokens=0, completion_tokens=1)
+    except Exception:
+        # litellm.cost_per_token() raises a plain Exception for any model it has no
+        # price mapping for (confirmed live: a deployment whose agent version's model
+        # string litellm doesn't recognize), completely unguarded - this used to
+        # propagate past run_deployment_agent and main_gateway's own (QuotaExceededError,
+        # ValueError, RuntimeError) catch, turning every gateway call to that deployment
+        # into an unhandled 500. A pricing lookup failure is a model-mapping/config
+        # problem, not a reason to stop serving requests - degrade to "cost unknown" (0)
+        # so token-based limiting (which doesn't depend on this) still works, rather than
+        # fail closed and break the deployment entirely.
+        logger.warning("quota reservation: cost_per_token failed for model %r, treating cost as 0", model,
+                        exc_info=True)
+        completion_cost_per_token = 0.0
     reserved_cost_usd = estimated_tokens * completion_cost_per_token
 
     today = _bangkok_today()
