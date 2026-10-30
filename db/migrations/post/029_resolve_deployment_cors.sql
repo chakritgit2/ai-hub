@@ -12,7 +12,7 @@
 -- same information the real request's own CORS-enforced response would reveal anyway).
 BEGIN;
 
-CREATE FUNCTION console.resolve_deployment_cors(p_slug varchar)
+CREATE OR REPLACE FUNCTION console.resolve_deployment_cors(p_slug varchar)
 RETURNS TABLE(allowed_origins jsonb, enabled boolean)
 LANGUAGE sql
 SECURITY DEFINER
