@@ -18,6 +18,16 @@ export interface Company {
 	monthly_budget_usd?: number;
 }
 
+export interface ModelPricing {
+	id: string;
+	provider: string;
+	model: string;
+	input_per_1k: number;
+	output_per_1k: number;
+	created_at: string;
+	updated_at: string;
+}
+
 export interface CompanyUser {
 	id: string;
 	email: string;

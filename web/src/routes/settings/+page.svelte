@@ -16,10 +16,21 @@
 		createTenant,
 		suspendTenant,
 		activateTenant,
+		listModelPricing,
+		createModelPricing,
+		updateModelPricing,
+		deleteModelPricing,
 		listAuditLogs
 	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
-	import type { CompanyUser, Company, Tenant, EgressAllowlistEntry, AuditLogEntry } from '$lib/api/types';
+	import type {
+		CompanyUser,
+		Company,
+		Tenant,
+		EgressAllowlistEntry,
+		ModelPricing,
+		AuditLogEntry
+	} from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
@@ -84,6 +95,114 @@
 
 	function tenantName(tenantId: string): string {
 		return tenants.find((t) => t.id === tenantId)?.name ?? tenantId;
+	}
+
+	let pricing = $state<ModelPricing[]>([]);
+	let pricingLoading = $state(true);
+	let pricingError = $state<string | null>(null);
+	let showPricingForm = $state(false);
+	let editingPricingId = $state<string | null>(null);
+	// input_per_1k/output_per_1k bind to type="number" inputs, which Svelte coerces to
+	// number | null (same reasoning as egressForm.port/companyForm.monthly_budget_usd above).
+	let pricingForm = $state<{
+		provider: string;
+		model: string;
+		input_per_1k: number | null;
+		output_per_1k: number | null;
+	}>({ provider: '', model: '', input_per_1k: null, output_per_1k: null });
+	let pricingFormError = $state<string | null>(null);
+	let submittingPricing = $state(false);
+	let pricingActionId = $state<string | null>(null);
+	let pricingActionError = $state<string | null>(null);
+
+	const PRICING_ERROR_MESSAGES: Record<string, string> = {
+		provider_required: 'Provider is required.',
+		model_required: 'Model is required.',
+		invalid_input_per_1k: 'Input price must be a number.',
+		invalid_output_per_1k: 'Output price must be a number.',
+		provider_model_already_exists: 'A pricing row for this provider and model already exists.',
+		forbidden: 'You no longer have permission to do this.',
+		not_found: 'This pricing row no longer exists - it may have been changed by someone else.'
+	};
+
+	function describePricingError(e: unknown, fallback: string): string {
+		if (e instanceof ApiError) return PRICING_ERROR_MESSAGES[e.message] ?? e.message;
+		return e instanceof Error ? e.message : fallback;
+	}
+
+	async function loadPricing() {
+		pricingLoading = true;
+		pricingError = null;
+		try {
+			pricing = await listModelPricing();
+		} catch (e) {
+			pricingError = e instanceof Error ? e.message : 'Failed to load model pricing.';
+		} finally {
+			pricingLoading = false;
+		}
+	}
+
+	function startCreatePricing() {
+		editingPricingId = null;
+		pricingForm = { provider: '', model: '', input_per_1k: null, output_per_1k: null };
+		pricingFormError = null;
+		showPricingForm = true;
+	}
+
+	function startEditPricing(row: ModelPricing) {
+		editingPricingId = row.id;
+		pricingForm = {
+			provider: row.provider,
+			model: row.model,
+			input_per_1k: row.input_per_1k,
+			output_per_1k: row.output_per_1k
+		};
+		pricingFormError = null;
+		showPricingForm = true;
+	}
+
+	async function submitPricingForm() {
+		submittingPricing = true;
+		pricingFormError = null;
+		try {
+			const input = {
+				provider: pricingForm.provider.trim(),
+				model: pricingForm.model.trim(),
+				input_per_1k: pricingForm.input_per_1k ?? 0,
+				output_per_1k: pricingForm.output_per_1k ?? 0
+			};
+			if (editingPricingId === null) {
+				await createModelPricing(input);
+			} else {
+				await updateModelPricing(editingPricingId, input);
+			}
+			showPricingForm = false;
+			await loadPricing();
+		} catch (e) {
+			pricingFormError = describePricingError(e, 'Failed to save this pricing row.');
+		} finally {
+			submittingPricing = false;
+		}
+	}
+
+	async function doDeletePricing(row: ModelPricing) {
+		if (
+			!confirm(
+				`Delete pricing for "${row.provider} / ${row.model}"? Eval cost estimates for this model will no longer be available until it's added back.`
+			)
+		) {
+			return;
+		}
+		pricingActionId = row.id;
+		pricingActionError = null;
+		try {
+			await deleteModelPricing(row.id);
+			await loadPricing();
+		} catch (e) {
+			pricingActionError = describePricingError(e, 'Failed to delete this pricing row.');
+		} finally {
+			pricingActionId = null;
+		}
 	}
 
 	const AUDIT_LOG_PAGE_SIZE = 50;
@@ -453,6 +572,12 @@
 			tenants.length === 0
 		) {
 			loadTenants();
+		}
+	});
+
+	$effect(() => {
+		if (activeTab === 'pricing' && $currentUser?.is_platform_admin && pricing.length === 0) {
+			loadPricing();
 		}
 	});
 
@@ -1088,13 +1213,166 @@
 				platform_admin only.
 			</div>
 		{:else}
-			<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
-				<p class="text-sm text-neutral-500">
-					Model pricing (provider, model, input/output per 1K) has no dedicated endpoint in the
-					current OpenAPI contract yet — add one under <code>/settings/model-pricing</code> when
-					designed.
+			<div class="mb-4 flex items-center justify-between">
+				<p class="text-xs text-neutral-400">
+					$/1K-token rates used for the Evals cost estimate (PRD §6.7) - actual run cost comes from
+					litellm directly and does not read this table.
 				</p>
+				<button
+					type="button"
+					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+					onclick={startCreatePricing}
+				>
+					+ New pricing row
+				</button>
 			</div>
+
+			{#if showPricingForm}
+				<form
+					class="mb-4 grid grid-cols-1 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-2"
+					onsubmit={(e) => {
+						e.preventDefault();
+						submitPricingForm();
+					}}
+				>
+					{#if pricingFormError}
+						<div class="sm:col-span-2 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+							{pricingFormError}
+						</div>
+					{/if}
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Provider</span>
+						<input
+							type="text"
+							bind:value={pricingForm.provider}
+							required
+							placeholder="anthropic"
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Model</span>
+						<input
+							type="text"
+							bind:value={pricingForm.model}
+							required
+							placeholder="claude-sonnet-5"
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Input $ per 1K tokens</span>
+						<input
+							type="number"
+							min="0"
+							step="0.000001"
+							bind:value={pricingForm.input_per_1k}
+							required
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Output $ per 1K tokens</span>
+						<input
+							type="number"
+							min="0"
+							step="0.000001"
+							bind:value={pricingForm.output_per_1k}
+							required
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+					</label>
+					<div class="flex gap-2 sm:col-span-2">
+						<button
+							type="submit"
+							disabled={submittingPricing}
+							class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+						>
+							{submittingPricing ? 'Saving…' : 'Save pricing row'}
+						</button>
+						<button
+							type="button"
+							class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
+							onclick={() => (showPricingForm = false)}
+						>
+							Cancel
+						</button>
+					</div>
+				</form>
+			{/if}
+
+			{#if pricingActionError}
+				<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3">
+					<p class="text-sm text-danger">{pricingActionError}</p>
+				</div>
+			{/if}
+
+			{#if pricingLoading}
+				<p class="text-sm text-neutral-500" role="status">Loading model pricing…</p>
+			{:else if pricingError}
+				<div class="rounded-md border border-danger/30 bg-danger/5 p-4">
+					<p class="text-sm font-medium text-danger">Could not load model pricing</p>
+					<p class="mt-1 text-sm text-neutral-700">{pricingError}</p>
+					<button
+						type="button"
+						class="mt-3 rounded-md border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10"
+						onclick={loadPricing}
+					>
+						Retry
+					</button>
+				</div>
+			{:else if pricing.length === 0}
+				<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
+					<p class="text-sm text-neutral-500">No pricing rows yet.</p>
+				</div>
+			{:else}
+				<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
+					<table class="min-w-full divide-y divide-neutral-200 text-sm">
+						<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
+							<tr>
+								<th class="px-4 py-2">Provider</th>
+								<th class="px-4 py-2">Model</th>
+								<th class="px-4 py-2">Input $/1K</th>
+								<th class="px-4 py-2">Output $/1K</th>
+								<th class="px-4 py-2">Actions</th>
+							</tr>
+						</thead>
+						<tbody class="divide-y divide-neutral-100">
+							{#each pricing as row (row.id)}
+								<tr>
+									<td class="px-4 py-2 text-neutral-800">{row.provider}</td>
+									<td class="px-4 py-2 font-mono text-xs text-neutral-800">{row.model}</td>
+									<td class="px-4 py-2 text-neutral-600">{row.input_per_1k}</td>
+									<td class="px-4 py-2 text-neutral-600">{row.output_per_1k}</td>
+									<td class="px-4 py-2">
+										<div class="flex gap-2">
+											<button
+												type="button"
+												class="rounded-md border border-neutral-300 px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
+												onclick={() => startEditPricing(row)}
+											>
+												Edit
+											</button>
+											<button
+												type="button"
+												class="rounded-md border border-danger/40 px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+												disabled={pricingActionId === row.id}
+												onclick={() => doDeletePricing(row)}
+											>
+												{pricingActionId === row.id ? 'Deleting…' : 'Delete'}
+											</button>
+										</div>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
 		{/if}
 	{:else if activeTab === 'audit'}
 		{#if !$currentUser?.is_platform_admin}

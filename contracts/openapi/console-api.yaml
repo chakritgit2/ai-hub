@@ -585,6 +585,16 @@ components:
         id: { type: string }
         email: { type: string }
         is_platform_admin: { type: boolean }
+    ModelPricing:
+      type: object
+      properties:
+        id: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        input_per_1k: { type: number }
+        output_per_1k: { type: number }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 paths:
   /me:
     get:
@@ -1397,6 +1407,24 @@ paths:
       - { $ref: '#/components/parameters/IdParam' }
     delete:
       operationId: deleteEgressAllowlistEntry
+      responses: { "204": { description: Deleted } }
+  /settings/model-pricing:
+    get:
+      operationId: listModelPricing
+      summary: platform_admin only, no X-Company-Id - a flat $/1K-token rate reference table (PRD §8.2), not company-scoped.
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ModelPricing' } } } } } }
+    post:
+      operationId: createModelPricing
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/ModelPricing' } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ModelPricing' } } } } }
+  /settings/model-pricing/{id}:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    patch:
+      operationId: updateModelPricing
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/ModelPricing' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ModelPricing' } } } } }
+    delete:
+      operationId: deleteModelPricing
       responses: { "204": { description: Deleted } }
 
   /tenants:

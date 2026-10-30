@@ -162,6 +162,10 @@ return function (Router $router): void {
     $admin('GET', '/settings/egress-allowlist', 'Settings', 'listEgressAllowlist');
     $admin('POST', '/settings/egress-allowlist', 'Settings', 'createEgressAllowlistEntry');
     $admin('DELETE', '/settings/egress-allowlist/{id:[^/]+}', 'Settings', 'deleteEgressAllowlistEntry');
+    $admin('GET', '/settings/model-pricing', 'Pricing', 'listModelPricing');
+    $admin('POST', '/settings/model-pricing', 'Pricing', 'createModelPricing');
+    $admin('PATCH', '/settings/model-pricing/{id:[^/]+}', 'Pricing', 'updateModelPricing');
+    $admin('DELETE', '/settings/model-pricing/{id:[^/]+}', 'Pricing', 'deleteModelPricing');
 
     // --- /tenants (platform_admin only; no X-Company-Id) --------------------------
     $admin('GET', '/tenants', 'Tenants', 'listTenants');

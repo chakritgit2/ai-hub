@@ -35,6 +35,7 @@ import type {
 	KnowledgeBase,
 	KnowledgeBaseInput,
 	Me,
+	ModelPricing,
 	Run,
 	RunConversation,
 	RuntimeTokenResponse,
@@ -588,6 +589,36 @@ export function deleteEgressAllowlistEntry(id: string): Promise<void> {
 	return apiFetch<void>(`/settings/egress-allowlist/${id}`, { method: 'DELETE' });
 }
 
+// ---- /settings/model-pricing (platform_admin) --------------------------------
+
+export function listModelPricing(): Promise<ModelPricing[]> {
+	return apiFetch<ModelPricing[]>('/settings/model-pricing', { skipCompanyHeader: true });
+}
+
+export function createModelPricing(input: {
+	provider: string;
+	model: string;
+	input_per_1k: number;
+	output_per_1k: number;
+}): Promise<ModelPricing> {
+	return apiFetch<ModelPricing>('/settings/model-pricing', { method: 'POST', body: input, skipCompanyHeader: true });
+}
+
+export function updateModelPricing(
+	id: string,
+	input: { provider: string; model: string; input_per_1k: number; output_per_1k: number }
+): Promise<ModelPricing> {
+	return apiFetch<ModelPricing>(`/settings/model-pricing/${id}`, {
+		method: 'PATCH',
+		body: input,
+		skipCompanyHeader: true
+	});
+}
+
+export function deleteModelPricing(id: string): Promise<void> {
+	return apiFetch<void>(`/settings/model-pricing/${id}`, { method: 'DELETE', skipCompanyHeader: true });
+}
+
 // ---- /tenants (platform_admin) ----------------------------------------------
 
 export function listTenants(): Promise<Tenant[]> {
@@ -742,6 +773,7 @@ export type {
 	KnowledgeBase,
 	KnowledgeBaseInput,
 	Me,
+	ModelPricing,
 	Run,
 	RunConversation,
 	RuntimeTokenResponse,
