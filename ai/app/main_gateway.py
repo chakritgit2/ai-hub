@@ -55,7 +55,12 @@ from app.services.agent_spec import AgentSpecDoc
 from app.services.agent_versions import resolve_agent_version
 from app.services.approvals import ApprovalAlreadyDecidedError, ApprovalNotFoundError, decide_approval
 from app.services.companies import get_company_status
-from app.services.deployments import DeploymentRow, resolve_deployment, resolve_deployment_id_by_slug
+from app.services.deployments import (
+    DeploymentRow,
+    resolve_deployment,
+    resolve_deployment_cors,
+    resolve_deployment_id_by_slug,
+)
 from app.services.gateway_auth import get_jwks, mint_session_token, verify_session_token
 from app.services.quotas import QuotaExceededError
 from app.services.runtime import attach_stream_completion, run_deployment_agent
@@ -222,10 +227,10 @@ def _enforce_cors(identity: GatewayIdentity, deployment: DeploymentRow, request:
     be in the deployment's own `allowed_origins` - empty/unset means no browser origin is
     configured yet, so every browser-origin request is denied (deny-by-default, PRD §12).
 
-    This validates the actual request, not a CORS preflight: a real cross-origin browser
-    call also needs an `OPTIONS` responder answering before the browser ever sends this
-    request, which isn't built yet (out of scope with the rest of the "full browser
-    session-token experience" per the ai-gateway plan - same boundary as `streamDeployment`).
+    This validates the actual request - the browser's real CORS preflight for it is
+    answered separately by `_deploymentCorsPreflight` below, since that request never
+    carries the `Authorization` header this function's caller (`require_gateway_auth`)
+    needs to even resolve `identity`/`deployment` in the first place.
     """
     if identity.auth_kind != "session_token":
         return
@@ -236,6 +241,56 @@ def _enforce_cors(identity: GatewayIdentity, deployment: DeploymentRow, request:
 
     response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Vary"] = "Origin"
+
+
+async def _deploymentCorsPreflight(slug: str, request: Request) -> Response:
+    """Answers a real browser's CORS preflight (`OPTIONS`, PRD Goal #6 "full browser
+    session-token experience") for every session-token-reachable deployment route.
+    Without this, `_enforce_cors` above never gets a chance to run at all: Starlette's
+    default response for an unregistered method on an otherwise-matching path is a plain
+    405, which makes a real browser abandon the request before ever sending the real one.
+
+    Structurally unauthenticated by design, not a shortcut: a real preflight never carries
+    the browser's eventual `Authorization` header (CORS spec - custom headers are only
+    *declared* via `Access-Control-Request-Headers`, for the browser's own benefit in
+    deciding whether to proceed, never actually sent on the preflight itself) - so this
+    can only ever check `{slug, Origin}` against the deployment's own `allowed_origins`,
+    via `app.services.deployments.resolve_deployment_cors` (the same no-prior-auth
+    `SECURITY DEFINER` shape `app.services.api_keys.resolve_gateway_api_key` already uses
+    to bootstrap API-key auth itself - there's no `company_id` yet to scope a normal
+    `get_company_session` call with here either).
+
+    Always answers 204 regardless of outcome (mismatched origin, disabled deployment,
+    unknown slug) - the real signal to the browser is whether
+    `Access-Control-Allow-Origin` is present/correct, same deny-by-default contract
+    `_enforce_cors` already applies to the real response (an absent/mismatched header
+    blocks the browser just as effectively as a 4xx would, and reveals nothing more to an
+    anonymous caller than the real request's own CORS-enforced response already would).
+    """
+    origin = request.headers.get("origin")
+    cors = await resolve_deployment_cors(slug)
+    if cors is None or not cors.enabled or not origin or origin not in cors.allowed_origins:
+        return Response(status_code=204)
+
+    return Response(
+        status_code=204,
+        headers={
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "authorization, content-type",
+            "Access-Control-Max-Age": "600",
+            "Vary": "Origin",
+        },
+    )
+
+
+# Registered against every session-token-reachable deployment route `_enforce_cors` is
+# called from (`runDeployment`/`streamDeployment`/`getDeploymentInfo`) - one shared
+# handler via `app.options(path)(handler)` rather than three near-identical `@app.options`
+# functions, since the preflight logic itself has nothing route-specific about it.
+app.options("/v1/deployments/{slug}/run")(_deploymentCorsPreflight)
+app.options("/v1/deployments/{slug}/stream")(_deploymentCorsPreflight)
+app.options("/v1/deployments/{slug}/info")(_deploymentCorsPreflight)
 
 
 GatewayAuth = Annotated[GatewayIdentity, Depends(require_gateway_auth)]

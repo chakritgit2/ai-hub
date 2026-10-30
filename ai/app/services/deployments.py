@@ -43,7 +43,7 @@ from dataclasses import dataclass, replace
 import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.db import get_company_session
+from app.core.db import get_company_session, get_sessionmaker
 
 _CACHE_TTL_SECONDS = 5.0
 # Bounds the cache's worst-case memory growth over a long-running pod's lifetime - entries
@@ -147,6 +147,90 @@ async def resolve_deployment_id_by_slug(company_id: str, slug: str) -> str | Non
         row = result.one_or_none()
 
     return str(row[0]) if row is not None else None
+
+
+@dataclass(frozen=True)
+class DeploymentCors:
+    allowed_origins: list[str]
+    enabled: bool
+
+
+# Separate from `_cache`/`_locks` above (keyed by plain `slug`, not `(company_id,
+# deployment_id)`) - serves a structurally different, unauthenticated caller
+# (`resolve_deployment_cors` below has no prior auth to even reach a company_id with, see
+# its own docstring). A short TTL cache here isn't just an efficiency nicety like
+# `resolve_deployment`'s: found by code-review that without one, this function is a fully
+# unauthenticated, uncached, real-Postgres-query endpoint reachable by anyone who can send
+# an HTTP request with nothing but a guessed/known slug - no rate limiting exists anywhere
+# else in `app.main_gateway` to stop that. Negative results (unknown slug) are cached too,
+# for the same reason - a slug-enumeration probe is the more realistic abuse shape here
+# than repeated hits on one real slug.
+_CORS_CACHE_TTL_SECONDS = 5.0
+_CORS_CACHE_MAX_ENTRIES = 2000
+_cors_cache: dict[str, tuple[DeploymentCors | None, float]] = {}
+_cors_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def _get_cors_lock(slug: str) -> asyncio.Lock:
+    lock = _cors_locks.get(slug)
+    if lock is None:
+        lock = asyncio.Lock()
+        _cors_locks[slug] = lock
+    return lock
+
+
+async def resolve_deployment_cors(slug: str) -> DeploymentCors | None:
+    """Resolves just enough (`allowed_origins`, `enabled`) to answer a real browser's CORS
+    preflight (`OPTIONS`, PRD Goal #6) for `slug` - called with **no prior auth**, by
+    design: a preflight request never carries the caller's eventual `Authorization`
+    header (CORS spec), so there is no `company_id` yet to scope a normal
+    `get_company_session` call with. Not company-scoped for the same reason
+    `app.services.api_keys.resolve_gateway_api_key` isn't - opens a plain session directly
+    from the sessionmaker and leans on `console.resolve_deployment_cors`
+    (`db/migrations/post/029_resolve_deployment_cors.sql`) being `SECURITY DEFINER` to
+    read past RLS itself. `None` for an unknown slug - indistinguishable from any other
+    "nothing to allow" case, same as every other slug/id resolver in this codebase.
+
+    Cached per-slug for `_CORS_CACHE_TTL_SECONDS` (see `_cors_cache`'s own comment for
+    why this one isn't optional the way a cache usually is) - locked per key purely to
+    collapse a thundering herd of concurrent first-callers for the same cold slug into one
+    DB round trip, not for any data-correctness reason `resolve_deployment`'s own lock
+    has to worry about (this value changes rarely and a few seconds of staleness on a CORS
+    allowlist is immaterial)."""
+    cached = _cors_cache.get(slug)
+    if cached is not None and (time.monotonic() - cached[1]) < _CORS_CACHE_TTL_SECONDS:
+        return cached[0]
+
+    async with _get_cors_lock(slug):
+        cached = _cors_cache.get(slug)
+        if cached is not None and (time.monotonic() - cached[1]) < _CORS_CACHE_TTL_SECONDS:
+            return cached[0]
+
+        value = await _fetch_deployment_cors(slug)
+
+        if slug not in _cors_cache and len(_cors_cache) >= _CORS_CACHE_MAX_ENTRIES:
+            # Bounds worst-case memory from an attacker probing many distinct/garbage
+            # slugs - oldest-inserted eviction is enough here, unlike resolve_deployment's
+            # last-accessed tracking: a stampede of fresh nonexistent slugs is the
+            # realistic growth pattern for this cache, not a few legitimately hot ones.
+            _cors_cache.pop(next(iter(_cors_cache)), None)
+        _cors_cache[slug] = (value, time.monotonic())
+        return value
+
+
+async def _fetch_deployment_cors(slug: str) -> DeploymentCors | None:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        result = await session.execute(
+            sa.text("SELECT allowed_origins, enabled FROM console.resolve_deployment_cors(:slug)"),
+            {"slug": slug},
+        )
+        row = result.mappings().one_or_none()
+
+    if row is None:
+        return None
+
+    return DeploymentCors(allowed_origins=row["allowed_origins"], enabled=row["enabled"])
 
 
 async def _fetch_deployment_row(company_id: str, deployment_id: str) -> DeploymentRow | None:

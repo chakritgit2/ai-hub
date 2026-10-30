@@ -194,6 +194,16 @@ paths:
 
   /v1/deployments/{slug}/run:
     parameters: [{ $ref: '#/components/parameters/Slug' }]
+    options:
+      operationId: runDeploymentCorsPreflight
+      summary: >-
+        Real CORS preflight for a session-token/browser caller of this route (PRD Goal #6)
+        - unauthenticated by design (a preflight never carries Authorization), checks only
+        Origin against the deployment's own allowed_origins. See /stream and /info's own
+        options entries - all three share one handler (app.main_gateway).
+      security: []
+      responses:
+        "204": { description: 'No Content - Access-Control-Allow-Origin present only when Origin is allowed' }
     post:
       operationId: runDeployment
       summary: >-
@@ -214,6 +224,12 @@ paths:
 
   /v1/deployments/{slug}/stream:
     parameters: [{ $ref: '#/components/parameters/Slug' }]
+    options:
+      operationId: streamDeploymentCorsPreflight
+      summary: Real CORS preflight for this route - see /run's options entry for the shared shape.
+      security: []
+      responses:
+        "204": { description: 'No Content - Access-Control-Allow-Origin present only when Origin is allowed' }
     post:
       operationId: streamDeployment
       summary: >-
@@ -256,6 +272,12 @@ paths:
 
   /v1/deployments/{slug}/info:
     parameters: [{ $ref: '#/components/parameters/Slug' }]
+    options:
+      operationId: getDeploymentInfoCorsPreflight
+      summary: Real CORS preflight for this route - see /run's options entry for the shared shape.
+      security: []
+      responses:
+        "204": { description: 'No Content - Access-Control-Allow-Origin present only when Origin is allowed' }
     get:
       operationId: getDeploymentInfo
       summary: >-
