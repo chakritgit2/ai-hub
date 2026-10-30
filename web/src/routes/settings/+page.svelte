@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import {
 		listCompanyUsers,
+		grantPlatformAdmin,
+		revokePlatformAdmin,
 		listEgressAllowlist,
 		createEgressAllowlistEntry,
 		deleteEgressAllowlistEntry,
@@ -37,6 +39,8 @@
 	let users = $state<CompanyUser[]>([]);
 	let usersLoading = $state(true);
 	let usersError = $state<string | null>(null);
+	let userActionId = $state<string | null>(null);
+	let userActionError = $state<string | null>(null);
 
 	let egress = $state<EgressAllowlistEntry[]>([]);
 	let egressLoading = $state(true);
@@ -144,6 +148,43 @@
 			usersError = e instanceof Error ? e.message : 'Failed to load users.';
 		} finally {
 			usersLoading = false;
+		}
+	}
+
+	const USER_ERROR_MESSAGES: Record<string, string> = {
+		cannot_revoke_self: 'You cannot revoke your own platform admin access - ask another platform admin to do it.',
+		not_found: 'This user no longer exists - it may have been changed by someone else.',
+		forbidden: 'You no longer have permission to do this.'
+	};
+
+	function describeUserError(e: unknown, fallback: string): string {
+		if (e instanceof ApiError) return USER_ERROR_MESSAGES[e.message] ?? e.message;
+		return e instanceof Error ? e.message : fallback;
+	}
+
+	async function doGrantPlatformAdmin(user: CompanyUser) {
+		userActionId = user.id;
+		userActionError = null;
+		try {
+			await grantPlatformAdmin(user.id);
+			await loadUsers();
+		} catch (e) {
+			userActionError = describeUserError(e, 'Failed to grant platform admin.');
+		} finally {
+			userActionId = null;
+		}
+	}
+
+	async function doRevokePlatformAdmin(user: CompanyUser) {
+		userActionId = user.id;
+		userActionError = null;
+		try {
+			await revokePlatformAdmin(user.id);
+			await loadUsers();
+		} catch (e) {
+			userActionError = describeUserError(e, 'Failed to revoke platform admin.');
+		} finally {
+			userActionId = null;
 		}
 	}
 
@@ -467,6 +508,12 @@
 			{/each}
 		</div>
 
+		{#if userActionError}
+			<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3">
+				<p class="text-sm text-danger">{userActionError}</p>
+			</div>
+		{/if}
+
 		{#if usersLoading}
 			<p class="text-sm text-neutral-500" role="status">Loading users…</p>
 		{:else if usersError}
@@ -495,6 +542,9 @@
 							<th class="px-4 py-2" title="Platform admins can also manage Tenants, Companies and Audit Log.">
 								Platform admin
 							</th>
+							{#if $currentUser?.is_platform_admin}
+								<th class="px-4 py-2">Actions</th>
+							{/if}
 						</tr>
 					</thead>
 					<tbody class="divide-y divide-neutral-100">
@@ -511,6 +561,32 @@
 										<span class="text-neutral-400">—</span>
 									{/if}
 								</td>
+								{#if $currentUser?.is_platform_admin}
+									<td class="px-4 py-2">
+										{#if user.is_platform_admin}
+											<button
+												type="button"
+												class="rounded-md border border-danger/40 px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+												disabled={userActionId === user.id || user.id === $currentUser?.id}
+												title={user.id === $currentUser?.id
+													? 'Ask another platform admin to revoke your own access.'
+													: undefined}
+												onclick={() => doRevokePlatformAdmin(user)}
+											>
+												{userActionId === user.id ? 'Revoking…' : 'Revoke platform admin'}
+											</button>
+										{:else}
+											<button
+												type="button"
+												class="rounded-md border border-neutral-300 px-2.5 py-1 text-xs text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+												disabled={userActionId === user.id}
+												onclick={() => doGrantPlatformAdmin(user)}
+											>
+												{userActionId === user.id ? 'Granting…' : 'Grant platform admin'}
+											</button>
+										{/if}
+									</td>
+								{/if}
 							</tr>
 						{/each}
 					</tbody>

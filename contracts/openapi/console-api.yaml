@@ -579,6 +579,12 @@ components:
         email: { type: string }
         is_platform_admin: { type: boolean }
         role: { type: string, enum: [admin, developer, viewer] }
+    PlatformUser:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        is_platform_admin: { type: boolean }
 paths:
   /me:
     get:
@@ -1363,6 +1369,18 @@ paths:
       operationId: listCompanyUsers
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
       responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CompanyUser' } } } } } }
+  /settings/users/{id}/grant-platform-admin:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    post:
+      operationId: grantPlatformAdmin
+      summary: platform_admin only, no X-Company-Id - console.users.is_platform_admin is global.
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/PlatformUser' } } } } }
+  /settings/users/{id}/revoke-platform-admin:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    post:
+      operationId: revokePlatformAdmin
+      summary: platform_admin only, no X-Company-Id - console.users.is_platform_admin is global.
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/PlatformUser' } } } } }
   /settings/egress-allowlist:
     get:
       operationId: listEgressAllowlist

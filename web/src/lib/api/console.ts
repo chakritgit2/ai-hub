@@ -553,6 +553,25 @@ export function listCompanyUsers(): Promise<CompanyUser[]> {
 	return apiFetch<CompanyUser[]>('/settings/users');
 }
 
+// console.users.is_platform_admin is global, not company-scoped (see SettingsController's
+// own comment on why this is the one piece of role management that's safe to do here
+// today - it's never overwritten by the per-request SSO sync, unlike company role).
+type PlatformUser = { id: string; email: string; is_platform_admin: boolean };
+
+export function grantPlatformAdmin(id: string): Promise<PlatformUser> {
+	return apiFetch<PlatformUser>(`/settings/users/${id}/grant-platform-admin`, {
+		method: 'POST',
+		skipCompanyHeader: true
+	});
+}
+
+export function revokePlatformAdmin(id: string): Promise<PlatformUser> {
+	return apiFetch<PlatformUser>(`/settings/users/${id}/revoke-platform-admin`, {
+		method: 'POST',
+		skipCompanyHeader: true
+	});
+}
+
 export function listEgressAllowlist(): Promise<EgressAllowlistEntry[]> {
 	return apiFetch<EgressAllowlistEntry[]>('/settings/egress-allowlist');
 }

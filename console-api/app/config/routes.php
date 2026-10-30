@@ -157,6 +157,8 @@ return function (Router $router): void {
 
     // --- /settings --------------------------------------------------------------
     $admin('GET', '/settings/users', 'Settings', 'listCompanyUsers');
+    $admin('POST', '/settings/users/{id:[^/]+}/grant-platform-admin', 'Settings', 'grantPlatformAdmin');
+    $admin('POST', '/settings/users/{id:[^/]+}/revoke-platform-admin', 'Settings', 'revokePlatformAdmin');
     $admin('GET', '/settings/egress-allowlist', 'Settings', 'listEgressAllowlist');
     $admin('POST', '/settings/egress-allowlist', 'Settings', 'createEgressAllowlistEntry');
     $admin('DELETE', '/settings/egress-allowlist/{id:[^/]+}', 'Settings', 'deleteEgressAllowlistEntry');

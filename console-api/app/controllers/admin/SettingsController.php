@@ -50,6 +50,68 @@ class SettingsController extends ControllerBase
         ));
     }
 
+    /**
+     * `console.users.is_platform_admin` is a flat, global flag - not company-scoped and
+     * never touched by `AuthService::syncUser()`'s per-request SSO upsert (unlike
+     * `company_members.role`, which that upsert overwrites from the JWT's `companies`
+     * claim on every request - see that method's own `ON CONFLICT ... DO UPDATE SET
+     * role`). That's why this is the one piece of "who can do what" this console can
+     * manage directly today without it being silently reverted, and why it's
+     * platform_admin-gated like Tenants/Companies rather than company-admin-gated like
+     * the rest of this controller.
+     */
+    public function grantPlatformAdmin(string $id): Response
+    {
+        return $this->setPlatformAdmin($id, true);
+    }
+
+    public function revokePlatformAdmin(string $id): Response
+    {
+        return $this->setPlatformAdmin($id, false);
+    }
+
+    private function setPlatformAdmin(string $id, bool $isPlatformAdmin): Response
+    {
+        if (($error = $this->requirePlatformAdmin()) !== null) {
+            return $error;
+        }
+        if (!$this->isUuid($id)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+        // A platform_admin revoking their OWN flag is the one click that can leave the
+        // product with zero platform_admins and no one left who can grant it back (no
+        // recovery path short of a direct DB write) - revoking someone else's is always
+        // safe, since the caller themselves remains a platform_admin to fix it afterwards.
+        if (!$isPlatformAdmin && $id === $this->getAuthUser()['id']) {
+            return $this->jsonResponse(['error' => 'cannot_revoke_self'], 400);
+        }
+
+        $db = $this->getDI()->getShared('db');
+        $row = $db->fetchOne(
+            'UPDATE console.users SET is_platform_admin = :is_platform_admin, updated_at = now()
+             WHERE id = :id
+             RETURNING id, email, is_platform_admin',
+            Enum::FETCH_ASSOC,
+            [
+                // PDO casts a bound PHP `false` to '' (empty string), which Postgres
+                // rejects for a boolean column - bind the literal strings instead (see
+                // createEgressAllowlistEntry's allow_private_ip for the same gotcha).
+                'is_platform_admin' => $isPlatformAdmin ? 'true' : 'false',
+                'id' => $id,
+            ]
+        );
+
+        if (empty($row)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        return $this->jsonResponse([
+            'id' => $row['id'],
+            'email' => $row['email'],
+            'is_platform_admin' => (bool) $row['is_platform_admin'],
+        ]);
+    }
+
     public function listEgressAllowlist(): Response
     {
         if (($error = $this->requireCompanyId()) !== null) {
