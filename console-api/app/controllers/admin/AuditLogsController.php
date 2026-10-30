@@ -67,8 +67,15 @@ class AuditLogsController extends ControllerBase
         // Fetch one extra row instead of a separate COUNT(*) — audit_logs is append-only
         // and can grow large, and no caller here needs a total, just "is there a next page".
         $rows = $db->fetchAll(self::LIST_SQL, Enum::FETCH_ASSOC, [
-            'from' => $from !== '' ? $from : null,
-            'to' => $to !== '' ? $this->endOfDayIfDateOnly((string) $to) : null,
+            // getQuery() returns null (not '') when the query param is absent entirely -
+            // `$to !== ''` alone used to be true for that null, so (string) $to then cast
+            // it to '' and endOfDayIfDateOnly('') passed that empty string straight through
+            // as a bind value instead of null, which Postgres rejects casting to
+            // timestamptz ("invalid input syntax ... \"\""). `from`'s plain passthrough
+            // never hit this because it has no (string) cast to manufacture an empty
+            // string from null in the first place.
+            'from' => $from !== null && $from !== '' ? $from : null,
+            'to' => $to !== null && $to !== '' ? $this->endOfDayIfDateOnly((string) $to) : null,
             'fetch_limit' => $limit + 1,
             'offset' => $offset,
         ]);
