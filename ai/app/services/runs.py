@@ -73,12 +73,18 @@ async def log_run(
                 },
             )
 
+    # Counter.inc() raises ValueError on a negative argument - a constraint the old
+    # bare-insert code never enforced on these same numbers. Guarding here (rather than
+    # trusting callers) matters because this runs *after* the logs.runs insert above has
+    # already committed: an unguarded crash here would turn an already-successfully-
+    # logged, already-completed run into an unhandled 500 for the caller, a failure mode
+    # a metrics side-effect must never be able to cause.
     runs_total.labels(status=status, source=source).inc()
-    if usage.tokens_in:
+    if usage.tokens_in and usage.tokens_in > 0:
         run_tokens_total.labels(direction="in").inc(usage.tokens_in)
-    if usage.tokens_out:
+    if usage.tokens_out and usage.tokens_out > 0:
         run_tokens_total.labels(direction="out").inc(usage.tokens_out)
-    if usage.cost_usd:
+    if usage.cost_usd and usage.cost_usd > 0:
         run_cost_usd_total.inc(usage.cost_usd)
-    if latency_ms is not None:
+    if latency_ms is not None and latency_ms >= 0:
         run_latency_ms.labels(status=status).observe(latency_ms)

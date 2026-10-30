@@ -17,7 +17,12 @@
 		format?: (n: number) => string;
 	} = $props();
 
-	let ratio = $derived(limit && limit > 0 ? Math.min(1, value / limit) : null);
+	// `limit && limit > 0` would treat a deliberately-configured `limit: 0` (a hard
+	// block - DeploymentsController only requires an int, no minimum) the same as "no
+	// limit set" (0 is falsy), hiding the one state that most needs to read as maxed-out.
+	let ratio = $derived(
+		limit === null ? null : limit === 0 ? (value > 0 ? 1 : 0) : Math.min(1, value / limit)
+	);
 	let severity = $derived(ratio === null ? 'none' : ratio >= 0.9 ? 'critical' : ratio >= 0.7 ? 'warning' : 'good');
 	let fillClass = $derived(
 		severity === 'critical' ? 'bg-danger' : severity === 'warning' ? 'bg-warning' : 'bg-primary-500'
@@ -27,10 +32,9 @@
 <div>
 	<p class="text-xs text-neutral-400">{label}</p>
 	<p class="mt-0.5 text-sm font-medium text-neutral-900">
-		{format(value)}
-		{unit}
+		{format(value)}{unit ? ` ${unit}` : ''}
 		{#if limit !== null}
-			<span class="font-normal text-neutral-400">/ {format(limit)} {unit}</span>
+			<span class="font-normal text-neutral-400">/ {format(limit)}{unit ? ` ${unit}` : ''}</span>
 		{/if}
 	</p>
 	{#if ratio !== null}

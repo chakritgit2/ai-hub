@@ -82,7 +82,10 @@ class SettingsController extends ControllerBase
         // product with zero platform_admins and no one left who can grant it back (no
         // recovery path short of a direct DB write) - revoking someone else's is always
         // safe, since the caller themselves remains a platform_admin to fix it afterwards.
-        if (!$isPlatformAdmin && $id === $this->getAuthUser()['id']) {
+        // Case-insensitive: isUuid() accepts either case and Postgres's uuid type compares
+        // case-insensitively too, so a same-UUID-different-case `$id` would otherwise slip
+        // past a plain `===` and defeat this guard entirely.
+        if (!$isPlatformAdmin && strcasecmp($id, $this->getAuthUser()['id']) === 0) {
             return $this->jsonResponse(['error' => 'cannot_revoke_self'], 400);
         }
 

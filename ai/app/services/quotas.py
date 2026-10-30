@@ -41,6 +41,23 @@ def _microusd(usd: float) -> int:
     return round(usd * 1_000_000)
 
 
+# Centralized so a writer (check_rate_limit/reserve_quota/record_actual_usage) and a
+# reader (read_usage_snapshot) can never drift onto different key strings for the same
+# counter - a partial update that touched only the writers would otherwise make the
+# read-only usage display silently report stale/wrong numbers while rate limiting and
+# quota enforcement kept working fine.
+def _ratelimit_key(deployment_id: str, minute_bucket: int) -> str:
+    return f"{_KEY_PREFIX}:ratelimit:{deployment_id}:{minute_bucket}"
+
+
+def _tokens_key(deployment_id: str, today: str) -> str:
+    return f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
+
+
+def _cost_key(deployment_id: str, today: str) -> str:
+    return f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+
+
 @dataclass(frozen=True)
 class RateLimitResult:
     allowed: bool
@@ -92,7 +109,7 @@ async def check_rate_limit(deployment_id: str, rate_limit_per_min: int) -> RateL
     window rolls over just starts a fresh window, which is an acceptable approximation
     for a per-minute cap (PRD doesn't specify sliding vs fixed window)."""
     minute_bucket = int(time.time() // 60)
-    key = f"{_KEY_PREFIX}:ratelimit:{deployment_id}:{minute_bucket}"
+    key = _ratelimit_key(deployment_id, minute_bucket)
 
     try:
         redis_client = get_redis()
@@ -127,8 +144,8 @@ async def reserve_quota(
 
     today = _bangkok_today()
     ttl = _seconds_until_bangkok_midnight()
-    tokens_key = f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
-    cost_key = f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+    tokens_key = _tokens_key(deployment_id, today)
+    cost_key = _cost_key(deployment_id, today)
     reset_at = datetime.now(_BANGKOK) + timedelta(seconds=ttl)
 
     try:
@@ -192,8 +209,8 @@ async def reconcile_quota(
         return
 
     today = today or _bangkok_today()
-    tokens_key = f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
-    cost_key = f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+    tokens_key = _tokens_key(deployment_id, today)
+    cost_key = _cost_key(deployment_id, today)
     token_delta = actual_tokens - reserved_tokens
     cost_delta_microusd = _microusd(actual_cost_usd) - _microusd(reserved_cost_usd)
 
@@ -236,8 +253,8 @@ async def check_quota_not_exceeded(
 
     today = _bangkok_today()
     ttl = _seconds_until_bangkok_midnight()
-    tokens_key = f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
-    cost_key = f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+    tokens_key = _tokens_key(deployment_id, today)
+    cost_key = _cost_key(deployment_id, today)
     reset_at = datetime.now(_BANGKOK) + timedelta(seconds=ttl)
 
     try:
@@ -278,8 +295,8 @@ async def record_actual_usage(
     if actual_tokens == 0 and actual_cost_usd == 0:
         return
 
-    tokens_key = f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
-    cost_key = f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+    tokens_key = _tokens_key(deployment_id, today)
+    cost_key = _cost_key(deployment_id, today)
 
     try:
         redis_client = get_redis()
@@ -313,9 +330,9 @@ async def read_usage_snapshot(deployment_id: str) -> UsageSnapshot:
     minute_bucket = int(time.time() // 60)
     today = _bangkok_today()
     reset_at = datetime.now(_BANGKOK) + timedelta(seconds=_seconds_until_bangkok_midnight())
-    ratelimit_key = f"{_KEY_PREFIX}:ratelimit:{deployment_id}:{minute_bucket}"
-    tokens_key = f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
-    cost_key = f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+    ratelimit_key = _ratelimit_key(deployment_id, minute_bucket)
+    tokens_key = _tokens_key(deployment_id, today)
+    cost_key = _cost_key(deployment_id, today)
 
     try:
         redis_client = get_redis()

@@ -23,6 +23,12 @@ class PricingController extends ControllerBase
     private const LIST_PRICING_SQL = 'SELECT id, provider, model, input_per_1k, output_per_1k, created_at, updated_at
          FROM console.model_pricing ORDER BY provider, model';
 
+    // Match console.model_pricing's own varchar(64)/varchar(128) columns (20261014000001)
+    // - validate here so an overlong value gets a clean 400 instead of an uncaught
+    // Postgres "value too long" exception.
+    private const PROVIDER_MAX_LENGTH = 64;
+    private const MODEL_MAX_LENGTH = 128;
+
     public function listModelPricing(): Response
     {
         if (($error = $this->requirePlatformAdmin()) !== null) {
@@ -42,19 +48,22 @@ class PricingController extends ControllerBase
         }
 
         $body = $this->request->getJsonRawBody(true) ?? [];
-        $provider = $body['provider'] ?? null;
-        if (!is_string($provider) || trim($provider) === '') {
-            return $this->jsonResponse(['error' => 'provider_required'], 400);
+
+        [$provider, $error] = $this->validateNameField($body['provider'] ?? null, 'provider', self::PROVIDER_MAX_LENGTH);
+        if ($error !== null) {
+            return $error;
         }
-        $model = $body['model'] ?? null;
-        if (!is_string($model) || trim($model) === '') {
-            return $this->jsonResponse(['error' => 'model_required'], 400);
+        [$model, $error] = $this->validateNameField($body['model'] ?? null, 'model', self::MODEL_MAX_LENGTH);
+        if ($error !== null) {
+            return $error;
         }
-        if (!is_numeric($body['input_per_1k'] ?? null)) {
-            return $this->jsonResponse(['error' => 'invalid_input_per_1k'], 400);
+        [$inputPer1k, $error] = $this->validatePriceField($body['input_per_1k'] ?? null, 'input_per_1k');
+        if ($error !== null) {
+            return $error;
         }
-        if (!is_numeric($body['output_per_1k'] ?? null)) {
-            return $this->jsonResponse(['error' => 'invalid_output_per_1k'], 400);
+        [$outputPer1k, $error] = $this->validatePriceField($body['output_per_1k'] ?? null, 'output_per_1k');
+        if ($error !== null) {
+            return $error;
         }
 
         $db = $this->getDI()->getShared('db');
@@ -67,8 +76,8 @@ class PricingController extends ControllerBase
                 [
                     'provider' => $provider,
                     'model' => $model,
-                    'input_per_1k' => $body['input_per_1k'],
-                    'output_per_1k' => $body['output_per_1k'],
+                    'input_per_1k' => $inputPer1k,
+                    'output_per_1k' => $outputPer1k,
                 ]
             );
         } catch (Throwable $exception) {
@@ -93,28 +102,32 @@ class PricingController extends ControllerBase
         $body = $this->request->getJsonRawBody(true) ?? [];
         $fields = [];
         if (array_key_exists('provider', $body)) {
-            if (!is_string($body['provider']) || trim($body['provider']) === '') {
-                return $this->jsonResponse(['error' => 'provider_required'], 400);
+            [$provider, $error] = $this->validateNameField($body['provider'], 'provider', self::PROVIDER_MAX_LENGTH);
+            if ($error !== null) {
+                return $error;
             }
-            $fields['provider'] = $body['provider'];
+            $fields['provider'] = $provider;
         }
         if (array_key_exists('model', $body)) {
-            if (!is_string($body['model']) || trim($body['model']) === '') {
-                return $this->jsonResponse(['error' => 'model_required'], 400);
+            [$model, $error] = $this->validateNameField($body['model'], 'model', self::MODEL_MAX_LENGTH);
+            if ($error !== null) {
+                return $error;
             }
-            $fields['model'] = $body['model'];
+            $fields['model'] = $model;
         }
         if (array_key_exists('input_per_1k', $body)) {
-            if (!is_numeric($body['input_per_1k'])) {
-                return $this->jsonResponse(['error' => 'invalid_input_per_1k'], 400);
+            [$inputPer1k, $error] = $this->validatePriceField($body['input_per_1k'], 'input_per_1k');
+            if ($error !== null) {
+                return $error;
             }
-            $fields['input_per_1k'] = $body['input_per_1k'];
+            $fields['input_per_1k'] = $inputPer1k;
         }
         if (array_key_exists('output_per_1k', $body)) {
-            if (!is_numeric($body['output_per_1k'])) {
-                return $this->jsonResponse(['error' => 'invalid_output_per_1k'], 400);
+            [$outputPer1k, $error] = $this->validatePriceField($body['output_per_1k'], 'output_per_1k');
+            if ($error !== null) {
+                return $error;
             }
-            $fields['output_per_1k'] = $body['output_per_1k'];
+            $fields['output_per_1k'] = $outputPer1k;
         }
 
         $db = $this->getDI()->getShared('db');
@@ -175,6 +188,46 @@ class PricingController extends ControllerBase
     private function isUniqueViolation(Throwable $exception): bool
     {
         return $exception instanceof \PDOException && ($exception->errorInfo[0] ?? null) === '23505';
+    }
+
+    /**
+     * Trims and length-checks a `provider`/`model` string, catching what would otherwise
+     * reach Postgres as either an empty value or a "value too long for type character
+     * varying" exception the unique-violation catch block doesn't recognize.
+     *
+     * @return array{0: ?string, 1: ?Response}
+     */
+    private function validateNameField(mixed $value, string $field, int $maxLength): array
+    {
+        if (!is_string($value)) {
+            return [null, $this->jsonResponse(['error' => "{$field}_required"], 400)];
+        }
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return [null, $this->jsonResponse(['error' => "{$field}_required"], 400)];
+        }
+        if (strlen($trimmed) > $maxLength) {
+            return [null, $this->jsonResponse(['error' => "{$field}_too_long"], 400)];
+        }
+
+        return [$trimmed, null];
+    }
+
+    /**
+     * `console.model_pricing.input_per_1k`/`output_per_1k` both have a `CHECK (... >= 0)`
+     * constraint (20261014000001) - validate non-negativity here too, since that's a
+     * check_violation (SQLSTATE 23514), a code `isUniqueViolation()` doesn't recognize,
+     * so an uncaught negative value would otherwise rethrow as a raw 500.
+     *
+     * @return array{0: ?float, 1: ?Response}
+     */
+    private function validatePriceField(mixed $value, string $field): array
+    {
+        if (!is_numeric($value) || (float) $value < 0) {
+            return [null, $this->jsonResponse(['error' => "invalid_{$field}"], 400)];
+        }
+
+        return [(float) $value, null];
     }
 
     /**

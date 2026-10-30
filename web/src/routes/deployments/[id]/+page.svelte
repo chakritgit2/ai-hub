@@ -642,7 +642,7 @@
 							label="Today"
 							value={usage.cost_today_usd}
 							limit={usage.daily_cost_limit_usd}
-							unit="$"
+							unit=""
 							format={(n) => `$${n.toFixed(4)}`}
 						/>
 					</div>

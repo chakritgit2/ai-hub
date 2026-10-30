@@ -53,6 +53,14 @@ class DashboardController extends ControllerBase
         // days appears even with zero runs that day - a plain `GROUP BY` on `logs.runs`
         // alone would silently drop days with no rows instead of reporting them as 0,
         // which would misrender as a gap in the chart rather than a real quiet day.
+        //
+        // The join condition is a sargable range on the bare `r.created_at` column
+        // (`d.day` converted to a real UTC instant via `AT TIME ZONE`, not the other way
+        // around) rather than `date_trunc(r.created_at AT TIME ZONE ...) = d.day` - the
+        // latter wraps the column itself in a function, defeating any index on
+        // created_at and forcing a full scan of the company's entire run history on
+        // every dashboard load. Same bare-column convention the runs_today/tokens_this_month
+        // queries above already use.
         $runsPerDay = $this->runInCompanyTransaction(
             static fn ($db) => $db->fetchAll(
                 "SELECT to_char(d.day, 'YYYY-MM-DD') AS date, count(r.id) AS n
@@ -62,7 +70,8 @@ class DashboardController extends ControllerBase
                         interval '1 day'
                       ) AS d(day)
                  LEFT JOIN logs.runs r
-                   ON date_trunc('day', r.created_at AT TIME ZONE 'Asia/Bangkok') = d.day
+                   ON r.created_at >= (d.day AT TIME ZONE 'Asia/Bangkok')
+                  AND r.created_at < ((d.day + interval '1 day') AT TIME ZONE 'Asia/Bangkok')
                  GROUP BY d.day
                  ORDER BY d.day",
                 Enum::FETCH_ASSOC

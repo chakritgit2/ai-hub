@@ -54,3 +54,21 @@ async def test_log_run_counts_the_metric_even_with_no_company_id_to_scope_the_db
                    source="no-company-test")
 
     assert counter._value.get() == before_value + 1
+
+
+async def test_log_run_does_not_crash_on_a_negative_usage_value() -> None:
+    """Counter.inc() raises ValueError on a negative argument - a constraint the old
+    bare-insert code never enforced on these numbers. A negative tokens_in/tokens_out/
+    cost_usd (e.g. a bad number surfaced from litellm's cost calculation) must not crash
+    log_run, since by the time the metrics lines run the logs.runs row (when there's a
+    company_id) has already committed - an unguarded crash here would turn an already-
+    successful run into an unhandled 500 for the caller."""
+    await log_run(
+        run_id=str(uuid.uuid4()),
+        company_id="",
+        trace_id=str(uuid.uuid4()),
+        status="success",
+        source="negative-usage-test",
+        usage=RunUsage(tokens_in=-5, tokens_out=-5, cost_usd=-0.01),
+        latency_ms=100,
+    )
