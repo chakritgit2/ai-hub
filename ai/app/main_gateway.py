@@ -49,6 +49,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.auth import verify_gateway_api_key
 from app.core.config import get_settings
 from app.core.db import get_engine
+from app.core.metrics import render_metrics
 from app.core.otel import setup_tracing
 from app.core.redis import get_redis
 from app.services.agent_spec import AgentSpecDoc
@@ -305,6 +306,11 @@ async def healthz() -> dict:
 @app.get("/readyz")
 async def readyz() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    return render_metrics()
 
 
 class RunRequestUser(BaseModel):

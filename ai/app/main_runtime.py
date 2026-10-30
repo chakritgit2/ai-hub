@@ -35,6 +35,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.auth import InvalidTokenError, verify_internal_token, verify_runtime_token
 from app.core.crypto import encrypt_with_dek
 from app.core.db import get_company_session
+from app.core.metrics import render_metrics
 from app.core.otel import setup_tracing
 from app.core.redis import get_arq_pool
 from app.core.storage import delete_prefix, kb_object_key, kb_prefix, put_object
@@ -156,6 +157,11 @@ async def readyz() -> dict:
     # Real implementation should check DB/Redis connectivity before
     # reporting ready; kept trivially true here for the boot-check skeleton.
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    return render_metrics()
 
 
 # --------------------------------------------------------------------------

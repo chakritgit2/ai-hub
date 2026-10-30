@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 
 from app.core.db import get_company_session
+from app.core.metrics import run_cost_usd_total, run_latency_ms, run_tokens_total, runs_total
 from app.db.tables import runs_table
 
 
@@ -39,35 +40,45 @@ async def log_run(
     latency_ms: int | None = None,
     error: str | None = None,
 ) -> None:
-    """A no-op for a blank `company_id` (no company context to scope the write to -
-    same convention as `app.services.conversations`/`app.services.guardrails`)."""
-    if not company_id:
-        return
-
+    """The `logs.runs` write is a no-op for a blank `company_id` (no company context to
+    scope it to - same convention as `app.services.conversations`/
+    `app.services.guardrails`), but the metrics below carry no company label and have no
+    such reason to skip, so they're recorded regardless."""
     usage = usage or RunUsage()
 
-    async with get_company_session(company_id) as session:
-        await session.execute(
-            runs_table.insert(),
-            {
-                "id": uuid.UUID(run_id),
-                "company_id": uuid.UUID(company_id),
-                "agent_version_id": uuid.UUID(agent_version_id) if agent_version_id else None,
-                "workflow_version_id": uuid.UUID(workflow_version_id) if workflow_version_id else None,
-                "deployment_id": uuid.UUID(deployment_id) if deployment_id else None,
-                "conversation_id": uuid.UUID(conversation_id) if conversation_id else None,
-                "source": source,
-                "status": status,
-                "agent_name": agent_name,
-                "model": model,
-                "input": input_text,
-                "output": output_text,
-                "tokens_in": usage.tokens_in,
-                "tokens_out": usage.tokens_out,
-                "cost_usd": usage.cost_usd,
-                "guardrail_cost_usd": guardrail_cost_usd,
-                "latency_ms": latency_ms,
-                "trace_id": trace_id,
-                "error": error,
-            },
-        )
+    if company_id:
+        async with get_company_session(company_id) as session:
+            await session.execute(
+                runs_table.insert(),
+                {
+                    "id": uuid.UUID(run_id),
+                    "company_id": uuid.UUID(company_id),
+                    "agent_version_id": uuid.UUID(agent_version_id) if agent_version_id else None,
+                    "workflow_version_id": uuid.UUID(workflow_version_id) if workflow_version_id else None,
+                    "deployment_id": uuid.UUID(deployment_id) if deployment_id else None,
+                    "conversation_id": uuid.UUID(conversation_id) if conversation_id else None,
+                    "source": source,
+                    "status": status,
+                    "agent_name": agent_name,
+                    "model": model,
+                    "input": input_text,
+                    "output": output_text,
+                    "tokens_in": usage.tokens_in,
+                    "tokens_out": usage.tokens_out,
+                    "cost_usd": usage.cost_usd,
+                    "guardrail_cost_usd": guardrail_cost_usd,
+                    "latency_ms": latency_ms,
+                    "trace_id": trace_id,
+                    "error": error,
+                },
+            )
+
+    runs_total.labels(status=status, source=source).inc()
+    if usage.tokens_in:
+        run_tokens_total.labels(direction="in").inc(usage.tokens_in)
+    if usage.tokens_out:
+        run_tokens_total.labels(direction="out").inc(usage.tokens_out)
+    if usage.cost_usd:
+        run_cost_usd_total.inc(usage.cost_usd)
+    if latency_ms is not None:
+        run_latency_ms.labels(status=status).observe(latency_ms)
