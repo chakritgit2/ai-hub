@@ -21,6 +21,7 @@ import type {
 	DatasetInput,
 	DatasetItem,
 	Deployment,
+	DeploymentUsage,
 	EgressAllowlistEntry,
 	CreateEvalRunInput,
 	EvalCostEstimate,
@@ -222,6 +223,10 @@ export function createDeployment(input: Partial<Deployment>): Promise<Deployment
 
 export function getDeployment(id: string): Promise<Deployment> {
 	return apiFetch<Deployment>(`/deployments/${id}`);
+}
+
+export function getDeploymentUsage(id: string): Promise<DeploymentUsage> {
+	return apiFetch<DeploymentUsage>(`/deployments/${id}/usage`);
 }
 
 export function updateDeployment(id: string, input: Partial<Deployment>): Promise<Deployment> {
@@ -765,6 +770,7 @@ export type {
 	Connection,
 	DashboardSummary,
 	Deployment,
+	DeploymentUsage,
 	GuardrailEvent,
 	KbDocument,
 	KbImportResultItem,

@@ -4,6 +4,7 @@
 	import { onMount } from 'svelte';
 	import {
 		getDeployment,
+		getDeploymentUsage,
 		updateDeployment,
 		deleteDeployment,
 		promoteDeployment,
@@ -14,12 +15,20 @@
 		listDeployments
 	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
-	import type { AgentVersion, Deployment, WorkflowVersion } from '$lib/api/types';
+	import type { AgentVersion, Deployment, DeploymentUsage, WorkflowVersion } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
+	import UsageMeter from '$lib/components/UsageMeter.svelte';
 
 	let deployment = $state<Deployment | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+
+	// Loaded separately from `deployment` (own loading/error state) so a Redis hiccup on
+	// the usage read never blocks the rest of the page - everything above this section
+	// comes straight from Postgres via getDeployment() and shouldn't wait on Redis at all.
+	let usage = $state<DeploymentUsage | null>(null);
+	let usageLoading = $state(true);
+	let usageError = $state<string | null>(null);
 
 	async function load(id: string) {
 		loading = true;
@@ -34,7 +43,33 @@
 		}
 	}
 
-	onMount(() => load($page.params.id ?? ''));
+	const USAGE_ERROR_MESSAGES: Record<string, string> = {
+		usage_request_failed: 'Could not reach the gateway for usage data - try again shortly.',
+		not_found: 'This deployment no longer exists - it may have been deleted.'
+	};
+
+	async function loadUsage(id: string) {
+		usageLoading = true;
+		usageError = null;
+		try {
+			usage = await getDeploymentUsage(id);
+		} catch (e) {
+			usageError =
+				e instanceof ApiError
+					? (USAGE_ERROR_MESSAGES[e.message] ?? e.message)
+					: e instanceof Error
+						? e.message
+						: 'Failed to load usage.';
+		} finally {
+			usageLoading = false;
+		}
+	}
+
+	onMount(() => {
+		const id = $page.params.id ?? '';
+		load(id);
+		loadUsage(id);
+	});
 
 	$effect(() => {
 		headerContent.set({
@@ -588,12 +623,33 @@
 				<div><dt class="text-xs text-neutral-400">Daily token limit</dt><dd class="text-sm">{deployment.daily_token_limit ?? '—'}</dd></div>
 				<div><dt class="text-xs text-neutral-400">Daily cost limit</dt><dd class="text-sm">{deployment.daily_cost_limit_usd != null ? `$${deployment.daily_cost_limit_usd}` : '—'}</dd></div>
 			</dl>
-			<div class="mt-4 rounded-md border border-dashed border-neutral-200 bg-neutral-50 p-3">
-				<p class="text-xs text-neutral-500">
-					Usage data isn't available yet - the gateway's real-time counters live in Redis and no
-					endpoint reads them back out for display yet. This is a separate follow-up, not shown here
-					to avoid presenting made-up numbers.
-				</p>
+			<div class="mt-4 border-t border-neutral-100 pt-4">
+				<p class="text-sm font-medium text-neutral-700">Usage</p>
+				{#if usageLoading}
+					<p class="mt-2 text-xs text-neutral-400" role="status">Loading usage…</p>
+				{:else if usageError}
+					<p class="mt-2 text-xs text-danger">{usageError}</p>
+				{:else if usage?.redis_unavailable}
+					<p class="mt-2 text-xs text-neutral-400">
+						Usage counters are temporarily unavailable (Redis unreachable) - limits are still
+						enforced live by the gateway, this is only the display.
+					</p>
+				{:else if usage}
+					<div class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+						<UsageMeter label="This minute" value={usage.requests_this_minute} limit={usage.rate_limit_per_min} unit="req" />
+						<UsageMeter label="Today" value={usage.tokens_today} limit={usage.daily_token_limit} unit="tok" />
+						<UsageMeter
+							label="Today"
+							value={usage.cost_today_usd}
+							limit={usage.daily_cost_limit_usd}
+							unit="$"
+							format={(n) => `$${n.toFixed(4)}`}
+						/>
+					</div>
+					<p class="mt-2 text-xs text-neutral-400">
+						Resets {new Date(usage.reset_at).toLocaleString()}
+					</p>
+				{/if}
 			</div>
 		</section>
 

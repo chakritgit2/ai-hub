@@ -8,6 +8,7 @@ from app.services.quotas import (
     _bangkok_today,
     check_quota_not_exceeded,
     check_rate_limit,
+    read_usage_snapshot,
     record_actual_usage,
     reconcile_quota,
     reserve_quota,
@@ -236,3 +237,44 @@ async def test_record_actual_usage_noop_for_zero_usage(deployment_id) -> None:
     redis_client = get_redis()
     tokens_key = f"gw:quota:tokens:{deployment_id}:{_bangkok_today()}"
     assert await redis_client.get(tokens_key) is None
+
+
+@requires_redis
+async def test_read_usage_snapshot_is_zero_for_a_fresh_deployment(deployment_id) -> None:
+    snapshot = await read_usage_snapshot(deployment_id)
+
+    assert snapshot.requests_this_minute == 0
+    assert snapshot.tokens_today == 0
+    assert snapshot.cost_today_usd == 0.0
+    assert snapshot.redis_unavailable is False
+
+
+@requires_redis
+async def test_read_usage_snapshot_reflects_real_counters_without_incrementing_them(deployment_id) -> None:
+    await check_rate_limit(deployment_id, rate_limit_per_min=10)
+    await check_rate_limit(deployment_id, rate_limit_per_min=10)
+    await record_actual_usage(deployment_id, actual_tokens=120, actual_cost_usd=0.05, today=_bangkok_today(), ttl=60)
+
+    first = await read_usage_snapshot(deployment_id)
+    assert first.requests_this_minute == 2
+    assert first.tokens_today == 120
+    assert first.cost_today_usd == pytest.approx(0.05)
+
+    # Reading again must not itself count as a request against the rate limit.
+    second = await read_usage_snapshot(deployment_id)
+    assert second.requests_this_minute == 2
+
+
+@requires_redis
+async def test_read_usage_snapshot_fails_open_when_redis_unavailable(deployment_id, monkeypatch) -> None:
+    class _BrokenRedis:
+        async def mget(self, *_args, **_kwargs):
+            raise redis.exceptions.ConnectionError("simulated outage")
+
+    monkeypatch.setattr("app.services.quotas.get_redis", lambda: _BrokenRedis())
+
+    snapshot = await read_usage_snapshot(deployment_id)
+    assert snapshot.redis_unavailable is True
+    assert snapshot.requests_this_minute == 0
+    assert snapshot.tokens_today == 0
+    assert snapshot.cost_today_usd == 0.0

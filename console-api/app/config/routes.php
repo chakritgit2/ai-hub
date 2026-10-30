@@ -78,6 +78,7 @@ return function (Router $router): void {
     $admin('GET', '/deployments', 'Deployments', 'listDeployments');
     $admin('POST', '/deployments', 'Deployments', 'createDeployment');
     $admin('GET', '/deployments/{id:[^/]+}', 'Deployments', 'getDeployment');
+    $admin('GET', '/deployments/{id:[^/]+}/usage', 'Deployments', 'getDeploymentUsage');
     $admin('PATCH', '/deployments/{id:[^/]+}', 'Deployments', 'updateDeployment');
     $admin('DELETE', '/deployments/{id:[^/]+}', 'Deployments', 'deleteDeployment');
     $admin('POST', '/deployments/{id:[^/]+}/promote', 'Deployments', 'promoteDeployment');

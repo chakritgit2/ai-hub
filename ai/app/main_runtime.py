@@ -58,6 +58,8 @@ from app.services.connection_secrets import (
 )
 from app.services.connections import resolve_connection
 from app.services.agent_versions import resolve_agent_version
+from app.services.deployments import resolve_deployment
+from app.services.quotas import read_usage_snapshot
 from app.services.approvals import ApprovalAlreadyDecidedError, ApprovalNotFoundError, decide_approval
 from app.services.datasets import resolve_dataset
 from app.services.egress_allowlist import list_egress_allowlist
@@ -433,6 +435,46 @@ async def cancelRun(id: str, claims: RuntimeAuth) -> Response:
 
 
 InternalAuth = Annotated[dict, Depends(require_internal_auth)]
+
+
+class DeploymentUsage(BaseModel):
+    rate_limit_per_min: int
+    requests_this_minute: int
+    daily_token_limit: int | None
+    tokens_today: int
+    daily_cost_limit_usd: float | None
+    cost_today_usd: float
+    reset_at: str
+    redis_unavailable: bool = False
+
+
+@app.get("/internal/v1/deployments/{id}/usage", response_model=DeploymentUsage)
+async def getDeploymentUsage(id: str, claims: InternalAuth) -> Response:
+    """Read-only view of the gateway's own Redis rate-limit/quota counters (PRD §6.3,
+    §6.9) for the console's Deployment detail page - the "Usage" section has shown an
+    honest "not available yet" note since the page was built, since nothing previously
+    read these counters back out. `app.services.quotas.read_usage_snapshot` never
+    increments anything, so viewing this page can never itself trip a limit."""
+    company_id = claims["company_id"]
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="deployment_not_found")
+
+    deployment = await resolve_deployment(company_id, id)
+    if deployment is None:
+        raise HTTPException(status_code=404, detail="deployment_not_found")
+
+    snapshot = await read_usage_snapshot(id)
+
+    return DeploymentUsage(
+        rate_limit_per_min=deployment.rate_limit_per_min,
+        requests_this_minute=snapshot.requests_this_minute,
+        daily_token_limit=deployment.daily_token_limit,
+        tokens_today=snapshot.tokens_today,
+        daily_cost_limit_usd=deployment.daily_cost_limit_usd,
+        cost_today_usd=snapshot.cost_today_usd,
+        reset_at=snapshot.reset_at.isoformat(),
+        redis_unavailable=snapshot.redis_unavailable,
+    )
 
 
 class CompileRequest(BaseModel):

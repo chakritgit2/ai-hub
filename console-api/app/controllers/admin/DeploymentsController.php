@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace ConsoleApi\Controllers\Admin;
 
 use ConsoleApi\Controllers\ControllerBase;
+use ConsoleApi\Services\RuntimeClient;
 use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -178,6 +180,38 @@ class DeploymentsController extends ControllerBase
         }
 
         return $this->jsonResponse($this->formatDeployment($row));
+    }
+
+    /**
+     * Read-only Redis rate-limit/quota snapshot (PRD §6.3/§6.9) - the Deployment detail
+     * page's "Usage" section had shown an honest "not available yet" note since the page
+     * was built, since nothing previously read the gateway's own counters back out.
+     */
+    public function getDeploymentUsage(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
+        if ($this->findDeployment($id) === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        /** @var RuntimeClient $runtimeClient */
+        $runtimeClient = $this->getDI()->getShared('runtimeClient');
+
+        try {
+            $usage = $runtimeClient->getDeploymentUsage($id);
+        } catch (RuntimeException $exception) {
+            return $this->jsonResponse(
+                ['error' => 'usage_request_failed', 'message' => $exception->getMessage()],
+                502
+            );
+        }
+
+        return $this->jsonResponse($usage);
     }
 
     public function updateDeployment(string $id): Response

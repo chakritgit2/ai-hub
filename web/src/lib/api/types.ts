@@ -542,6 +542,17 @@ export interface Deployment {
 	promoted_to_id?: string | null;
 }
 
+export interface DeploymentUsage {
+	rate_limit_per_min: number;
+	requests_this_minute: number;
+	daily_token_limit: number | null;
+	tokens_today: number;
+	daily_cost_limit_usd: number | null;
+	cost_today_usd: number;
+	reset_at: string;
+	redis_unavailable: boolean;
+}
+
 export interface ApiKey {
 	id: string;
 	company_id: string;
@@ -645,6 +656,7 @@ export interface DashboardSummary {
 	cost_this_month_usd: number;
 	error_rate: number;
 	guardrail_triggers: number;
+	runs_per_day: Array<{ date: string; count: number }>;
 }
 
 // Phase 2/3/4 endpoints return a loosely-typed Placeholder body per the OpenAPI contract.

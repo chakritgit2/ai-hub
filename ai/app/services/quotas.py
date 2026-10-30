@@ -291,3 +291,44 @@ async def record_actual_usage(
         await redis_client.expire(cost_key, ttl)
     except redis.exceptions.RedisError:
         logger.warning("quota usage recording skipped: Redis unavailable", exc_info=True)
+
+
+@dataclass(frozen=True)
+class UsageSnapshot:
+    requests_this_minute: int
+    tokens_today: int
+    cost_today_usd: float
+    reset_at: datetime
+    redis_unavailable: bool = False
+
+
+async def read_usage_snapshot(deployment_id: str) -> UsageSnapshot:
+    """Read-only view of the same counters `check_rate_limit`/`reserve_quota` already
+    write, for the console's Deployment detail page (PRD §6.9) - never increments
+    anything, so calling this doesn't itself count as a request. Redis down degrades to
+    an honest zeroed snapshot with `redis_unavailable=True` rather than raising, since
+    this backs a display, not a gate - unlike quota reservation, there's no "fail closed"
+    option that makes sense for a read-only usage view.
+    """
+    minute_bucket = int(time.time() // 60)
+    today = _bangkok_today()
+    reset_at = datetime.now(_BANGKOK) + timedelta(seconds=_seconds_until_bangkok_midnight())
+    ratelimit_key = f"{_KEY_PREFIX}:ratelimit:{deployment_id}:{minute_bucket}"
+    tokens_key = f"{_KEY_PREFIX}:quota:tokens:{deployment_id}:{today}"
+    cost_key = f"{_KEY_PREFIX}:quota:cost_microusd:{deployment_id}:{today}"
+
+    try:
+        redis_client = get_redis()
+        requests, tokens, cost_microusd = await redis_client.mget(ratelimit_key, tokens_key, cost_key)
+    except redis.exceptions.RedisError:
+        logger.warning("usage snapshot read failed: Redis unavailable", exc_info=True)
+        return UsageSnapshot(
+            requests_this_minute=0, tokens_today=0, cost_today_usd=0.0, reset_at=reset_at, redis_unavailable=True
+        )
+
+    return UsageSnapshot(
+        requests_this_minute=int(requests or 0),
+        tokens_today=int(tokens or 0),
+        cost_today_usd=int(cost_microusd or 0) / 1_000_000,
+        reset_at=reset_at,
+    )

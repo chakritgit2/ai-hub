@@ -214,6 +214,17 @@ components:
           type: array
           items: { type: string }
           description: Only populated by GET /connections/{id}/models.
+    DeploymentUsage:
+      type: object
+      properties:
+        rate_limit_per_min: { type: integer }
+        requests_this_minute: { type: integer }
+        daily_token_limit: { type: integer, nullable: true }
+        tokens_today: { type: integer }
+        daily_cost_limit_usd: { type: number, nullable: true }
+        cost_today_usd: { type: number }
+        reset_at: { type: string, format: date-time }
+        redis_unavailable: { type: boolean }
 paths:
   /agents/compile:
     post:
@@ -312,6 +323,23 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TestResult' }
+
+  /deployments/{id}/usage:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getDeploymentUsage
+      summary: >-
+        Read-only snapshot of the gateway's own Redis rate-limit/quota counters -
+        backs the console's Deployment detail page "Usage" section. Never increments
+        anything, so viewing it can't itself trip a limit.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeploymentUsage' }
 
   /connections/{id}/test-model:
     parameters:

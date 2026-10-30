@@ -49,6 +49,26 @@ class DashboardController extends ControllerBase
             )
         );
 
+        // `generate_series` first, `logs.runs` LEFT JOINed onto it, so every one of the 14
+        // days appears even with zero runs that day - a plain `GROUP BY` on `logs.runs`
+        // alone would silently drop days with no rows instead of reporting them as 0,
+        // which would misrender as a gap in the chart rather than a real quiet day.
+        $runsPerDay = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchAll(
+                "SELECT to_char(d.day, 'YYYY-MM-DD') AS date, count(r.id) AS n
+                 FROM generate_series(
+                        date_trunc('day', now() AT TIME ZONE 'Asia/Bangkok') - interval '13 days',
+                        date_trunc('day', now() AT TIME ZONE 'Asia/Bangkok'),
+                        interval '1 day'
+                      ) AS d(day)
+                 LEFT JOIN logs.runs r
+                   ON date_trunc('day', r.created_at AT TIME ZONE 'Asia/Bangkok') = d.day
+                 GROUP BY d.day
+                 ORDER BY d.day",
+                Enum::FETCH_ASSOC
+            )
+        );
+
         $runsToday = (int) $runs['runs_today'];
         $errorRunsToday = (int) $runs['error_runs_today'];
 
@@ -61,6 +81,10 @@ class DashboardController extends ControllerBase
             'cost_this_month_usd' => (float) $runs['cost_month'],
             'error_rate' => $runsToday > 0 ? $errorRunsToday / $runsToday : 0.0,
             'guardrail_triggers' => (int) $guardrailTriggers['n'],
+            'runs_per_day' => array_map(
+                static fn (array $row): array => ['date' => $row['date'], 'count' => (int) $row['n']],
+                $runsPerDay
+            ),
         ]);
     }
 }

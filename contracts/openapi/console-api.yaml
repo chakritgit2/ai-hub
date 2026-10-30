@@ -460,6 +460,17 @@ components:
         config_version: { type: integer }
         enabled: { type: boolean }
         promoted_to_id: { type: string, nullable: true, description: "Production deployment this (staging) deployment was last promoted to." }
+    DeploymentUsage:
+      type: object
+      properties:
+        rate_limit_per_min: { type: integer }
+        requests_this_minute: { type: integer }
+        daily_token_limit: { type: integer, nullable: true }
+        tokens_today: { type: integer }
+        daily_cost_limit_usd: { type: number, nullable: true }
+        cost_today_usd: { type: number }
+        reset_at: { type: string, format: date-time }
+        redis_unavailable: { type: boolean }
     ApiKey:
       type: object
       properties:
@@ -524,6 +535,13 @@ components:
         cost_this_month_usd: { type: number }
         error_rate: { type: number }
         guardrail_triggers: { type: integer }
+        runs_per_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              count: { type: integer }
     RunConversation:
       type: object
       description: Metadata only (PRD §6.9) - message content lives in runtime.agent_memory, a separate, larger piece of work.
@@ -973,6 +991,15 @@ paths:
       operationId: deleteDeployment
       responses:
         "204": { description: Deleted }
+  /deployments/{id}/usage:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getDeploymentUsage
+      summary: Read-only gateway rate-limit/quota snapshot (proxied to ai-runtime, PRD §6.9).
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/DeploymentUsage' } } } }
   /deployments/{id}/promote:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }

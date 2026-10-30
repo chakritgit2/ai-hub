@@ -87,6 +87,19 @@ class RuntimeClient
     }
 
     /**
+     * GET /internal/v1/deployments/{id}/usage — read-only Redis rate-limit/quota
+     * snapshot, backs DeploymentsController::getDeploymentUsage() (PRD §6.9's Deployment
+     * detail "Usage" section, previously an honest "not available yet" note since
+     * nothing read these counters back out).
+     *
+     * @return array<string, mixed>
+     */
+    public function getDeploymentUsage(string $deploymentId): array
+    {
+        return $this->request('GET', "deployments/{$deploymentId}/usage", []);
+    }
+
+    /**
      * GET /internal/v1/connections/{id}/models — real, free client.models.list() call,
      * backs the agent editor's live Model dropdown (never a hardcoded list).
      *
