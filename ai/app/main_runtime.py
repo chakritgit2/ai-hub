@@ -450,6 +450,7 @@ class DeploymentUsage(BaseModel):
     daily_cost_limit_usd: float | None
     cost_today_usd: float
     reset_at: str
+    minute_reset_at: str
     redis_unavailable: bool = False
 
 
@@ -478,6 +479,7 @@ async def getDeploymentUsage(id: str, claims: InternalAuth) -> Response:
         daily_cost_limit_usd=deployment.daily_cost_limit_usd,
         cost_today_usd=snapshot.cost_today_usd,
         reset_at=snapshot.reset_at.isoformat(),
+        minute_reset_at=snapshot.minute_reset_at.isoformat(),
         redis_unavailable=snapshot.redis_unavailable,
     )
 

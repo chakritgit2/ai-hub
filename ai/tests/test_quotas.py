@@ -302,3 +302,15 @@ async def test_read_usage_snapshot_fails_open_when_redis_unavailable(deployment_
     assert snapshot.requests_this_minute == 0
     assert snapshot.tokens_today == 0
     assert snapshot.cost_today_usd == 0.0
+
+
+@requires_redis
+async def test_read_usage_snapshot_reports_separate_minute_and_daily_reset_times(deployment_id) -> None:
+    # minute_reset_at (top of next minute) must never be conflated with reset_at
+    # (Bangkok midnight) - they used to be the same field, which showed the daily
+    # reset time under the per-minute rate-limit meter in the console UI.
+    snapshot = await read_usage_snapshot(deployment_id)
+
+    assert snapshot.minute_reset_at != snapshot.reset_at
+    assert snapshot.minute_reset_at < snapshot.reset_at
+    assert (snapshot.minute_reset_at - datetime.now(snapshot.minute_reset_at.tzinfo)).total_seconds() <= 60

@@ -550,6 +550,7 @@ export interface DeploymentUsage {
 	daily_cost_limit_usd: number | null;
 	cost_today_usd: number;
 	reset_at: string;
+	minute_reset_at: string;
 	redis_unavailable: boolean;
 }
 

@@ -224,6 +224,7 @@ components:
         daily_cost_limit_usd: { type: number, nullable: true }
         cost_today_usd: { type: number }
         reset_at: { type: string, format: date-time }
+        minute_reset_at: { type: string, format: date-time, description: "Reset time for requests_this_minute, distinct from reset_at (daily)." }
         redis_unavailable: { type: boolean }
 paths:
   /agents/compile:

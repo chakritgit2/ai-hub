@@ -8,12 +8,14 @@
 		value,
 		limit,
 		unit,
+		resetAt = null,
 		format = (n: number) => n.toLocaleString()
 	}: {
 		label: string;
 		value: number;
 		limit: number | null;
 		unit: string;
+		resetAt?: string | null;
 		format?: (n: number) => string;
 	} = $props();
 
@@ -41,5 +43,8 @@
 		<div class="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-neutral-100" role="progressbar" aria-label="{label}: {format(value)} of {format(limit ?? 0)} {unit}" aria-valuenow={value} aria-valuemin={0} aria-valuemax={limit ?? 0}>
 			<div class="h-full rounded-full {fillClass}" style="width: {ratio * 100}%"></div>
 		</div>
+	{/if}
+	{#if resetAt}
+		<p class="mt-1 text-[11px] text-neutral-400">Resets {new Date(resetAt).toLocaleString()}</p>
 	{/if}
 </div>

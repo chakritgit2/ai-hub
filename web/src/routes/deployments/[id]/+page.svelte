@@ -636,19 +636,29 @@
 					</p>
 				{:else if usage}
 					<div class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
-						<UsageMeter label="This minute" value={usage.requests_this_minute} limit={usage.rate_limit_per_min} unit="req" />
-						<UsageMeter label="Today" value={usage.tokens_today} limit={usage.daily_token_limit} unit="tok" />
+						<UsageMeter
+							label="This minute"
+							value={usage.requests_this_minute}
+							limit={usage.rate_limit_per_min}
+							unit="req"
+							resetAt={usage.minute_reset_at}
+						/>
+						<UsageMeter
+							label="Today"
+							value={usage.tokens_today}
+							limit={usage.daily_token_limit}
+							unit="tok"
+							resetAt={usage.reset_at}
+						/>
 						<UsageMeter
 							label="Today"
 							value={usage.cost_today_usd}
 							limit={usage.daily_cost_limit_usd}
 							unit=""
 							format={(n) => `$${n.toFixed(4)}`}
+							resetAt={usage.reset_at}
 						/>
 					</div>
-					<p class="mt-2 text-xs text-neutral-400">
-						Resets {new Date(usage.reset_at).toLocaleString()}
-					</p>
 				{/if}
 			</div>
 		</section>

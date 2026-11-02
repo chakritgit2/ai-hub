@@ -335,6 +335,7 @@ class UsageSnapshot:
     tokens_today: int
     cost_today_usd: float
     reset_at: datetime
+    minute_reset_at: datetime
     redis_unavailable: bool = False
 
 
@@ -345,10 +346,16 @@ async def read_usage_snapshot(deployment_id: str) -> UsageSnapshot:
     an honest zeroed snapshot with `redis_unavailable=True` rather than raising, since
     this backs a display, not a gate - unlike quota reservation, there's no "fail closed"
     option that makes sense for a read-only usage view.
+
+    Two distinct reset times are reported: `reset_at` (Bangkok midnight, for the daily
+    token/cost counters) and `minute_reset_at` (top of the next minute, for
+    `requests_this_minute`) - these were conflated into one `reset_at` before, which
+    showed the daily reset time under the per-minute rate-limit meter too.
     """
     minute_bucket = int(time.time() // 60)
     today = _bangkok_today()
     reset_at = datetime.now(_BANGKOK) + timedelta(seconds=_seconds_until_bangkok_midnight())
+    minute_reset_at = datetime.fromtimestamp((minute_bucket + 1) * 60, tz=_BANGKOK)
     ratelimit_key = _ratelimit_key(deployment_id, minute_bucket)
     tokens_key = _tokens_key(deployment_id, today)
     cost_key = _cost_key(deployment_id, today)
@@ -359,7 +366,12 @@ async def read_usage_snapshot(deployment_id: str) -> UsageSnapshot:
     except redis.exceptions.RedisError:
         logger.warning("usage snapshot read failed: Redis unavailable", exc_info=True)
         return UsageSnapshot(
-            requests_this_minute=0, tokens_today=0, cost_today_usd=0.0, reset_at=reset_at, redis_unavailable=True
+            requests_this_minute=0,
+            tokens_today=0,
+            cost_today_usd=0.0,
+            reset_at=reset_at,
+            minute_reset_at=minute_reset_at,
+            redis_unavailable=True,
         )
 
     return UsageSnapshot(
@@ -367,4 +379,5 @@ async def read_usage_snapshot(deployment_id: str) -> UsageSnapshot:
         tokens_today=int(tokens or 0),
         cost_today_usd=int(cost_microusd or 0) / 1_000_000,
         reset_at=reset_at,
+        minute_reset_at=minute_reset_at,
     )
