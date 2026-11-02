@@ -33,7 +33,7 @@ from dynamiq.runnables.base import RunnableConfig, RunnableStatus
 from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
 from app.services.company_budget import check_monthly_budget_not_exceeded
-from app.services.compiler import BUILTIN_TOOL_TYPES, RETRIEVAL_TOOL_TYPE, build_agent
+from app.services.compiler import BUILTIN_TOOL_TYPES, PYTHON_TOOL_TYPE, RETRIEVAL_TOOL_TYPE, build_agent
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.deployments import resolve_deployment
 from app.services.egress_allowlist import list_egress_allowlist
@@ -125,10 +125,10 @@ async def _resolve_state_agent(
 
     tool_secrets = {}
     for tool_def in agent_def.get("tools", []):
-        if tool_def["type"] in BUILTIN_TOOL_TYPES:
+        if tool_def["type"] in BUILTIN_TOOL_TYPES or tool_def["type"] == PYTHON_TOOL_TYPE:
             tool_secret = await decrypt_tool_secret(company_id, tool_def["id"])
             if tool_secret is None:
-                raise ValueError(f"no secret stored for builtin tool {tool_def['name']!r}")
+                raise ValueError(f"no secret stored for tool {tool_def['name']!r}")
             tool_secrets[tool_def["id"]] = tool_secret
             continue
         if tool_def.get("auth_mode") != "service":

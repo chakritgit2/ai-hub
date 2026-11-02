@@ -11,7 +11,14 @@ from fastapi.testclient import TestClient
 from app.integrations.safe_http_client import EgressBlockedError
 from app.integrations.safe_openai_connection import SafeOpenAIConnection
 from app.main_runtime import app as runtime_app
-from app.services.compiler import EXA_TOOL_TYPE, RETRIEVAL_TOOL_TYPE, TAVILY_TOOL_TYPE, build_agent, compile_spec
+from app.services.compiler import (
+    EXA_TOOL_TYPE,
+    PYTHON_TOOL_TYPE,
+    RETRIEVAL_TOOL_TYPE,
+    TAVILY_TOOL_TYPE,
+    build_agent,
+    compile_spec,
+)
 
 from .markers import requires_openai_key, requires_postgres
 
@@ -711,9 +718,10 @@ async def test_compile_rejects_builtin_tool_with_delegated_auth_mode(make_connec
 
 
 @requires_postgres
-async def test_compile_rejects_python_tool_kind_even_for_admin(make_connection, make_tool):
-    """kind: python has no execution story at all - fails compilation for every role,
-    including admin, rather than being silently accepted and doing nothing at run time."""
+async def test_compile_builds_a_python_tool_for_admin(make_connection, make_tool):
+    """kind: python (E2B-sandboxed code execution) now has a real execution story -
+    compiles successfully for admin, who's the only role the node-type allowlist permits
+    `dynamiq.nodes.tools.e2b_sandbox.E2BInterpreterTool` for in the first place."""
     company_id = str(uuid.uuid4())
     connection_id = make_connection(company_id)
     tool_id = make_tool(company_id, kind="python")
@@ -721,8 +729,51 @@ async def test_compile_rejects_python_tool_kind_even_for_admin(make_connection, 
 
     result = await compile_spec(spec, "admin", company_id)
 
+    assert result["ok"] is True, result["errors"]
+    assert result["compiled_definition"]["agent"]["tools"][0]["type"] == PYTHON_TOOL_TYPE
+
+
+@requires_postgres
+async def test_compile_rejects_python_tool_kind_for_non_admin(make_connection, make_tool):
+    """Same spec as the admin case above compiles fine at the tool-resolution step (kind:
+    python is valid config-wise for any role), but fails the role-based node-type
+    allowlist check (app.services.node_allowlist.ADMIN_ONLY_NODE_TYPES) for a non-admin
+    publisher - PRD §6.1 Non-goal #3: code execution is admin-only."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="python")
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "developer", company_id)
+
     assert result["ok"] is False
-    assert "not yet supported" in result["errors"][0]["message"]
+    assert PYTHON_TOOL_TYPE in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_rejects_python_tool_with_invalid_auth_mode(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="python", auth_mode="delegated")
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "admin", company_id)
+
+    assert result["ok"] is False
+    assert "auth_mode" in result["errors"][0]["message"]
+
+
+@requires_postgres
+async def test_compile_rejects_python_tool_with_out_of_range_timeout(make_connection, make_tool):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    tool_id = make_tool(company_id, kind="python", config={"timeout": 99999})
+    spec = {**_valid_spec(connection_id), "tools": [{"tool_id": tool_id}]}
+
+    result = await compile_spec(spec, "admin", company_id)
+
+    assert result["ok"] is False
+    assert "timeout" in result["errors"][0]["message"]
 
 
 @requires_postgres

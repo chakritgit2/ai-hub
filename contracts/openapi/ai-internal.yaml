@@ -404,7 +404,12 @@ paths:
         one real request via SafeHttpClient to prove it's reachable (PRD §6.5/§7.4).
         `auth_mode: "service"` tools attach whatever secret is stored in
         runtime.tool_secrets, if any (fail-open: no stored secret is not a test failure).
-        `kind: builtin`/`kind: python` return ok:false (no reachability story for either yet).
+        `kind: builtin` only reports whether a provider API key secret is stored - it never
+        makes a real provider call (that would cost the company's own quota/credits).
+        `kind: python` reports ok:false if no E2B API key secret is stored yet, otherwise
+        creates a real E2B sandbox and evaluates a trivial expression to prove
+        connectivity - this does cost a small amount of the company's E2B usage, same
+        tradeoff as any other kind's connectivity check that must touch the real backend.
       responses:
         "200":
           description: OK

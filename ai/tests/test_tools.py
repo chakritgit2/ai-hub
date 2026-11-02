@@ -114,7 +114,7 @@ async def test_builtin_tool_with_secret_is_ok_true(internal_client, make_tool, s
 
 
 @requires_postgres
-async def test_python_tool_is_not_supported(internal_client, make_tool):
+async def test_python_tool_with_no_secret_is_ok_false(internal_client, make_tool):
     client, company_id = internal_client
     tool_id = make_tool(company_id, kind="python")
 
@@ -123,7 +123,55 @@ async def test_python_tool_is_not_supported(internal_client, make_tool):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is False
-    assert "not supported" in body["detail"]
+    assert "no E2B API key secret configured" in body["detail"]
+
+
+@requires_postgres
+async def test_python_tool_test_reports_a_clean_failure_when_the_sandbox_cant_connect(
+    internal_client, make_tool, monkeypatch
+):
+    """A real bad/expired E2B key must surface as a clean ok:false, not an unhandled 500 -
+    same "bad input is still 200 ok:false" contract every other kind's test already has."""
+    from dynamiq.nodes.tools.e2b_sandbox import E2BInterpreterTool
+
+    client, company_id = internal_client
+    tool_id = make_tool(company_id, kind="python")
+    await client.put(f"/internal/v1/tools/{tool_id}/secret", json={"secret": "not-a-real-e2b-key"})
+
+    def _raise_run(self, *_args, **_kwargs):
+        raise RuntimeError("simulated sandbox outage")
+
+    monkeypatch.setattr(E2BInterpreterTool, "run", _raise_run)
+
+    resp = await client.post(f"/internal/v1/tools/{tool_id}/test")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "sandbox connectivity failed" in body["detail"]
+
+
+@requires_postgres
+async def test_python_tool_test_reports_success_when_the_sandbox_runs_cleanly(
+    internal_client, make_tool, monkeypatch
+):
+    from dynamiq.nodes.tools.e2b_sandbox import E2BInterpreterTool
+    from dynamiq.runnables.base import RunnableResult, RunnableStatus
+
+    client, company_id = internal_client
+    tool_id = make_tool(company_id, kind="python")
+    await client.put(f"/internal/v1/tools/{tool_id}/secret", json={"secret": "not-a-real-e2b-key"})
+
+    def _fake_run(self, *_args, **_kwargs):
+        return RunnableResult(status=RunnableStatus.SUCCESS, output="2")
+
+    monkeypatch.setattr(E2BInterpreterTool, "run", _fake_run)
+
+    resp = await client.post(f"/internal/v1/tools/{tool_id}/test")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
 
 
 @requires_postgres

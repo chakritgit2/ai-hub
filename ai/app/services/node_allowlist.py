@@ -7,14 +7,14 @@ There's no closed enum of valid "type" strings anywhere in dynamiq itself —
 checked against the literal dotted-path strings this console ever writes into
 a `compiled_definition`.
 
-`kind: "http"` and `kind: "builtin"` (Tavily/Exa web search, PRD §6.5) are the tool kinds
-the compiler can actually build a real node for today
-(`app.services.compiler._build_tools`) — `kind: "python"` tool references fail
-compilation outright, for every role including admin, before a `"type"` entry for them is
-ever written (see `app.services.compiler._resolve_tools`), so `ADMIN_ONLY_NODE_TYPES`
-still can't actually be hit via the compiler's normal path yet. The mechanism is real and
-tested directly (see `tests/test_node_allowlist.py`), ready for code-execution tool kinds
-to start populating `type` entries without this function needing to change.
+`kind: "http"`, `kind: "builtin"` (Tavily/Exa web search, PRD §6.5), and `kind: "python"`
+(E2B-sandboxed code execution, PRD §6.1/§6.6a) are the tool kinds the compiler can
+actually build a real node for (`app.services.compiler._build_tools`) — `kind: "python"`
+is the one `ADMIN_ONLY_NODE_TYPES` actually gates today, via the dotted path
+`"dynamiq.nodes.tools.e2b_sandbox.E2BInterpreterTool"` `_tool_type()` writes into its
+`"type"` entry. The mechanism is tested directly both here (`tests/test_node_allowlist.py`)
+and end-to-end through the compiler (`tests/test_compiler.py`'s
+`test_compile_rejects_python_tool_kind_for_non_admin`).
 """
 
 # Verified importable from the installed dynamiq==0.65.0.

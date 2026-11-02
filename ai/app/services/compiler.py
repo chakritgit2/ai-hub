@@ -145,6 +145,15 @@ TAVILY_TOOL_TYPE = "dynamiq.nodes.tools.tavily.TavilyTool"
 EXA_TOOL_TYPE = "dynamiq.nodes.tools.exa_search.ExaTool"
 BUILTIN_TOOL_TYPES = frozenset({TAVILY_TOOL_TYPE, EXA_TOOL_TYPE})
 _BUILTIN_PROVIDER_TYPES = {"tavily": TAVILY_TOOL_TYPE, "exa": EXA_TOOL_TYPE}
+# `app.services.node_allowlist.ADMIN_ONLY_NODE_TYPES` already lists this exact dotted
+# path - that mechanism was built ahead of this feature, so no allowlist change is needed
+# here, only populating a `"type"` entry with it (see that module's own docstring).
+PYTHON_TOOL_TYPE = "dynamiq.nodes.tools.e2b_sandbox.E2BInterpreterTool"
+# Sandbox timeout (seconds) a tool's own config may override, within a sane admin-set
+# ceiling - matches BaseCodeInterpreterTool's own default (600s) as this feature's default
+# too, since there's no PRD-specified value to use instead.
+_PYTHON_DEFAULT_TIMEOUT_SECONDS = 600
+_PYTHON_MAX_TIMEOUT_SECONDS = 1800
 _KNOWLEDGE_TOP_K = 5  # matches app.services.kb_search's own default; no per-agent override yet
 
 
@@ -153,15 +162,19 @@ async def _resolve_tools(doc: AgentSpecDoc, company_id: str) -> tuple[list[ToolR
     errors rather than stopping at the first (PRD §7.7: every tool referenced by an agent
     spec must belong to the agent's company).
 
-    `kind: "http"` and `kind: "builtin"` (Tavily/Exa web search, PRD §6.5) tools can be
-    built into a real node this round — `kind: "python"` has no execution story at all, so
-    it fails compilation outright, for every role including admin, rather than being
-    silently accepted and then doing nothing at run time. `kind: "http"` tools have real
-    secret storage for both `auth_mode: service` (`runtime.tool_secrets`) and `auth_mode:
-    delegated` (per-run minted JWTs); `kind: "builtin"` tools only ever use `auth_mode:
-    service` (no end-user identity to delegate to a third-party search API) and are
-    fail-closed on a missing secret at run time (see `app.services.runtime`), unlike
-    `kind: "http"` service-mode tools where a missing secret is a normal, fail-open case.
+    `kind: "http"`, `kind: "builtin"` (Tavily/Exa web search, PRD §6.5), and `kind:
+    "python"` (E2B-sandboxed code execution, PRD §6.1/§6.6a - admin-only, see
+    `app.services.node_allowlist`) can all be built into a real node. `kind: "http"` tools
+    have real secret storage for both `auth_mode: service` (`runtime.tool_secrets`) and
+    `auth_mode: delegated` (per-run minted JWTs); `kind: "builtin"`/`"python"` tools only
+    ever use `auth_mode: service` (no end-user identity to delegate to a third-party
+    search API or sandbox) and are fail-closed on a missing secret at run time (see
+    `app.services.runtime`), unlike `kind: "http"` service-mode tools where a missing
+    secret is a normal, fail-open case. A `kind: "python"` tool's `access_level` is
+    irrelevant to its approval gate - `app.integrations.safe_python_tool.SafePythonTool`
+    always requires human approval before executing agent-written code, regardless of
+    whether it's configured as `read` or `write` (PRD discussion: arbitrary code
+    execution is inherently write-class even when the code only computes something).
     """
     resolved: list[ToolRow] = []
     errors: list[dict] = []
@@ -202,6 +215,21 @@ async def _resolve_tools(doc: AgentSpecDoc, company_id: str) -> tuple[list[ToolR
             if tool.auth_mode != "service":
                 errors.append(
                     {"path": f"tools[{index}].tool_id", "message": "builtin tools only support auth_mode: service"}
+                )
+                continue
+        elif tool.kind == "python":
+            if tool.auth_mode != "service":
+                errors.append(
+                    {"path": f"tools[{index}].tool_id", "message": "python tools only support auth_mode: service"}
+                )
+                continue
+            timeout = tool.config.get("timeout")
+            if timeout is not None and (not isinstance(timeout, int) or not (0 < timeout <= _PYTHON_MAX_TIMEOUT_SECONDS)):
+                errors.append(
+                    {
+                        "path": f"tools[{index}].tool_id",
+                        "message": f"python tool config.timeout must be an integer from 1 to {_PYTHON_MAX_TIMEOUT_SECONDS}",
+                    }
                 )
                 continue
         else:
@@ -269,6 +297,8 @@ async def _resolve_knowledge(
 def _tool_type(tool: ToolRow) -> str:
     if tool.kind == "builtin":
         return _BUILTIN_PROVIDER_TYPES[tool.config["provider"]]
+    if tool.kind == "python":
+        return PYTHON_TOOL_TYPE
     return _HTTP_TOOL_TYPE
 
 
@@ -451,6 +481,53 @@ def _build_builtin_tool(
     )
 
 
+def _build_python_tool(
+    tool_def: dict,
+    company_id: str,
+    secret: str | None = None,
+    run_id: str | None = None,
+    allow_write_tools: bool = True,
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None = None,
+):
+    """Builds a `SafePythonTool` (E2B-sandboxed code execution, PRD §6.1/§6.6a) - same
+    never-a-real-call-at-compile-time rule as `_build_builtin_tool`'s `secret`: `None` at
+    `compile_spec`'s own self-proof call, always a real decrypted `runtime.tool_secrets`
+    value (the company's E2B API key) at real run time, fail-closed on a missing secret
+    (see `app.services.runtime`) - there's no sandbox to create at all without one, unlike
+    `kind: "http"` service-mode tools.
+
+    `SafePythonTool.execute` always runs the write-approval gate regardless of
+    `access_level` (see this module's `_resolve_tools` docstring) - `access_level` is
+    still threaded through here only so it round-trips into the compiled definition the
+    same way every other tool kind's does, not because it changes this tool's gating.
+
+    `config.domain` is forwarded straight into the `E2B` connection unchanged (`None` by
+    default - E2B's own public cloud) - the one knob a future self-hosted E2B instance
+    would need, already wired for free (see `dynamiq.connections.E2B.domain`)."""
+    from dynamiq.connections import E2B
+
+    from app.integrations.safe_python_tool import SafePythonTool
+
+    api_key = secret or _COMPILE_TIME_PLACEHOLDER_API_KEY
+    config = tool_def["config"]
+    access_level = tool_def.get("access_level", "read")
+    # See SafeHttpApiCall.loop's docstring - same reasoning applies to this tool's own
+    # write-gate DB call.
+    loop = asyncio.get_running_loop()
+    return SafePythonTool(
+        name=tool_def["name"],
+        connection=E2B(api_key=api_key, domain=config.get("domain")),
+        timeout=config.get("timeout") or _PYTHON_DEFAULT_TIMEOUT_SECONDS,
+        company_id=company_id,
+        tool_id=tool_def["id"],
+        access_level=access_level,
+        run_id=run_id,
+        allow_write_tools=allow_write_tools,
+        stream_handler=stream_handler,
+        loop=loop,
+    )
+
+
 async def _build_knowledge_tool(tool_def: dict, company_id: str, api_key: str):
     """Constructs a real `VectorStoreRetriever` for one `doc.knowledge` entry.
 
@@ -497,9 +574,10 @@ async def _build_tools(
 ) -> list:
     """Constructs real Dynamiq tool/retrieval node instances from
     `compiled_definition["agent"]["tools"]`. `_resolve_tools`/`_resolve_knowledge` already
-    guarantee only `_HTTP_TOOL_TYPE`/`BUILTIN_TOOL_TYPES`/`RETRIEVAL_TOOL_TYPE` entries
-    ever reach here - the explicit check below is a defensive backstop (matches this
-    codebase's general defense-in-depth style), not the primary gate.
+    guarantee only `_HTTP_TOOL_TYPE`/`BUILTIN_TOOL_TYPES`/`PYTHON_TOOL_TYPE`/
+    `RETRIEVAL_TOOL_TYPE` entries ever reach here - the explicit check below is a
+    defensive backstop (matches this codebase's general defense-in-depth style), not the
+    primary gate.
 
     `run_id`/`allow_write_tools`/`stream_handler` (PRD §6.5/§8.1) are only ever read by a
     `write`-access tool at call time - knowledge retrieval is always read-only, so
@@ -518,6 +596,11 @@ async def _build_tools(
             secret = (tool_secrets or {}).get(tool_def["id"])
             tools.append(
                 _build_builtin_tool(tool_def, company_id, secret, run_id, allow_write_tools, stream_handler)
+            )
+        elif tool_def["type"] == PYTHON_TOOL_TYPE:
+            secret = (tool_secrets or {}).get(tool_def["id"])
+            tools.append(
+                _build_python_tool(tool_def, company_id, secret, run_id, allow_write_tools, stream_handler)
             )
         elif tool_def["type"] == RETRIEVAL_TOOL_TYPE:
             tools.append(await _build_knowledge_tool(tool_def, company_id, knowledge_api_keys[tool_def["id"]]))

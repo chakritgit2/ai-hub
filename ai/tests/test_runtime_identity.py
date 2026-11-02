@@ -216,5 +216,5 @@ async def test_execute_agent_run_fails_closed_when_no_secret_stored_for_builtin_
     tool_id = make_tool(company_id, kind="builtin", config={"provider": "tavily"})
     version_id = await resolvable_agent_version(company_id, tools=[{"tool_id": tool_id}])
 
-    with pytest.raises(ValueError, match="no secret stored for builtin tool"):
+    with pytest.raises(ValueError, match="no secret stored for tool"):
         await run_playground_agent("hi", agent_version_id=version_id, role="developer", company_id=company_id)

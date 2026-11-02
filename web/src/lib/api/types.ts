@@ -143,7 +143,9 @@ export interface Tool {
 	auth_mode: 'service' | 'delegated';
 	audience?: string | null;
 	// kind-specific: for http, url/method/headers/description/input_schema; for builtin,
-	// { provider: 'tavily' | 'exa' } (always auth_mode: service).
+	// { provider: 'tavily' | 'exa' } (always auth_mode: service); for python (E2B sandbox,
+	// always auth_mode: service), { timeout?, allow_packages?, domain? } - no "code" field
+	// here, the agent writes and runs code itself at call time.
 	config: Record<string, unknown>;
 	// Set only after PUT /tools/{id}/secret (auth_mode: service).
 	masked_hint?: string | null;

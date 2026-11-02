@@ -30,7 +30,12 @@
 		url: '',
 		method: 'GET',
 		description: '',
-		provider: 'tavily' as 'tavily' | 'exa'
+		provider: 'tavily' as 'tavily' | 'exa',
+		// python (E2B sandbox) config - timeout binds to type="number", so Svelte coerces
+		// it to number | null (same reasoning as other pages' number inputs).
+		timeout: null as number | null,
+		allow_packages: false,
+		domain: ''
 	});
 	let formError = $state<string | null>(null);
 	let submitting = $state(false);
@@ -74,6 +79,10 @@
 		config_url_invalid: 'URL must be a valid absolute URL.',
 		config_provider_invalid: 'Unsupported provider.',
 		builtin_tools_require_service_auth_mode: 'Built-in tools always use service auth.',
+		python_tools_require_service_auth_mode: 'Python tools always use service auth.',
+		invalid_config_timeout: 'Timeout must be a whole number of seconds from 1 to 1800.',
+		invalid_config_allow_packages: 'Allow packages must be yes or no.',
+		invalid_config_domain: 'Domain must be text.',
 		forbidden: 'You no longer have permission to do this.',
 		not_found: 'This tool no longer exists - it may have been deleted by someone else.'
 	};
@@ -130,7 +139,10 @@
 			url: '',
 			method: 'GET',
 			description: '',
-			provider: 'tavily'
+			provider: 'tavily',
+			timeout: null,
+			allow_packages: false,
+			domain: ''
 		};
 	}
 
@@ -138,7 +150,7 @@
 		submitting = true;
 		formError = null;
 		try {
-			const authMode = form.kind === 'builtin' ? 'service' : form.auth_mode;
+			const authMode = form.kind === 'builtin' || form.kind === 'python' ? 'service' : form.auth_mode;
 			await createTool({
 				name: form.name,
 				kind: form.kind,
@@ -150,7 +162,13 @@
 						? { url: form.url, method: form.method, description: form.description }
 						: form.kind === 'builtin'
 							? { provider: form.provider }
-							: {}
+							: form.kind === 'python'
+								? {
+										timeout: form.timeout,
+										allow_packages: form.allow_packages,
+										domain: form.domain.trim() || null
+									}
+								: {}
 			});
 			showForm = false;
 			resetForm();
@@ -175,6 +193,9 @@
 		method: 'GET',
 		description: '',
 		provider: 'tavily' as 'tavily' | 'exa',
+		timeout: null as number | null,
+		allow_packages: false,
+		domain: '',
 		enabled: true
 	});
 	let editError = $state<string | null>(null);
@@ -191,6 +212,9 @@
 			method: tool.kind === 'http' ? ((tool.config.method as string) ?? 'GET') : 'GET',
 			description: tool.kind === 'http' ? ((tool.config.description as string) ?? '') : '',
 			provider: tool.kind === 'builtin' ? ((tool.config.provider as 'tavily' | 'exa') ?? 'tavily') : 'tavily',
+			timeout: tool.kind === 'python' ? ((tool.config.timeout as number) ?? null) : null,
+			allow_packages: tool.kind === 'python' ? Boolean(tool.config.allow_packages) : false,
+			domain: tool.kind === 'python' ? ((tool.config.domain as string) ?? '') : '',
 			enabled: tool.enabled
 		};
 		editError = null;
@@ -200,23 +224,27 @@
 		savingEdit = true;
 		editError = null;
 		try {
-			const authMode = tool.kind === 'builtin' ? 'service' : editForm.auth_mode;
+			const authMode = tool.kind === 'builtin' || tool.kind === 'python' ? 'service' : editForm.auth_mode;
 			await withCompany(tool.company_id, () =>
 				updateTool(tool.id, {
 					name: editForm.name,
 					access_level: editForm.access_level,
 					auth_mode: authMode,
 					audience: authMode === 'delegated' && editForm.audience ? editForm.audience : null,
-					// PATCH overwrites `config` wholesale server-side (no merge) - for kinds this
-					// form has no fields for (python), send the tool's existing config back
-					// unchanged rather than {}, or saving just a rename/enabled-toggle would
-					// silently wipe it.
+					// PATCH overwrites `config` wholesale server-side (no merge), so every kind
+					// branch below must always send its own full config back.
 					config:
 						tool.kind === 'http'
 							? { url: editForm.url, method: editForm.method, description: editForm.description }
 							: tool.kind === 'builtin'
 								? { provider: editForm.provider }
-								: tool.config,
+								: tool.kind === 'python'
+									? {
+											timeout: editForm.timeout,
+											allow_packages: editForm.allow_packages,
+											domain: editForm.domain.trim() || null
+										}
+									: tool.config,
 					enabled: editForm.enabled
 				})
 			);
@@ -338,7 +366,7 @@
 				<option value="write">Write (requires human approval to execute)</option>
 			</select>
 		</label>
-		{#if form.kind !== 'builtin'}
+		{#if form.kind === 'http'}
 			<label class="block">
 				<span class="text-sm font-medium text-neutral-700">Auth mode</span>
 				<select
@@ -351,7 +379,7 @@
 				</select>
 			</label>
 		{/if}
-		{#if form.kind !== 'builtin' && form.auth_mode === 'delegated'}
+		{#if form.kind === 'http' && form.auth_mode === 'delegated'}
 			<label class="block">
 				<span class="text-sm font-medium text-neutral-700">Audience</span>
 				<input
@@ -413,6 +441,42 @@
 				</select>
 				<span class="mt-1 block text-xs text-neutral-400">
 					Set the provider's API key via "Set secret" after saving.
+				</span>
+			</label>
+		{/if}
+		{#if form.kind === 'python'}
+			<p class="text-sm text-neutral-500 sm:col-span-2">
+				The agent writes and runs the Python code itself at call time - there's no code to
+				configure here, just sandbox settings. Every call always requires human approval before
+				it runs, regardless of access level. Set the E2B API key via "Set secret" after saving.
+			</p>
+			<label class="block">
+				<span class="text-sm font-medium text-neutral-700">Timeout (seconds, optional)</span>
+				<input
+					type="number"
+					min="1"
+					max="1800"
+					bind:value={form.timeout}
+					placeholder="600 (default)"
+					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				/>
+			</label>
+			<label class="flex items-center gap-2 pt-6 text-sm text-neutral-700">
+				<input type="checkbox" bind:checked={form.allow_packages} />
+				Allow the agent to install extra pip packages in the sandbox
+			</label>
+			<label class="block sm:col-span-2">
+				<span class="text-sm font-medium text-neutral-700">Domain (advanced, optional)</span>
+				<input
+					type="text"
+					bind:value={form.domain}
+					placeholder="leave blank to use E2B's own cloud"
+					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
+						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				/>
+				<span class="mt-1 block text-xs text-neutral-400">
+					Only needed for a self-hosted E2B instance.
 				</span>
 			</label>
 		{/if}
@@ -492,20 +556,22 @@
 						<td class="px-4 py-2 text-neutral-600">{tool.access_level}</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.auth_mode}</td>
 						<td class="px-4 py-2 font-mono text-xs text-neutral-500">
-							{(tool.kind === 'http' || tool.kind === 'builtin') && tool.auth_mode === 'service'
+							{(tool.kind === 'http' || tool.kind === 'builtin' || tool.kind === 'python') && tool.auth_mode === 'service'
 								? (tool.masked_hint ?? '••••••••')
 								: '—'}
 						</td>
 						<td class="px-4 py-2 text-neutral-600">
 							{tool.kind === 'builtin'
 								? `Provider: ${(tool.config.provider as string) ?? '—'}`
-								: ((tool.config.url as string) ?? '—')}
+								: tool.kind === 'python'
+									? `Sandbox timeout: ${(tool.config.timeout as number) ?? 600}s`
+									: ((tool.config.url as string) ?? '—')}
 						</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.enabled ? 'Yes' : 'No'}</td>
 						<td class="px-4 py-2 text-right">
 							<div class="flex items-center justify-end gap-2">
 								{#if canManage(tool)}
-									{#if (tool.kind === 'http' || tool.kind === 'builtin') && tool.auth_mode === 'service'}
+									{#if (tool.kind === 'http' || tool.kind === 'builtin' || tool.kind === 'python') && tool.auth_mode === 'service'}
 										<button
 											type="button"
 											class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
@@ -514,7 +580,7 @@
 											Set secret
 										</button>
 									{/if}
-									{#if tool.kind === 'http' || tool.kind === 'builtin'}
+									{#if tool.kind === 'http' || tool.kind === 'builtin' || tool.kind === 'python'}
 										{#if testResults[tool.id] === 'testing'}
 											<span class="text-xs text-neutral-400">Testing…</span>
 										{:else if testResults[tool.id]}
@@ -587,7 +653,7 @@
 											<option value="write">Write (requires human approval to execute)</option>
 										</select>
 									</label>
-									{#if tool.kind !== 'builtin'}
+									{#if tool.kind === 'http'}
 										<label class="block">
 											<span class="text-xs font-medium text-neutral-700">Auth mode</span>
 											<select
@@ -600,7 +666,7 @@
 											</select>
 										</label>
 									{/if}
-									{#if tool.kind !== 'builtin' && editForm.auth_mode === 'delegated'}
+									{#if tool.kind === 'http' && editForm.auth_mode === 'delegated'}
 										<label class="block">
 											<span class="text-xs font-medium text-neutral-700">Audience</span>
 											<input
@@ -653,6 +719,34 @@
 												<option value="tavily">Tavily</option>
 												<option value="exa">Exa</option>
 											</select>
+										</label>
+									{/if}
+									{#if tool.kind === 'python'}
+										<label class="block">
+											<span class="text-xs font-medium text-neutral-700">Timeout (seconds)</span>
+											<input
+												type="number"
+												min="1"
+												max="1800"
+												bind:value={editForm.timeout}
+												placeholder="600 (default)"
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											/>
+										</label>
+										<label class="flex items-center gap-2 pt-5 text-xs text-neutral-700">
+											<input type="checkbox" bind:checked={editForm.allow_packages} />
+											Allow pip installs
+										</label>
+										<label class="block sm:col-span-2">
+											<span class="text-xs font-medium text-neutral-700">Domain (advanced)</span>
+											<input
+												type="text"
+												bind:value={editForm.domain}
+												placeholder="leave blank to use E2B's own cloud"
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 font-mono text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											/>
 										</label>
 									{/if}
 									<label class="flex items-center gap-2 text-xs text-neutral-700">

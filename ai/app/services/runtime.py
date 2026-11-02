@@ -32,7 +32,7 @@ from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_sk
 from app.services.agent_spec import GuardrailCheckSpec, GuardrailsSpec, MemorySpec
 from app.services.agent_versions import resolve_agent_version
 from app.services.company_budget import check_monthly_budget_not_exceeded
-from app.services.compiler import BUILTIN_TOOL_TYPES, RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
+from app.services.compiler import BUILTIN_TOOL_TYPES, PYTHON_TOOL_TYPE, RETRIEVAL_TOOL_TYPE, build_agent, compile_spec
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.conversations import get_or_create_conversation
 from app.services.deployments import resolve_deployment
@@ -578,16 +578,17 @@ async def _execute_agent_run_body(
     # rotated without recompiling/republishing the agent - but unlike knowledge_api_keys,
     # a missing entry is NOT an error for a `kind: "http"` tool: a `service`-mode tool is
     # never required to have a secret configured (fail-open, see SafeHttpApiCall's
-    # auth_mode branching). `kind: "builtin"` (Tavily/Exa) tools are the opposite - a
-    # missing API key makes the tool useless, so this fails closed, same hard-error style
+    # auth_mode branching). `kind: "builtin"` (Tavily/Exa) and `kind: "python"` (E2B
+    # sandbox) tools are the opposite - a missing API key makes the tool useless (no
+    # sandbox to even create for python), so this fails closed, same hard-error style
     # as knowledge_api_keys above, rather than letting the real provider's own 401 surface
     # mid-conversation.
     tool_secrets = {}
     for tool_def in agent_def.get("tools", []):
-        if tool_def["type"] in BUILTIN_TOOL_TYPES:
+        if tool_def["type"] in BUILTIN_TOOL_TYPES or tool_def["type"] == PYTHON_TOOL_TYPE:
             tool_secret = await decrypt_tool_secret(company_id, tool_def["id"])
             if tool_secret is None:
-                raise ValueError(f"no secret stored for builtin tool {tool_def['name']!r}")
+                raise ValueError(f"no secret stored for tool {tool_def['name']!r}")
             tool_secrets[tool_def["id"]] = tool_secret
             continue
         if tool_def.get("auth_mode") != "service":

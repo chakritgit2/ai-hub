@@ -22,8 +22,14 @@ use Throwable;
  * (Tavily/Exa web search) tools are likewise wired for real
  * (`_build_builtin_tool`/`SafeTavilyTool`/`SafeExaTool`), always `auth_mode: "service"`
  * (see `assertBuiltinToolValid`) and fail-closed at run time if no secret is stored
- * (`app.services.runtime`). `kind: python` still has no execution path (own backlog
- * item, needs its own sandboxing design).
+ * (`app.services.runtime`). `kind: python` (E2B-sandboxed code execution, PRD
+ * §6.1/§6.6a) is wired for real too (`_build_python_tool`/`SafePythonTool`), same
+ * `auth_mode: "service"`/fail-closed-on-missing-secret shape (see
+ * `assertPythonToolValid`) - admin-only to attach to an agent at all
+ * (`app.services.node_allowlist.ADMIN_ONLY_NODE_TYPES`), and every call always requires
+ * human approval regardless of `access_level` (`SafePythonTool`'s own docstring) - the
+ * one tool kind where the agent writes the "code" itself at call time rather than an
+ * admin configuring it up front, so there's no fixed, pre-reviewed action to point at.
  */
 class ToolsController extends ControllerBase
 {
@@ -109,6 +115,9 @@ class ToolsController extends ControllerBase
         if (($error = $this->assertBuiltinToolValid($fields['kind'], $fields['auth_mode'], $fields['config'])) !== null) {
             return $error;
         }
+        if (($error = $this->assertPythonToolValid($fields['kind'], $fields['auth_mode'], $fields['config'])) !== null) {
+            return $error;
+        }
 
         try {
             $row = $this->runInCompanyTransaction(
@@ -186,6 +195,9 @@ class ToolsController extends ControllerBase
         $effectiveAuthMode = $fields['auth_mode'] ?? $existing['auth_mode'];
         $effectiveConfig = $fields['config'] ?? json_decode((string) $existing['config'], true);
         if (($error = $this->assertBuiltinToolValid($effectiveKind, $effectiveAuthMode, $effectiveConfig)) !== null) {
+            return $error;
+        }
+        if (($error = $this->assertPythonToolValid($effectiveKind, $effectiveAuthMode, $effectiveConfig)) !== null) {
             return $error;
         }
 
@@ -507,6 +519,44 @@ class ToolsController extends ControllerBase
         }
         if ($authMode !== 'service') {
             return $this->jsonResponse(['error' => 'builtin_tools_require_service_auth_mode'], 400);
+        }
+
+        return null;
+    }
+
+    /**
+     * Save-time validation for `kind: python` (E2B-sandboxed code execution, PRD
+     * §6.1/§6.6a) tools - a no-op for every other kind. Unlike `kind: http`, there is no
+     * agent-authored "code" field here at all: the agent writes and runs the code itself
+     * at call time (`dynamiq.nodes.tools.code_interpreter.CodeInterpreterInputSchema`),
+     * so `config` only ever holds sandbox-level settings, not code. `auth_mode` must be
+     * `"service"` for the same reason as builtin tools - no end-user identity to delegate
+     * a sandbox session to. `timeout` matches ai/app/services/compiler.py's own
+     * `_PYTHON_MAX_TIMEOUT_SECONDS` ceiling (kept in sync by hand - no shared constant
+     * crosses the PHP/Python boundary anywhere else in this codebase either). `domain` is
+     * the one knob a future self-hosted E2B instance would need
+     * (`dynamiq.connections.E2B.domain`) - optional, `null` means E2B's own public cloud.
+     *
+     * @param array<string, mixed> $config
+     */
+    private function assertPythonToolValid(string $kind, string $authMode, array $config): ?Response
+    {
+        if ($kind !== 'python') {
+            return null;
+        }
+        if ($authMode !== 'service') {
+            return $this->jsonResponse(['error' => 'python_tools_require_service_auth_mode'], 400);
+        }
+        if (array_key_exists('timeout', $config) && $config['timeout'] !== null) {
+            if (!is_int($config['timeout']) || $config['timeout'] < 1 || $config['timeout'] > 1800) {
+                return $this->jsonResponse(['error' => 'invalid_config_timeout'], 400);
+            }
+        }
+        if (array_key_exists('allow_packages', $config) && !is_bool($config['allow_packages'])) {
+            return $this->jsonResponse(['error' => 'invalid_config_allow_packages'], 400);
+        }
+        if (array_key_exists('domain', $config) && $config['domain'] !== null && !is_string($config['domain'])) {
+            return $this->jsonResponse(['error' => 'invalid_config_domain'], 400);
         }
 
         return null;

@@ -849,9 +849,15 @@ async def testTool(id: str, claims: InternalAuth) -> Response:
     header, same as before this existed, not a test failure). `kind: builtin` (Tavily/Exa)
     tools just report whether a secret is configured - a real search costs the company's
     own API quota/credits, so "Test" deliberately doesn't make a real provider call here
-    (unlike `testConnection`'s cheap `models.list()` call). `kind: python` tools have no
-    execution path at all and get an honest `ok: false` instead of a fake pass. Same "bad
-    input is still 200 ok:false" pattern as `testConnection`.
+    (unlike `testConnection`'s cheap `models.list()` call). `kind: python` (E2B sandbox,
+    PRD §6.1/§6.6a) tools DO make one cheap real call - creating and immediately tearing
+    down a sandbox to run a trivial expression is the cheapest possible verification that
+    the stored API key actually works (closer in spirit to `testConnection`'s cheap-call
+    convention than builtin's secret-presence-only one), and unlike a real search query
+    it burns a near-zero, bounded amount of the company's own E2B usage. This never goes
+    through `SafePythonTool` - the human-approval gate is for an *agent* running code it
+    wrote itself; an admin explicitly clicking "Test" to verify connectivity is a
+    deliberate, human-initiated action with nothing for anyone else to approve.
     """
     company_id = claims["company_id"]
     if not _is_uuid(id):
@@ -866,6 +872,23 @@ async def testTool(id: str, claims: InternalAuth) -> Response:
         if secret is None:
             return TestResult(ok=False, detail="no API key secret configured for this tool")
         return TestResult(ok=True, detail="API key secret is configured (no real search call made)")
+
+    if tool.kind == "python":
+        secret = await decrypt_tool_secret(company_id, id)
+        if secret is None:
+            return TestResult(ok=False, detail="no E2B API key secret configured for this tool")
+
+        from dynamiq.connections import E2B
+        from dynamiq.nodes.tools.e2b_sandbox import E2BInterpreterTool
+
+        sandbox_tool = E2BInterpreterTool(connection=E2B(api_key=secret, domain=tool.config.get("domain")))
+        try:
+            result = await asyncio.to_thread(sandbox_tool.run, {"python": "1 + 1"})
+        except Exception as exc:  # the sandbox SDK's own exception types aren't worth enumerating here
+            return TestResult(ok=False, detail=f"sandbox connectivity failed: {exc}")
+        if result.status.value != "success":
+            return TestResult(ok=False, detail=f"sandbox reported an error: {result.output}")
+        return TestResult(ok=True, detail="sandbox created and a trivial expression ran successfully")
 
     if tool.kind != "http":
         return TestResult(ok=False, detail=f"test not supported for kind={tool.kind!r}")

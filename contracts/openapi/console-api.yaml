@@ -123,8 +123,11 @@ components:
     Tool:
       type: object
       description: >-
-        CRUD + standalone connectivity test + secret storage (PRD §6.5). `kind: http`
-        tools are wired into the agent spec/compiler for real.
+        CRUD + standalone connectivity test + secret storage (PRD §6.5). All three kinds
+        are wired into the agent spec/compiler for real. `kind: python` runs agent-written
+        code in an E2B sandbox and always requires human approval before every execution,
+        regardless of access_level; creating/editing/deleting a `kind: python` tool is
+        admin-only (every other kind allows admin or developer).
       properties:
         id: { type: string }
         company_id: { type: string }
@@ -136,7 +139,11 @@ components:
         config:
           type: object
           additionalProperties: true
-          description: 'kind-specific: for http, url/method/headers/description/input_schema.'
+          description: >-
+            kind-specific: for http, url/method/headers/description/input_schema; for
+            builtin, provider (tavily|exa); for python, optional timeout (seconds, 1-1800,
+            default 600), allow_packages (bool, default false), and domain (self-hosted
+            E2B instance override, null for E2B's own cloud).
         masked_hint: { type: string, nullable: true, description: 'Set only after PUT /tools/{id}/secret (auth_mode: service).' }
         enabled: { type: boolean }
     SkillVersion:
@@ -1160,9 +1167,12 @@ paths:
     post:
       operationId: testTool
       summary: >-
-        Proves a `kind: http` tool's configured URL is reachable past the egress allowlist
-        (PRD §6.5/§7.4) — attaches the stored `auth_mode: service` secret if one exists,
-        see ai-internal.yaml's testTool.
+        For `kind: http`, proves the tool's configured URL is reachable past the egress
+        allowlist (PRD §6.5/§7.4), attaching the stored `auth_mode: service` secret if one
+        exists. For `kind: builtin`/`kind: python`, only reports whether a secret is
+        configured — `kind: python` never runs agent-written code, just creates a sandbox
+        and evaluates a trivial expression to prove E2B connectivity. See
+        ai-internal.yaml's testTool.
       responses:
         "200":
           description: OK
