@@ -20,6 +20,7 @@ resources:
   - secrets.example.yaml
   - postgres-statefulset.yaml
   - redis-deployment.yaml
+  - tempo-deployment.yaml
   - ai-config.yaml
   - ai-runtime-deployment.yaml
   - ai-worker-deployment.yaml

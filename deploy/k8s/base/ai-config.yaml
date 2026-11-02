@@ -12,3 +12,4 @@ data:
   GATEWAY_JWKS_PRIVATE_KEY_PATH: /etc/dynamiq/keys/gateway-key.pem
   GATEWAY_JWKS_KID: gw-2026-09
   KB_STORAGE_ROOT: /data/kb-storage
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
