@@ -114,6 +114,70 @@ class RunsController extends ControllerBase
         return $this->jsonResponse($this->formatRun($row));
     }
 
+    /**
+     * Returns this run's raw `input` plus the agent/version it ran against, so the console
+     * can pre-fill a Playground session for a human to review, edit and resend ("Replay").
+     * Every other endpoint in this controller deliberately omits `input`/`output` from
+     * RUN_COLUMNS - this is the one place raw run content (which may hold a customer's PII)
+     * becomes visible, so it's gated by requireWriteRole() rather than requireMembership()
+     * (same write-role boundary PRD §7.2 draws everywhere else: viewer is read-only). POST
+     * (not GET) so AuditMiddleware's existing "one row per successful mutating request"
+     * logging records who replayed which run and when, with no new audit-log code needed.
+     */
+    public function replayRun(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireWriteRole()) !== null) {
+            return $error;
+        }
+        if (!$this->isUuid($id)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $row = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                'SELECT input, agent_version_id FROM logs.runs WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $id]
+            )
+        );
+        if (empty($row) || $row['agent_version_id'] === null) {
+            // agent_version_id is null for a workflow run - Playground only replays
+            // single-agent runs, so there's nothing to pre-fill it with.
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $agentId = $this->agentIdForVersion($row['agent_version_id']);
+        if ($agentId === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        return $this->jsonResponse([
+            'input' => $row['input'],
+            'agent_id' => $agentId,
+            'agent_version_id' => $row['agent_version_id'],
+        ]);
+    }
+
+    /**
+     * Same lookup as DeploymentsController::agentIdForVersion - kept local rather than
+     * shared, matching this codebase's convention of controller-local helpers.
+     */
+    private function agentIdForVersion(string $agentVersionId): ?string
+    {
+        $row = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                'SELECT agent_id FROM console.agent_versions WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $agentVersionId]
+            )
+        );
+
+        return empty($row) ? null : $row['agent_id'];
+    }
+
     public function getRunConversation(string $id): Response
     {
         if (($error = $this->requireCompanyId()) !== null) {

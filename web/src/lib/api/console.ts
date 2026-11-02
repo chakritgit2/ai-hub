@@ -39,6 +39,7 @@ import type {
 	ModelPricing,
 	Run,
 	RunConversation,
+	RunReplay,
 	RuntimeTokenResponse,
 	RunStep,
 	Skill,
@@ -313,6 +314,10 @@ export function listRunGuardrailEvents(id: string): Promise<GuardrailEvent[]> {
 
 export function listRunSteps(id: string): Promise<RunStep[]> {
 	return apiFetch<RunStep[]>(`/runs/${id}/steps`);
+}
+
+export function replayRun(id: string): Promise<RunReplay> {
+	return apiFetch<RunReplay>(`/runs/${id}/replay`, { method: 'POST' });
 }
 
 // ---- /dashboard ---------------------------------------------------------
@@ -782,6 +787,7 @@ export type {
 	ModelPricing,
 	Run,
 	RunConversation,
+	RunReplay,
 	RuntimeTokenResponse,
 	RunStep,
 	Skill,

@@ -1,13 +1,29 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getRun, getRunConversation, listRunGuardrailEvents, listRunSteps } from '$lib/api/console';
+	import { getRun, getRunConversation, listRunGuardrailEvents, listRunSteps, replayRun } from '$lib/api/console';
+	import { ApiError } from '$lib/api/client';
 	import type { GuardrailEvent, Run, RunConversation, RunStep } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
+	import { currentUser, roleForCompany } from '$lib/stores/auth';
 
 	type TabId = 'trace' | 'conversation' | 'guardrail';
 
 	let run = $state<Run | null>(null);
+	let replaying = $state(false);
+	let replayError = $state<string | null>(null);
+
+	// Same write-role boundary replayRun() enforces server-side (PRD §7.2: viewer is
+	// read-only) - this just hides the button for a role that would get a 403 anyway.
+	// agent_version_id is null for a workflow run (the API's Run type claims non-null, but
+	// the DB column is nullable and the JSON really does carry null here) - replayRun()
+	// 404s on those, so the button stays disabled rather than offering a guaranteed failure.
+	let canReplay = $derived(
+		run !== null &&
+			!!run.agent_version_id &&
+			['admin', 'developer'].includes(roleForCompany($currentUser, run.company_id) ?? '')
+	);
 	let steps = $state<RunStep[]>([]);
 	let stepsError = $state<string | null>(null);
 	let conversation = $state<RunConversation | null>(null);
@@ -82,6 +98,30 @@
 
 	onMount(() => load($page.params.id ?? ''));
 
+	// Fetches this run's raw input (console never holds it client-side otherwise - see
+	// replayRun()'s docblock) and hands off to Playground as a fresh, unsent draft; the
+	// human still has to review it and hit Send there, Replay never resends automatically.
+	async function openInPlayground() {
+		if (!run || replaying) return;
+		replaying = true;
+		replayError = null;
+		try {
+			const { input, agent_id, agent_version_id } = await replayRun(run.id);
+			const params = new URLSearchParams({ agentId: agent_id, agentVersionId: agent_version_id });
+			if (input) params.set('input', input);
+			await goto(`/playground?${params.toString()}`);
+		} catch (e) {
+			replayError =
+				e instanceof ApiError && e.status === 403
+					? 'Replaying a run needs the admin or developer role.'
+					: e instanceof Error
+						? e.message
+						: 'Failed to prepare this run for replay.';
+		} finally {
+			replaying = false;
+		}
+	}
+
 	$effect(() => {
 		headerContent.set({ menu: 'Runs & Logs', title: run ? `Run ${run.id}` : 'Run detail' });
 	});
@@ -111,6 +151,27 @@
 			</p>
 		</div>
 	{/if}
+
+	{#if replayError}
+		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{replayError}</div>
+	{/if}
+
+	<div class="mb-4 flex justify-end">
+		<button
+			type="button"
+			disabled={!canReplay || replaying}
+			title={!run.agent_version_id
+				? 'Replay is only available for agent runs, not workflow runs.'
+				: !canReplay
+					? 'Replaying a run needs the admin or developer role.'
+					: undefined}
+			onclick={openInPlayground}
+			class="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50
+				disabled:cursor-not-allowed disabled:opacity-50"
+		>
+			{replaying ? 'Preparing…' : 'Open in Playground'}
+		</button>
+	</div>
 
 	<dl class="mb-6 grid grid-cols-2 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-4">
 		<div><dt class="text-xs text-neutral-400">Agent</dt><dd class="text-sm text-neutral-800">{run.agent_name}</dd></div>

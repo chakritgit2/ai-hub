@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
+	import { get } from 'svelte/store';
+	import { goto } from '$app/navigation';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId } from '$lib/stores/company';
 	import { issueRuntimeToken, listAgents, listAgentVersions } from '$lib/api/console';
@@ -58,24 +60,57 @@
 		{ label: 'final' }
 	];
 
+	// Set once from the ?agentId=&agentVersionId=&input= query string a "Replay" link from
+	// a run's detail page ([runs]/[id]/+page.svelte's openInPlayground()) arrives with -
+	// consumed (and cleared) as soon as the matching agent/version shows up in the loaded
+	// list, so a later manual agent switch is never silently overridden by a stale replay.
+	let pendingAgentId = $state<string | null>(null);
+	let pendingAgentVersionId = $state<string | null>(null);
+
 	async function loadAgents() {
 		pickerError = null;
 		try {
 			agents = await listAgents();
+			if (pendingAgentId && agents.some((a) => a.id === pendingAgentId)) {
+				selectedAgentId = pendingAgentId;
+			}
+			pendingAgentId = null;
 		} catch (e) {
 			pickerError = e instanceof Error ? e.message : 'Failed to load agents.';
 		}
 	}
 
-	onMount(loadAgents);
+	let paramsConsumed = false;
+
 	// Same "retry once the company switcher corrects a stale placeholder company_id"
 	// pattern every list/detail page uses - see project-company-id-race-backlog. Also
 	// clears any selected agent/version - a stale id from a previous company must never
 	// survive a company switch (the agent-version cascade effect below clears
 	// agentVersions/selectedAgentVersionId in response to selectedAgentId changing).
+	//
+	// The very first run also consumes ?agentId=&agentVersionId=&input= (a Replay link
+	// from a run's detail page) instead of resetting selectedAgentId - combined into this
+	// one effect, rather than a separate onMount, so there's no ordering race between two
+	// independent reactive blocks both wanting to touch selectedAgentId on mount. Reads
+	// `page` via get() (a plain one-off read), not the `$page` auto-subscription - the
+	// latter would register `$page` as this effect's dependency, and the replaceState
+	// goto() below would then re-trigger this very effect and immediately wipe the
+	// selectedAgentId it had just set.
 	$effect(() => {
 		$companyId;
-		selectedAgentId = '';
+		if (!paramsConsumed) {
+			paramsConsumed = true;
+			const params = get(page).url.searchParams;
+			pendingAgentId = params.get('agentId');
+			pendingAgentVersionId = params.get('agentVersionId');
+			const replayInput = params.get('input');
+			if (replayInput) input = replayInput;
+			if (pendingAgentId || pendingAgentVersionId || replayInput) {
+				goto('/playground', { replaceState: true, keepFocus: true, noScroll: true });
+			}
+		} else {
+			selectedAgentId = '';
+		}
 		loadAgents();
 	});
 
@@ -88,6 +123,10 @@
 		listAgentVersions(agentId)
 			.then((versions) => {
 				agentVersions = versions;
+				if (pendingAgentVersionId && versions.some((v) => v.id === pendingAgentVersionId)) {
+					selectedAgentVersionId = pendingAgentVersionId;
+				}
+				pendingAgentVersionId = null;
 			})
 			.catch((e) => {
 				pickerError = e instanceof Error ? e.message : 'Failed to load agent versions.';

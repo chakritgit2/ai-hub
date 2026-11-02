@@ -609,6 +609,12 @@ export interface Run {
 	created_at: string;
 }
 
+export interface RunReplay {
+	input: string | null;
+	agent_id: string;
+	agent_version_id: string;
+}
+
 export type RunStepType = 'guardrail_input' | 'llm' | 'tool_call' | 'guardrail_output';
 export type RunStepStatus = 'success' | 'error' | 'block' | 'mask' | 'flag';
 

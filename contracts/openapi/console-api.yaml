@@ -581,6 +581,12 @@ components:
         error: { type: string, nullable: true }
         detail: { type: object, additionalProperties: true }
         created_at: { type: string, format: date-time }
+    RunReplay:
+      type: object
+      properties:
+        input: { type: string, nullable: true }
+        agent_id: { type: string }
+        agent_version_id: { type: string }
     EgressAllowlistEntry:
       type: object
       properties:
@@ -1089,6 +1095,20 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RunStep' } } } } }
         "404": { description: not found }
+  /runs/{id}/replay:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: replayRun
+      summary: >-
+        Returns this run's raw input plus its agent/version, to pre-fill a Playground
+        session ("Replay"). The one /runs endpoint that exposes raw run content, so it
+        requires a write role (admin/developer), not just membership - viewer gets 403.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunReplay' } } } }
+        "403": { description: viewer role cannot replay a run }
+        "404": { description: 'not found, or a workflow run (no single agent_version_id to replay)' }
 
   /dashboard:
     get:
