@@ -5,7 +5,13 @@
 	import type { EvalRun } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId, tenantId } from '$lib/stores/company';
-	import { currentUser, companyLabelForCompany } from '$lib/stores/auth';
+	import { currentUser, companyLabelForCompany, roleForCompany } from '$lib/stores/auth';
+
+	// EvalsController::createEvalRun() requires write role (blocks viewer) - it triggers a
+	// billable run, not a read. "+ New eval run" always creates into whichever single
+	// company is currently selected (CompanySwitcher), same as "+ New tool"/"+ New
+	// connection" on their own pages, so this stays tied to $companyId.
+	let isWriter = $derived(['admin', 'developer'].includes(roleForCompany($currentUser, $companyId) ?? ''));
 
 	// Pilot of "each menu shows only its own tenant's data" (option A) - pools eval runs
 	// across every company under the selected tenant instead of the usual single
@@ -133,12 +139,14 @@
 		>
 			Compare selected
 		</button>
-		<a
-			href="/evaluation/new"
-			class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
-		>
-			+ New eval run
-		</a>
+		{#if isWriter}
+			<a
+				href="/evaluation/new"
+				class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+			>
+				+ New eval run
+			</a>
+		{/if}
 	</div>
 {/snippet}
 

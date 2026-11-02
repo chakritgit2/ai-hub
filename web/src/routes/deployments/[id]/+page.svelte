@@ -18,10 +18,19 @@
 	import type { AgentVersion, Deployment, DeploymentUsage, WorkflowVersion } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import UsageMeter from '$lib/components/UsageMeter.svelte';
+	import { currentUser, roleForCompany } from '$lib/stores/auth';
 
 	let deployment = $state<Deployment | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+
+	// DeploymentsController requires write role (blocks viewer) for update/delete/promote -
+	// Delete/Rollback/Promote/Save-changes had no role check at all until now (same gap
+	// this session already fixed for tools/+page.svelte, connections/+page.svelte and
+	// knowledge-bases/[id]/+page.svelte).
+	let canWrite = $derived(
+		deployment ? ['admin', 'developer'].includes(roleForCompany($currentUser, deployment.company_id) ?? '') : false
+	);
 
 	// Loaded separately from `deployment` (own loading/error state) so a Redis hiccup on
 	// the usage read never blocks the rest of the page - everything above this section
@@ -361,7 +370,7 @@
 </script>
 
 {#snippet headerActions()}
-	{#if deployment}
+	{#if deployment && canWrite}
 		<div class="flex gap-2">
 			{#if deployment.environment === 'staging'}
 				<button

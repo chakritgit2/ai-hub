@@ -45,15 +45,19 @@
 	let deleteError = $state<string | null>(null);
 
 	let isAdmin = $derived(roleForCompany($currentUser, $companyId) === 'admin');
+	let isWriter = $derived(['admin', 'developer'].includes(roleForCompany($currentUser, $companyId) ?? ''));
 
-	// `kind: python` is code-execution and admin-only server-side (requireWriteRoleForKind)
-	// - edit/delete must be hidden the same way the create form already disables selecting
-	// it, instead of letting a developer click through to a silent/unexplained 403. A
-	// pooled tool can belong to any company under the tenant, not just whichever one
-	// $companyId currently points at, so this must be checked per-row against that tool's
-	// own company (same reasoning as connections/+page.svelte's isAdminFor()).
+	// Server-side gate is ToolsController::requireWriteRoleForKind(): admin-only for
+	// `kind: python` (code execution), admin-or-developer (not viewer) for every other
+	// kind - so Set secret/Test/Edit/Delete must all be hidden from a viewer, not just
+	// gated by kind as this used to do (that let a viewer see every button for an
+	// http/builtin tool and only find out via a 403 after clicking). A pooled tool can
+	// belong to any company under the tenant, not just whichever one $companyId currently
+	// points at, so this must be checked per-row against that tool's own company (same
+	// reasoning as connections/+page.svelte's isAdminFor()).
 	function canManage(tool: Tool): boolean {
-		return tool.kind !== 'python' || roleForCompany($currentUser, tool.company_id) === 'admin';
+		const role = roleForCompany($currentUser, tool.company_id);
+		return tool.kind === 'python' ? role === 'admin' : role === 'admin' || role === 'developer';
 	}
 
 	// console-api's own error codes for create/update, mapped to readable copy -
@@ -275,13 +279,15 @@
 </script>
 
 {#snippet newToolAction()}
-	<button
-		type="button"
-		class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
-		onclick={() => (showForm = !showForm)}
-	>
-		+ New tool
-	</button>
+	{#if isWriter}
+		<button
+			type="button"
+			class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+			onclick={() => (showForm = !showForm)}
+		>
+			+ New tool
+		</button>
+	{/if}
 {/snippet}
 
 {#if showForm}
@@ -494,38 +500,38 @@
 						<td class="px-4 py-2 text-neutral-600">{tool.enabled ? 'Yes' : 'No'}</td>
 						<td class="px-4 py-2 text-right">
 							<div class="flex items-center justify-end gap-2">
-								{#if (tool.kind === 'http' || tool.kind === 'builtin') && tool.auth_mode === 'service'}
-									<button
-										type="button"
-										class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
-										onclick={() => openSecretForm(tool)}
-									>
-										Set secret
-									</button>
-								{/if}
-								{#if tool.kind === 'http' || tool.kind === 'builtin'}
-									{#if testResults[tool.id] === 'testing'}
-										<span class="text-xs text-neutral-400">Testing…</span>
-									{:else if testResults[tool.id]}
-										{@const result = testResults[tool.id]}
-										{#if typeof result === 'object'}
-											<span
-												class="text-xs {result.ok ? 'text-primary' : 'text-danger'}"
-												title={result.detail}
-											>
-												{result.ok ? 'OK' : 'Failed'}
-											</span>
-										{/if}
-									{/if}
-									<button
-										type="button"
-										class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
-										onclick={() => runTest(tool)}
-									>
-										Test
-									</button>
-								{/if}
 								{#if canManage(tool)}
+									{#if (tool.kind === 'http' || tool.kind === 'builtin') && tool.auth_mode === 'service'}
+										<button
+											type="button"
+											class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
+											onclick={() => openSecretForm(tool)}
+										>
+											Set secret
+										</button>
+									{/if}
+									{#if tool.kind === 'http' || tool.kind === 'builtin'}
+										{#if testResults[tool.id] === 'testing'}
+											<span class="text-xs text-neutral-400">Testing…</span>
+										{:else if testResults[tool.id]}
+											{@const result = testResults[tool.id]}
+											{#if typeof result === 'object'}
+												<span
+													class="text-xs {result.ok ? 'text-primary' : 'text-danger'}"
+													title={result.detail}
+												>
+													{result.ok ? 'OK' : 'Failed'}
+												</span>
+											{/if}
+										{/if}
+										<button
+											type="button"
+											class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
+											onclick={() => runTest(tool)}
+										>
+											Test
+										</button>
+									{/if}
 									<button
 										type="button"
 										class="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
@@ -542,7 +548,7 @@
 										{deletingId === tool.id ? 'Deleting…' : 'Delete'}
 									</button>
 								{:else}
-									<span class="text-xs text-neutral-400">Admin access required</span>
+									<span class="text-xs text-neutral-400">Insufficient permissions to manage this tool</span>
 								{/if}
 							</div>
 							{#if editFormId === tool.id}

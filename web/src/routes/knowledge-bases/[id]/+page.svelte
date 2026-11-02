@@ -13,6 +13,7 @@
 	import type { KnowledgeBase, KbDocument, KbSearchResultItem } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { goto } from '$app/navigation';
+	import { currentUser, roleForCompany } from '$lib/stores/auth';
 
 	let kb = $state<KnowledgeBase | null>(null);
 	let documents = $state<KbDocument[]>([]);
@@ -35,6 +36,12 @@
 
 	let deleting = $state(false);
 	let exporting = $state(false);
+
+	// KbController requires write role (blocks viewer) for import/update-settings/delete -
+	// requireMembership() only (any role) for export/search, so those two stay ungated.
+	// This page never checked role at all until now (see this session's tools/+page.svelte
+	// and connections/+page.svelte fixes for the same gap).
+	let canWrite = $derived(kb ? ['admin', 'developer'].includes(roleForCompany($currentUser, kb.company_id) ?? '') : false);
 
 	async function load(id: string) {
 		loading = true;
@@ -160,32 +167,34 @@
 	<p class="text-sm text-neutral-500">Knowledge base not found.</p>
 {:else}
 	<div class="space-y-6">
-		<section class="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
-			<h2 class="text-sm font-semibold text-neutral-700">Import documents</h2>
-			<p class="mt-1 text-xs text-neutral-500">
-				A single OKF <code>.md</code> file, or a <code>.zip</code> of <code>.md</code> files — folders in
-				the zip become each file's category. PDF/DOCX/TXT are not yet supported.
-			</p>
-			{#if uploadError}
-				<div class="mt-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{uploadError}</div>
-			{/if}
-			<div class="mt-3 flex items-center gap-3">
-				<input
-					type="file"
-					accept=".md,.zip"
-					onchange={(e) => (uploadFile = (e.target as HTMLInputElement).files?.[0] ?? null)}
-					class="text-sm"
-				/>
-				<button
-					type="button"
-					disabled={!uploadFile || uploading}
-					onclick={upload}
-					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600 disabled:opacity-50"
-				>
-					{uploading ? 'Uploading…' : 'Upload'}
-				</button>
-			</div>
-		</section>
+		{#if canWrite}
+			<section class="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
+				<h2 class="text-sm font-semibold text-neutral-700">Import documents</h2>
+				<p class="mt-1 text-xs text-neutral-500">
+					A single OKF <code>.md</code> file, or a <code>.zip</code> of <code>.md</code> files — folders in
+					the zip become each file's category. PDF/DOCX/TXT are not yet supported.
+				</p>
+				{#if uploadError}
+					<div class="mt-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{uploadError}</div>
+				{/if}
+				<div class="mt-3 flex items-center gap-3">
+					<input
+						type="file"
+						accept=".md,.zip"
+						onchange={(e) => (uploadFile = (e.target as HTMLInputElement).files?.[0] ?? null)}
+						class="text-sm"
+					/>
+					<button
+						type="button"
+						disabled={!uploadFile || uploading}
+						onclick={upload}
+						class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600 disabled:opacity-50"
+					>
+						{uploading ? 'Uploading…' : 'Upload'}
+					</button>
+				</div>
+			</section>
+		{/if}
 
 		<section class="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
 			<div class="flex items-center justify-between">
@@ -277,8 +286,9 @@
 					<input
 						type="number"
 						min="1"
+						disabled={!canWrite}
 						bind:value={settingsForm.chunk_size}
-						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm disabled:bg-neutral-50 disabled:text-neutral-400"
 					/>
 				</label>
 				<label class="block">
@@ -286,13 +296,18 @@
 					<input
 						type="number"
 						min="0"
+						disabled={!canWrite}
 						bind:value={settingsForm.chunk_overlap}
-						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm disabled:bg-neutral-50 disabled:text-neutral-400"
 					/>
 				</label>
 				<label class="block">
 					<span class="text-xs text-neutral-500">Retrieval mode</span>
-					<select bind:value={settingsForm.retrieval_mode} class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm">
+					<select
+						bind:value={settingsForm.retrieval_mode}
+						disabled={!canWrite}
+						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm disabled:bg-neutral-50 disabled:text-neutral-400"
+					>
 						<option value="vector">Vector</option>
 						<option value="hybrid">Vector + keyword (hybrid, fused by alpha)</option>
 					</select>
@@ -304,20 +319,25 @@
 						min="0"
 						max="1"
 						step="0.05"
+						disabled={!canWrite}
 						bind:value={settingsForm.alpha}
-						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm disabled:bg-neutral-50 disabled:text-neutral-400"
 					/>
 				</label>
 			</div>
 			<div class="mt-4 flex items-center justify-between">
-				<button
-					type="button"
-					disabled={savingSettings}
-					onclick={saveSettings}
-					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600 disabled:opacity-50"
-				>
-					{savingSettings ? 'Saving…' : 'Save settings'}
-				</button>
+				{#if canWrite}
+					<button
+						type="button"
+						disabled={savingSettings}
+						onclick={saveSettings}
+						class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600 disabled:opacity-50"
+					>
+						{savingSettings ? 'Saving…' : 'Save settings'}
+					</button>
+				{:else}
+					<span class="text-xs text-neutral-400">Insufficient permissions to edit settings</span>
+				{/if}
 				<div class="flex gap-2">
 					<button
 						type="button"
@@ -327,14 +347,16 @@
 					>
 						{exporting ? 'Exporting…' : 'Export .zip'}
 					</button>
-					<button
-						type="button"
-						disabled={deleting}
-						onclick={doDelete}
-						class="rounded-md border border-danger/40 px-4 py-2 text-sm text-danger hover:bg-danger/10 disabled:opacity-50"
-					>
-						{deleting ? 'Deleting…' : 'Delete'}
-					</button>
+					{#if canWrite}
+						<button
+							type="button"
+							disabled={deleting}
+							onclick={doDelete}
+							class="rounded-md border border-danger/40 px-4 py-2 text-sm text-danger hover:bg-danger/10 disabled:opacity-50"
+						>
+							{deleting ? 'Deleting…' : 'Delete'}
+						</button>
+					{/if}
 				</div>
 			</div>
 		</section>

@@ -532,9 +532,15 @@
 	}
 
 	function onDisplayNameInput(event: Event) {
-		identity.display_name = (event.currentTarget as HTMLInputElement).value;
-		if (!identity.name || identity.name === slugify(identity.display_name)) {
-			identity.name = slugify(identity.display_name);
+		// Must check whether `name` is still auto-synced against the OLD display_name
+		// before overwriting it - checking after (as this used to) compares against the
+		// value just typed, which is only ever equal right after a single-event paste, so
+		// the slug silently stopped auto-updating after the first character typed.
+		const newDisplayName = (event.currentTarget as HTMLInputElement).value;
+		const wasAutoSynced = !identity.name || identity.name === slugify(identity.display_name);
+		identity.display_name = newDisplayName;
+		if (wasAutoSynced) {
+			identity.name = slugify(newDisplayName);
 		}
 	}
 </script>
