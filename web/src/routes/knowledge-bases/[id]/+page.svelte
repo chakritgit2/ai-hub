@@ -239,12 +239,16 @@
 					class="flex-1 rounded-md border border-neutral-300 px-3 py-2 text-sm
 						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 				/>
-				<input
-					type="number"
-					min="1"
-					bind:value={searchTopK}
-					class="w-20 rounded-md border border-neutral-300 px-3 py-2 text-sm"
-				/>
+				<label class="block">
+					<span class="sr-only">Top K (number of results)</span>
+					<input
+						type="number"
+						min="1"
+						bind:value={searchTopK}
+						title="Top K: number of chunks to return"
+						class="w-20 rounded-md border border-neutral-300 px-3 py-2 text-sm"
+					/>
+				</label>
 				<button
 					type="button"
 					disabled={searching || !searchQuery.trim()}
@@ -290,6 +294,10 @@
 						bind:value={settingsForm.chunk_size}
 						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm disabled:bg-neutral-50 disabled:text-neutral-400"
 					/>
+					<p class="mt-1 text-xs text-neutral-400">
+						Characters per chunk. Only affects documents imported after saving - existing
+						documents keep their old chunking until re-imported.
+					</p>
 				</label>
 				<label class="block">
 					<span class="text-xs text-neutral-500">Chunk overlap</span>
@@ -300,6 +308,7 @@
 						bind:value={settingsForm.chunk_overlap}
 						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm disabled:bg-neutral-50 disabled:text-neutral-400"
 					/>
+					<p class="mt-1 text-xs text-neutral-400">Characters shared between consecutive chunks - must be smaller than Chunk size.</p>
 				</label>
 				<label class="block">
 					<span class="text-xs text-neutral-500">Retrieval mode</span>
@@ -312,18 +321,21 @@
 						<option value="hybrid">Vector + keyword (hybrid, fused by alpha)</option>
 					</select>
 				</label>
-				<label class="block">
-					<span class="text-xs text-neutral-500">Alpha</span>
-					<input
-						type="number"
-						min="0"
-						max="1"
-						step="0.05"
-						disabled={!canWrite}
-						bind:value={settingsForm.alpha}
-						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm disabled:bg-neutral-50 disabled:text-neutral-400"
-					/>
-				</label>
+				{#if settingsForm.retrieval_mode === 'hybrid'}
+					<label class="block">
+						<span class="text-xs text-neutral-500">Alpha</span>
+						<input
+							type="number"
+							min="0"
+							max="1"
+							step="0.05"
+							disabled={!canWrite}
+							bind:value={settingsForm.alpha}
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm disabled:bg-neutral-50 disabled:text-neutral-400"
+						/>
+						<p class="mt-1 text-xs text-neutral-400">1 = pure vector, 0 = pure keyword. Only used in Hybrid mode.</p>
+					</label>
+				{/if}
 			</div>
 			<div class="mt-4 flex items-center justify-between">
 				{#if canWrite}

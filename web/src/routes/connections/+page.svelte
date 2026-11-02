@@ -261,6 +261,7 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-400">Shown in the Connection picker when building an agent.</p>
 		</label>
 		<label class="block">
 			<span class="text-sm font-medium text-neutral-700">Provider type</span>
@@ -270,6 +271,10 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-400">
+				Only <code>dynamiq.connections.OpenAI</code> (default above) builds a working agent today -
+				any other value saves fine here but fails later when an agent using it is published.
+			</p>
 		</label>
 		<label class="block">
 			<span class="text-sm font-medium text-neutral-700">API base</span>
@@ -293,6 +298,7 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-400">Reserved for a future concurrent-request limit - not enforced yet.</p>
 		</label>
 		<div class="flex gap-2 sm:col-span-2">
 			<button

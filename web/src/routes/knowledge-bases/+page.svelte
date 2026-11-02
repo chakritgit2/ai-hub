@@ -163,6 +163,10 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-400">
+				Characters per chunk, not tokens. Only affects documents imported after this is set -
+				existing documents keep their old chunking until re-imported.
+			</p>
 		</label>
 		<label class="block">
 			<span class="text-sm font-medium text-neutral-700">Chunk overlap</span>
@@ -173,6 +177,10 @@
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
+			<p class="mt-1 text-xs text-neutral-400">
+				Characters shared between consecutive chunks (must be smaller than Chunk size) - higher
+				preserves more context across chunk boundaries at the cost of more chunks overall.
+			</p>
 		</label>
 		<label class="block">
 			<span class="text-sm font-medium text-neutral-700">Retrieval mode</span>
@@ -185,18 +193,23 @@
 				<option value="hybrid">Hybrid (vector + keyword, fused and weighted by alpha)</option>
 			</select>
 		</label>
-		<label class="block">
-			<span class="text-sm font-medium text-neutral-700">Alpha (vector/keyword weight)</span>
-			<input
-				type="number"
-				min="0"
-				max="1"
-				step="0.05"
-				bind:value={form.alpha}
-				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
-					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-			/>
-		</label>
+		{#if form.retrieval_mode === 'hybrid'}
+			<label class="block">
+				<span class="text-sm font-medium text-neutral-700">Alpha (vector/keyword weight)</span>
+				<input
+					type="number"
+					min="0"
+					max="1"
+					step="0.05"
+					bind:value={form.alpha}
+					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				/>
+				<p class="mt-1 text-xs text-neutral-400">
+					1 = pure vector search, 0 = pure keyword search. Only used in Hybrid mode.
+				</p>
+			</label>
+		{/if}
 		<div class="flex gap-2 sm:col-span-2">
 			<button
 				type="submit"

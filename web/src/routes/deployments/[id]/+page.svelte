@@ -536,6 +536,7 @@
 							bind:value={settingsForm.rate_limit_per_min}
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
 						/>
+						<p class="mt-1 text-xs text-neutral-400">Calls past this in a rolling minute get a hard 429 - no queueing.</p>
 					</label>
 					<label class="block">
 						<span class="text-sm font-medium text-neutral-700">Daily token limit</span>
@@ -546,6 +547,7 @@
 							bind:value={settingsForm.daily_token_limit}
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
 						/>
+						<p class="mt-1 text-xs text-neutral-400">Once hit for the day, every call 429s until the daily window resets.</p>
 					</label>
 					<label class="block">
 						<span class="text-sm font-medium text-neutral-700">Daily cost limit (USD)</span>
@@ -557,6 +559,7 @@
 							bind:value={settingsForm.daily_cost_limit_usd}
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
 						/>
+						<p class="mt-1 text-xs text-neutral-400">Same hard 429 behavior as Daily token limit, based on estimated spend.</p>
 					</label>
 					<label class="block">
 						<span class="text-sm font-medium text-neutral-700">Output mode</span>
@@ -564,6 +567,7 @@
 							<option value="stream">stream</option>
 							<option value="buffered">buffered</option>
 						</select>
+						<p class="mt-1 text-xs text-neutral-400">Stored for callers to read; not yet enforced by the gateway itself.</p>
 					</label>
 					<label class="block">
 						<span class="text-sm font-medium text-neutral-700">Conversation TTL (days)</span>
@@ -573,16 +577,25 @@
 							bind:value={settingsForm.conversation_ttl_days}
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
 						/>
+						<p class="mt-1 text-xs text-neutral-400">
+							A daily sweep permanently deletes conversation history and memory older than this -
+							not just hidden, unrecoverable.
+						</p>
 					</label>
-					<div class="flex items-end gap-4 pb-2">
+					<div class="flex flex-col gap-1 pb-2">
 						<label class="flex items-center gap-2 text-sm text-neutral-700">
 							<input type="checkbox" bind:checked={settingsForm.allow_write_tools} />
 							Allow write tools
 						</label>
-						<label class="flex items-center gap-2 text-sm text-neutral-700">
+						<p class="text-xs text-neutral-400">
+							Off blocks every write-access tool call outright for this deployment. On still
+							requires human approval per call (Approvals tab) - this only lifts the outright block.
+						</p>
+						<label class="mt-2 flex items-center gap-2 text-sm text-neutral-700">
 							<input type="checkbox" bind:checked={settingsForm.enabled} />
 							Enabled
 						</label>
+						<p class="text-xs text-neutral-400">Off makes the gateway return 404 for this deployment immediately, same as if it didn't exist.</p>
 					</div>
 					<label class="block sm:col-span-3">
 						<span class="text-sm font-medium text-neutral-700">Allowed origins (CORS)</span>

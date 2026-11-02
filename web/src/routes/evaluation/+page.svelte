@@ -134,10 +134,11 @@
 			type="button"
 			disabled={selectedIds.length !== MAX_COMPARE_SELECTION}
 			onclick={compareSelected}
+			title="Pick exactly 2 runs from the same company - picking a 3rd drops the oldest pick, picking a different company's run replaces the selection"
 			class="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50
 				disabled:cursor-not-allowed disabled:opacity-50"
 		>
-			Compare selected
+			Compare selected ({selectedIds.length}/{MAX_COMPARE_SELECTION})
 		</button>
 		{#if isWriter}
 			<a
@@ -176,7 +177,7 @@
 		<table class="min-w-full divide-y divide-neutral-200 text-sm">
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">
 				<tr>
-					<th class="px-4 py-2"></th>
+					<th class="px-4 py-2" title="Select exactly 2 runs from the same company to compare">Compare</th>
 					<th class="px-4 py-2">Company</th>
 					<th class="px-4 py-2">Created</th>
 					<th class="px-4 py-2">Status</th>

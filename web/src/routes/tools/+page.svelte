@@ -361,6 +361,10 @@
 					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 				/>
+				<p class="mt-1 text-xs text-neutral-400">
+					The <code>aud</code> claim minted into the bearer token sent with each call - set it to
+					whatever value the tool's own API expects to verify.
+				</p>
 			</label>
 		{/if}
 		{#if form.kind === 'http'}

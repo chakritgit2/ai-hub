@@ -907,6 +907,10 @@
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
 								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 						/>
+						<p class="mt-1 text-xs text-neutral-400">
+							Short, unique identifier shown throughout the console. Cannot be changed after
+							creation - there's no edit for tenants once created.
+						</p>
 					</label>
 					<label class="block">
 						<span class="text-sm font-medium text-neutral-700">Name</span>
@@ -1066,6 +1070,10 @@
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
 								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 						/>
+						<p class="mt-1 text-xs text-neutral-400">
+							Unique within the tenant - embedded into every API key prefix generated for this
+							company (<code>ak_&lcub;code&rcub;_...</code>). No edit after creation.
+						</p>
 					</label>
 					<label class="block">
 						<span class="text-sm font-medium text-neutral-700">Name</span>
