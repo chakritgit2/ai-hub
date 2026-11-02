@@ -21,6 +21,7 @@ dependencies = [
     "pyyaml>=6.0,<7",
     "pythainlp>=5.3.8",
     "prometheus-client>=0.21,<1.0",
+    "openlit>=1.45,<2.0",
 ]
 
 [dependency-groups]
