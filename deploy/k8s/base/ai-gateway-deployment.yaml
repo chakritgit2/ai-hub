@@ -66,11 +66,19 @@ spec:
           secret:
             secretName: dynamiq-jwt-keys
 ---
+# Annotations pick this Service up for the cluster's shared Prometheus
+# (monitoring/prometheus-server's kubernetes-service-endpoints job) - only the Service is
+# annotated, not the pod template, since that job's sibling kubernetes-pods job would
+# otherwise scrape both and double every sum() (per infra's 2026-11 observability note).
 apiVersion: v1
 kind: Service
 metadata:
   name: ai-gateway
   namespace: ai-hub-advws
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: /metrics
 spec:
   selector:
     app: ai-gateway
