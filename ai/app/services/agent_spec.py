@@ -221,12 +221,20 @@ class MemorySpec(BaseModel):
     save_mode: MemorySaveMode = "full"
     # Counts whole conversation turns (one user message + everything up to the next),
     # never a partial one - unlike message_limit, which counts raw messages and can split
-    # a turn across the cutoff. Takes priority over message_limit entirely when set
-    # (app.services.conversations.get_memory switches to TurnAwareMemory instead of
-    # combining the two - see that module's docstring for why mixing them back in would
-    # reintroduce the exact mid-turn-cut problem this field exists to avoid). None (the
-    # default) leaves every existing agent's behavior unchanged.
+    # a turn across the cutoff. Takes priority over message_limit entirely when either
+    # this or token_limit is set (app.services.conversations.get_memory switches to
+    # TurnAwareMemory instead of combining them - see that module's docstring for why
+    # mixing message_limit back in would reintroduce the exact mid-turn-cut problem these
+    # fields exist to avoid). None (the default) leaves every existing agent's behavior
+    # unchanged.
     turn_limit: int | None = Field(default=None, gt=0)
+    # Caps memory's own contribution to the LLM context by estimated token count
+    # (tiktoken cl100k_base - a rough, not provider-exact, estimate - counts message
+    # content only, not the system prompt/tool definitions/current input). Combines with
+    # turn_limit when both are set (whichever is tighter wins per turn); neither
+    # message_limit nor turn_limit alone bounds actual context size, since both only
+    # count items, never size - see app.services.turn_aware_memory's module docstring.
+    token_limit: int | None = Field(default=None, gt=0)
 
 
 class PublishGateSpec(BaseModel):

@@ -544,6 +544,7 @@ async def _execute_agent_run_body(
             message_limit=memory_spec.message_limit,
             save_mode=memory_spec.save_mode,
             turn_limit=memory_spec.turn_limit,
+            token_limit=memory_spec.token_limit,
         )
 
     skill_registry = None

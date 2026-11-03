@@ -374,17 +374,18 @@
 		message_limit: string | number | null;
 		save_mode: MemorySaveMode;
 		turn_limit: string | number | null;
+		token_limit: string | number | null;
 	};
 
 	/** Mirrors ai/app/services/agent_spec.py's MemorySpec validation (message_limit/
-	 * turn_limit must each be a positive int when set) - same "return the error message, or
-	 * the built value" shape as buildModelSpec/buildGuardrailsSpec. Validation is skipped
-	 * while memory is disabled, since the inputs are only rendered (and so only fixable)
-	 * while `memory.enabled` is true - a stale invalid value left over from before the user
-	 * unchecked it must not block saving a spec that has memory off. That's validation only,
-	 * not a reset: the value itself is still carried through unchanged (same as save_mode
-	 * below) so re-enabling memory later doesn't silently lose a previously-configured
-	 * limit. */
+	 * turn_limit/token_limit must each be a positive int when set) - same "return the error
+	 * message, or the built value" shape as buildModelSpec/buildGuardrailsSpec. Validation is
+	 * skipped while memory is disabled, since the inputs are only rendered (and so only
+	 * fixable) while `memory.enabled` is true - a stale invalid value left over from before
+	 * the user unchecked it must not block saving a spec that has memory off. That's
+	 * validation only, not a reset: the value itself is still carried through unchanged
+	 * (same as save_mode below) so re-enabling memory later doesn't silently lose a
+	 * previously-configured limit. */
 	export function buildMemorySpec(): MemorySpec | string {
 		if (
 			memory.enabled &&
@@ -400,11 +401,19 @@
 		) {
 			return 'Memory: turn limit must be a whole number greater than 0.';
 		}
+		if (
+			memory.enabled &&
+			!isUnset(memory.token_limit) &&
+			(!Number.isInteger(Number(memory.token_limit)) || Number(memory.token_limit) <= 0)
+		) {
+			return 'Memory: context token limit must be a whole number greater than 0.';
+		}
 		return {
 			enabled: memory.enabled,
 			message_limit: isUnset(memory.message_limit) ? null : Number(memory.message_limit),
 			save_mode: memory.save_mode,
-			turn_limit: isUnset(memory.turn_limit) ? null : Number(memory.turn_limit)
+			turn_limit: isUnset(memory.turn_limit) ? null : Number(memory.turn_limit),
+			token_limit: isUnset(memory.token_limit) ? null : Number(memory.token_limit)
 		};
 	}
 
@@ -1000,6 +1009,7 @@
 				</label>
 
 				{#if memory.enabled}
+					{@const turnAwareModeActive = !isUnset(memory.turn_limit) || !isUnset(memory.token_limit)}
 					<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
 						<label class="block">
 							<span class="text-sm font-medium text-neutral-700">Message limit (optional)</span>
@@ -1008,7 +1018,7 @@
 								step="1"
 								min="1"
 								bind:value={memory.message_limit}
-								disabled={!isUnset(memory.turn_limit)}
+								disabled={turnAwareModeActive}
 								placeholder="Default"
 								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary
@@ -1016,7 +1026,7 @@
 							/>
 							<span class="mt-1 block text-xs text-neutral-400">
 								Counts raw messages - a tool-call-heavy turn can eat the whole limit by itself.
-								{#if !isUnset(memory.turn_limit)}Ignored while Turn limit (below) is set.{/if}
+								{#if turnAwareModeActive}Ignored while Turn limit or Context token limit is set.{/if}
 							</span>
 						</label>
 						<label class="block">
@@ -1032,14 +1042,32 @@
 							/>
 							<span class="mt-1 block text-xs text-neutral-400">
 								Counts whole back-and-forth turns instead - never splits a turn across the cutoff.
-								Takes priority over Message limit when set.
+								Takes priority over Message limit when set, and combines with Context token limit
+								(whichever is tighter wins).
 							</span>
 						</label>
-						<label class="block sm:col-span-2">
+						<label class="block">
+							<span class="text-sm font-medium text-neutral-700">Context token limit (optional)</span>
+							<input
+								type="number"
+								step="1"
+								min="1"
+								bind:value={memory.token_limit}
+								placeholder="No token limit"
+								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							/>
+							<span class="mt-1 block text-xs text-neutral-400">
+								Caps memory's own estimated token size (a rough estimate, not exact for every
+								provider) - unlike the limits above, this bounds actual context size, not just
+								item count. The single most recent turn is always kept even if it alone goes over.
+							</span>
+						</label>
+						<label class="block">
 							<span class="text-sm font-medium text-neutral-700">Save mode</span>
 							<select
 								bind:value={memory.save_mode}
-								class="mt-1 w-full max-w-xs rounded-md border border-neutral-300 px-3 py-2 text-sm
+								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 							>
 								<option value="full">Full — includes tool calls and reasoning</option>
@@ -1051,10 +1079,11 @@
 
 				<p class="text-xs text-neutral-500">
 					Conversation memory (PRD §6.2) recalls earlier turns of the same conversation for this
-					agent. Leave both limits blank to use Dynamiq's own default. Input/output-only save mode
+					agent. Leave all limits blank to use Dynamiq's own default. Input/output-only save mode
 					keeps less context per turn but is cheaper and skips intermediate tool-call/reasoning
-					detail. Neither limit counts tokens or characters - set Save mode to "Input/output only"
-					too if tool results tend to be large and token cost is a concern.
+					detail. Message limit and Turn limit don't count tokens or characters, only items - use
+					Context token limit if actual context size (and therefore cost) is the real concern, e.g.
+					when tool results tend to be large.
 				</p>
 			</form>
 		{:else if activeTab === 'publish_gate'}

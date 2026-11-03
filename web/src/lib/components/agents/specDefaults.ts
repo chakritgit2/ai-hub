@@ -46,11 +46,11 @@ export function blankGuardrails(): GuardrailsSpec {
 /** Matches the backend's MemorySpec defaults (ai/app/services/agent_spec.py) - an agent
  * that never touches this tab behaves exactly as it does today (memory always on). */
 export function blankMemorySpec(): MemorySpec {
-	return { enabled: true, message_limit: null, save_mode: 'full', turn_limit: null };
+	return { enabled: true, message_limit: null, save_mode: 'full', turn_limit: null, token_limit: null };
 }
 
 export function blankMemory(): MemoryFormState {
-	return { enabled: true, message_limit: '', save_mode: 'full', turn_limit: '' };
+	return { enabled: true, message_limit: '', save_mode: 'full', turn_limit: '', token_limit: '' };
 }
 
 /** Matches the backend's PublishGateSpec defaults (ai/app/services/agent_spec.py) -
@@ -83,7 +83,8 @@ export function toMemoryFormState(m?: MemorySpec): MemoryFormState {
 		enabled: m?.enabled ?? true,
 		message_limit: m?.message_limit ?? '',
 		save_mode: m?.save_mode ?? 'full',
-		turn_limit: m?.turn_limit ?? ''
+		turn_limit: m?.turn_limit ?? '',
+		token_limit: m?.token_limit ?? ''
 	};
 }
 

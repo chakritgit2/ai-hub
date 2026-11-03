@@ -467,6 +467,10 @@ export interface MemorySpec {
 	// message_limit entirely when set (see ai/app/services/turn_aware_memory.py's module
 	// docstring). null (the default) leaves message_limit in sole control, unchanged.
 	turn_limit?: number | null;
+	// Caps memory's own estimated token size (tiktoken cl100k_base, a rough estimate) -
+	// combines with turn_limit (whichever is tighter wins per turn) and, like turn_limit,
+	// takes priority over message_limit entirely when set.
+	token_limit?: number | null;
 }
 
 // Mirrors ai/app/services/agent_spec.py's PublishGateSpec (PRD §6.7) - opt-in per

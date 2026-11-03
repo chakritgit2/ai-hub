@@ -138,3 +138,32 @@ async def test_turn_limit_unset_keeps_plain_memory(
     memory = captured["memory"]
     assert memory is not None
     assert type(memory).__name__ == "Memory"
+
+
+@requires_postgres
+async def test_token_limit_reaches_the_built_agent_as_turn_aware_memory(
+    monkeypatch, company_ids, resolvable_agent_version
+) -> None:
+    """token_limit (PRD §6.2 "Context token limit") also switches get_memory to
+    TurnAwareMemory, same as turn_limit - and both can be set together (they combine,
+    unlike message_limit vs either of them)."""
+    captured = _capture_memory(monkeypatch)
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(
+        company_id, memory={"enabled": True, "turn_limit": 3, "token_limit": 500}
+    )
+
+    await run_playground_agent(
+        "hi",
+        agent_version_id=version_id,
+        role="developer",
+        company_id=company_id,
+        identity_sub="runtime-user-1",
+        external_user_id="ext-5",
+    )
+
+    memory = captured["memory"]
+    assert memory is not None
+    assert type(memory).__name__ == "TurnAwareMemory"
+    assert memory.turn_limit == 3
+    assert memory.token_limit == 500
