@@ -81,6 +81,7 @@ from app.services.knowledge_bases import (
     upsert_kb_document,
 )
 from app.services import run_registry
+from app.services.conversations import get_conversation_messages
 from app.services.runtime import attach_stream_completion, resolve_and_compile, run_playground_agent
 from app.services.streaming_events import extract_answer_delta, extract_approval_required_event
 from app.services.tool_secrets import decrypt_tool_secret, delete_tool_secret, upsert_tool_secret
@@ -440,6 +441,35 @@ async def cancelRun(id: str, claims: RuntimeAuth) -> Response:
         if run_registry.has_finished(id) or time.monotonic() >= deadline:
             raise HTTPException(status_code=404, detail="not_found")
         await asyncio.sleep(_CANCEL_POLL_INTERVAL_SECONDS)
+
+
+class ConversationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+@app.get("/ai/v1/conversations/{id}/messages", response_model=list[ConversationMessage])
+async def getConversationMessages(id: str, claims: RuntimeAuth) -> list[ConversationMessage]:
+    """Resumes a Playground chat's transcript on page reload (PRD §6.2) - the UI's own
+    `messages` state is only ever in-memory, lost on refresh, even though the underlying
+    conversation/memory keeps working regardless.
+
+    Deliberately narrow (see `get_conversation_messages`'s own docstring):
+    `external_user_id` is always this runtime token's own `user_id` claim, never
+    client-supplied, same fallback `runPlayground`/`runPlaygroundStream` use when no
+    simulated end user was given - a caller can only ever resume their own conversation,
+    never look another user's up by guessing an id. A malformed id or one that isn't this
+    caller's own (wrong company, wrong user, expired, or never existed) all look the same
+    (404) - PRD §12.
+    """
+    if not _is_uuid(id):
+        raise HTTPException(status_code=404, detail="not_found")
+
+    messages = await get_conversation_messages(claims["company_id"], claims["user_id"], id)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    return [ConversationMessage(role=m.role.value, content=m.content) for m in messages]
 
 
 # --------------------------------------------------------------------------

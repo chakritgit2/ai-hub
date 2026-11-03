@@ -12,7 +12,7 @@ from dynamiq.prompts import MessageRole
 
 from app.core.db import get_company_session
 from app.db.tables import conversations_table
-from app.services.conversations import get_or_create_conversation
+from app.services.conversations import get_conversation_messages, get_or_create_conversation
 
 from .markers import requires_postgres
 
@@ -116,3 +116,56 @@ async def test_default_message_limit_and_save_mode_match_dynamiq_defaults(compan
     _, memory, _ = await get_or_create_conversation(company_id, None, "user-defaults", None)
     assert memory.message_limit == memory.DEFAULT_LIMIT
     assert memory.save_mode == MemorySaveMode.FULL
+
+
+@requires_postgres
+async def test_get_conversation_messages_returns_user_assistant_turns_in_order(company_ids) -> None:
+    """Playground's "resume this chat on reload" feature (PRD §6.2) - chronological
+    order, tool/system messages filtered out even under save_mode=full (that detail
+    belongs to GET /runs/{id}/steps, not the chat transcript)."""
+    company_id = company_ids()
+    conv_id, memory, user_id = await get_or_create_conversation(company_id, None, "user-resume", None)
+
+    base_ts = 1_700_000_000.0
+    turns = [
+        (MessageRole.USER, "turn 1 question"),
+        (MessageRole.TOOL, "irrelevant tool observation"),
+        (MessageRole.ASSISTANT, "turn 1 answer"),
+        (MessageRole.USER, "turn 2 question"),
+        (MessageRole.ASSISTANT, "turn 2 answer"),
+    ]
+    for i, (role, content) in enumerate(turns):
+        memory.add(
+            role=role,
+            content=content,
+            metadata={"user_id": user_id, "session_id": conv_id, "timestamp": base_ts + i},
+        )
+
+    messages = await get_conversation_messages(company_id, "user-resume", conv_id)
+
+    assert [(m.role, m.content) for m in messages] == [
+        (MessageRole.USER, "turn 1 question"),
+        (MessageRole.ASSISTANT, "turn 1 answer"),
+        (MessageRole.USER, "turn 2 question"),
+        (MessageRole.ASSISTANT, "turn 2 answer"),
+    ]
+
+
+@requires_postgres
+async def test_get_conversation_messages_none_for_unknown_id(company_ids) -> None:
+    company_id = company_ids()
+    assert await get_conversation_messages(company_id, "user-x", str(uuid.uuid4())) is None
+
+
+@requires_postgres
+async def test_get_conversation_messages_none_for_another_companys_conversation(company_ids) -> None:
+    company_a, company_b = company_ids(), company_ids()
+    conv_a, _, _ = await get_or_create_conversation(company_a, None, "user-shared", None)
+    assert await get_conversation_messages(company_b, "user-shared", conv_a) is None
+
+
+@requires_postgres
+async def test_get_conversation_messages_none_for_another_users_conversation(company_ids) -> None:
+    company_id = company_ids()
+    conv_a, _, _ = await get_or_create_conversation(company_id, None, "user-a", None)
+    assert await get_conversation_messages(company_id, "user-b", conv_a) is None

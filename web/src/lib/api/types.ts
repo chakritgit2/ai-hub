@@ -104,6 +104,13 @@ export interface PlaygroundStreamRunStartedEvent {
 	run_id: string;
 }
 
+// GET /ai/v1/conversations/{id}/messages - resumed chat transcript (PRD §6.2), user/
+// assistant turns only.
+export interface PlaygroundConversationMessage {
+	role: 'user' | 'assistant';
+	content: string;
+}
+
 // PRD §6.5/§8.1: an access_level: write tool call created a pending runtime.tool_approvals
 // row and is waiting (up to 5 minutes) for a human to decide via the /approvals page -
 // purely informational, doesn't replace that decide flow.

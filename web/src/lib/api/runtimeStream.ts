@@ -8,6 +8,7 @@
 
 import { PUBLIC_AI_RUNTIME_BASE_URL } from '$env/static/public';
 import type {
+	PlaygroundConversationMessage,
 	PlaygroundStreamApprovalRequiredEvent,
 	PlaygroundStreamErrorEvent,
 	PlaygroundStreamFinalEvent,
@@ -118,4 +119,25 @@ export async function cancelPlaygroundRun(runtimeToken: string, runId: string): 
 		method: 'POST',
 		headers: { Authorization: `Bearer ${runtimeToken}` }
 	}).catch(() => {});
+}
+
+/**
+ * GET /ai/v1/conversations/{id}/messages - resumes a chat's transcript (PRD §6.2), same
+ * direct-to-ai-runtime runtime-token auth as the calls above. Throws (never swallows) on a
+ * non-2xx - a 404 here means this conversation_id isn't this token's own (expired, swept,
+ * or never existed), which the caller should treat as "nothing to resume," not a silent
+ * no-op like cancel's fire-and-forget above.
+ */
+export async function getConversationMessages(
+	runtimeToken: string,
+	conversationId: string
+): Promise<PlaygroundConversationMessage[]> {
+	const base = (PUBLIC_AI_RUNTIME_BASE_URL ?? '').replace(/\/$/, '');
+	const response = await fetch(`${base}/conversations/${conversationId}/messages`, {
+		headers: { Authorization: `Bearer ${runtimeToken}` }
+	});
+	if (!response.ok) {
+		throw new Error(`failed to resume conversation (${response.status})`);
+	}
+	return response.json();
 }

@@ -18,6 +18,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import sqlalchemy as sa
 from dynamiq.connections.connections import PostgreSQL as PostgreSQLConnection
 
 from app.core.config import get_settings
@@ -28,6 +29,7 @@ from app.db.tables import conversations_table
 if TYPE_CHECKING:
     from dynamiq.memory.backends.postgresql import PostgreSQL as PostgresMemoryBackend
     from dynamiq.memory.memory import Memory
+    from dynamiq.prompts import Message
 
 
 class _MemoryDBConnection(PostgreSQLConnection):
@@ -185,3 +187,67 @@ async def get_or_create_conversation(
 
     memory = await asyncio.to_thread(get_memory, message_limit, save_mode)
     return str(resolved_id), memory, user_id
+
+
+# Caps how much history a single "resume this chat" read returns - independent of the
+# agent's own MemorySpec.message_limit (that one bounds what the LLM sees per turn; this
+# one just bounds one Playground page-load's response size for a long-lived conversation).
+MAX_RESUME_MESSAGES = 500
+
+
+async def get_conversation_messages(
+    company_id: str, external_user_id: str, conversation_id: str
+) -> "list[Message] | None":
+    """Reads back a conversation's own message history, user/assistant turns only
+    (Playground's "resume this chat on reload" feature, PRD §6.2).
+
+    Deliberately narrow: the caller must already know the exact `conversation_id` it owns
+    (minted for its own `company_id`/`external_user_id` by `get_or_create_conversation`
+    above) - this is a lookup, never a listing/search across conversations. That matters
+    because `runtime.agent_memory` (unlike every RLS-protected `console.*`/`logs.*` table)
+    has no `company_id` column and no RLS at all - this function's ownership check below
+    (same company_id + hashed external_user_id + not-expired the UPDATE in
+    get_or_create_conversation already uses, just a read-only SELECT here) is the *only*
+    thing standing between one company's conversation and another's. `external_user_id`
+    must always come from a verified identity (the caller's own runtime-token claims),
+    never from client-supplied input, or this check is worthless.
+
+    Returns `None` if `conversation_id` doesn't belong to this company_id/external_user_id,
+    doesn't exist, or has expired - same "not found", not "forbidden", PRD §12 convention
+    every other resolver in this codebase uses.
+
+    Filters out `system`/`tool` role messages even when the agent's own `save_mode` is
+    `full` - this reconstructs the chat transcript Playground's UI renders (user/assistant
+    bubbles only), not a full execution trace (that's GET /runs/{id}/steps, a completely
+    separate, already-recorded dataset, unaffected by this).
+    """
+    from dynamiq.prompts import MessageRole
+
+    hashed_user_id = hash_external_user_id(company_id, external_user_id)
+    company_uuid = uuid.UUID(company_id)
+    now = datetime.now(UTC)
+
+    async with get_company_session(company_id) as session:
+        result = await session.execute(
+            sa.select(conversations_table.c.id).where(
+                conversations_table.c.id == uuid.UUID(conversation_id),
+                conversations_table.c.company_id == company_uuid,
+                conversations_table.c.external_user_id == hashed_user_id,
+                conversations_table.c.expires_at > now,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            return None
+
+    user_id = f"{company_id}:{hashed_user_id}"
+    memory = await asyncio.to_thread(get_memory)
+    # search(), not get_all() - get_all() ignores `filters` entirely (see Memory.get_all's
+    # own code) and would return every conversation's messages mixed together across every
+    # user/company sharing this one table. search() returns newest-first; reversed below to
+    # hand back chronological order, same as get_all()/get_agent_conversation() both do.
+    messages = await asyncio.to_thread(
+        memory.search, None, {"user_id": user_id, "session_id": conversation_id}, MAX_RESUME_MESSAGES
+    )
+    messages = [m for m in messages if m.role in (MessageRole.USER, MessageRole.ASSISTANT)]
+    messages.reverse()
+    return messages

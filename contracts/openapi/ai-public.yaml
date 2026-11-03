@@ -77,6 +77,11 @@ components:
         cost_usd: { type: number }
         latency_ms: { type: integer }
         trace_id: { type: string }
+    ConversationMessage:
+      type: object
+      properties:
+        role: { type: string, enum: [user, assistant] }
+        content: { type: string }
     WorkflowRunRequest:
       type: object
       required: [input]
@@ -191,6 +196,25 @@ paths:
                 type: object
                 properties: { status: { type: string, enum: [cancel_requested] } }
         "404": { description: 'not an active run for this token''s company/agent version' }
+
+  /ai/v1/conversations/{id}/messages:
+    parameters: [{ $ref: '#/components/parameters/IdParam' }]
+    get:
+      operationId: getConversationMessages
+      summary: >-
+        Resumes a Playground chat's transcript on page reload (PRD §6.2) - user/assistant
+        turns only (no tool-call/reasoning detail; that's GET /runs/{id}/steps). Deliberately
+        narrow: external_user_id is always this runtime token's own user_id claim, so a
+        caller can only ever read back its own conversation, never another user's by
+        guessing an id.
+      security: [{ runtimeToken: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ConversationMessage' } }
+        "404": { description: 'not this token''s conversation, or expired' }
 
   /v1/deployments/{slug}/run:
     parameters: [{ $ref: '#/components/parameters/Slug' }]

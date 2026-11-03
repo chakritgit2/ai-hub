@@ -12,7 +12,7 @@
 		listDatasets,
 		listRunSteps
 	} from '$lib/api/console';
-	import { cancelPlaygroundRun, streamPlaygroundRun } from '$lib/api/runtimeStream';
+	import { cancelPlaygroundRun, getConversationMessages, streamPlaygroundRun } from '$lib/api/runtimeStream';
 	import type {
 		Agent,
 		AgentVersion,
@@ -134,6 +134,9 @@
 	// list, so a later manual agent switch is never silently overridden by a stale replay.
 	let pendingAgentId = $state<string | null>(null);
 	let pendingAgentVersionId = $state<string | null>(null);
+	// A Replay link already brought its own input/intent - skip the next auto-resume so it
+	// doesn't silently overwrite that with a leftover saved conversation instead.
+	let suppressNextResume = false;
 
 	async function loadAgents() {
 		pickerError = null;
@@ -174,6 +177,7 @@
 			const replayInput = params.get('input');
 			if (replayInput) input = replayInput;
 			if (pendingAgentId || pendingAgentVersionId || replayInput) {
+				suppressNextResume = true;
 				goto('/playground', { replaceState: true, keepFocus: true, noScroll: true });
 			}
 		} else {
@@ -199,6 +203,65 @@
 			.catch((e) => {
 				pickerError = e instanceof Error ? e.message : 'Failed to load agent versions.';
 			});
+	});
+
+	// Resume this browser's last chat for this agent version on reload (GET
+	// /ai/v1/conversations/{id}/messages) - the `messages` transcript above is only ever
+	// in-memory, lost on refresh, even though the underlying conversation keeps working
+	// server-side regardless. The saved conversation_id itself lives in localStorage (a
+	// per-browser convenience, not authoritative - a 404 just means nothing to resume,
+	// same as if nothing had been saved at all) keyed per company+agent version so
+	// switching either never resumes the wrong thread.
+	function conversationStorageKey(agentVersionId: string): string {
+		return `playground:conversation:${get(companyId) ?? ''}:${agentVersionId}`;
+	}
+
+	function saveConversationId(agentVersionId: string, id: string | null) {
+		try {
+			const key = conversationStorageKey(agentVersionId);
+			if (id) localStorage.setItem(key, id);
+			else localStorage.removeItem(key);
+		} catch {
+			// private browsing / blocked storage - resuming is a convenience, never required.
+		}
+	}
+
+	async function resumeConversation(agentVersionId: string) {
+		let savedId: string | null = null;
+		try {
+			savedId = localStorage.getItem(conversationStorageKey(agentVersionId));
+		} catch {
+			return;
+		}
+		if (!savedId) return;
+
+		try {
+			const { token } = await issueRuntimeToken(agentVersionId);
+			const resumed = await getConversationMessages(token, savedId);
+			if (resumed.length > 0) {
+				messages = resumed.map((m) => ({ role: m.role, content: m.content }));
+				conversationId = savedId;
+			}
+		} catch {
+			// Expired/swept/never-ours (404) or a transient failure - either way there's
+			// nothing to resume right now; drop the stale pointer and start fresh silently,
+			// same as a first-ever visit.
+			saveConversationId(agentVersionId, null);
+		}
+	}
+
+	$effect(() => {
+		const versionId = selectedAgentVersionId;
+		if (!versionId) return;
+		if (suppressNextResume) {
+			suppressNextResume = false;
+			return;
+		}
+		// Only on a clean slate - never clobber an in-progress chat if this effect re-fires
+		// for an unrelated reason while messages are already populated.
+		if (messages.length === 0) {
+			resumeConversation(versionId);
+		}
 	});
 
 	async function send() {
@@ -252,6 +315,7 @@
 							costUsd: event.cost_usd ?? undefined
 						};
 						if (currentRunId) loadSteps(currentRunId);
+						if (conversationId) saveConversationId(selectedAgentVersionId, conversationId);
 					},
 					onError: (event) => {
 						pendingApproval = null;
@@ -298,6 +362,7 @@
 		// writing into `messages[idx]` of the array this function is about to replace,
 		// corrupting the brand-new conversation with stale previous-conversation tokens.
 		abortController?.abort();
+		if (selectedAgentVersionId) saveConversationId(selectedAgentVersionId, null);
 		runState = 'done';
 		messages = [];
 		conversationId = null;

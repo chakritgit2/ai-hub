@@ -13,12 +13,15 @@ from dynamiq.runnables.base import RunnableStatus
 from dynamiq.types.cancellation import CancellationToken
 from fastapi.testclient import TestClient
 
+from dynamiq.prompts import MessageRole
+
 from app.core.db import get_company_session
 from app.db.tables import guardrail_events_table, runs_table
 from app.main_runtime import app as runtime_app
 from app.main_runtime import require_runtime_auth
 from app.services import compiler, run_registry
 from app.services.agent_spec import GuardrailsSpec
+from app.services.conversations import get_or_create_conversation
 from app.services.runtime import execute_agent_run, resolve_and_compile, run_deployment_agent, run_playground_agent
 from app.services.streaming_events import extract_answer_delta as _extract_answer_delta
 
@@ -867,5 +870,73 @@ async def test_playground_stream_ends_with_cancelled_event_when_the_run_is_signa
         events = _parse_sse_events(resp.text)
         assert events[-1][0] == "cancelled"
         assert events[-1][1]["run_id"] == run_id
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+def test_get_conversation_messages_requires_runtime_token() -> None:
+    resp = TestClient(runtime_app).get(f"/ai/v1/conversations/{uuid.uuid4()}/messages")
+    assert resp.status_code == 401
+
+
+def test_get_conversation_messages_malformed_id_is_404(runtime_client) -> None:
+    resp = runtime_client.get("/ai/v1/conversations/not-a-uuid/messages")
+    assert resp.status_code == 404
+
+
+@requires_postgres
+async def test_get_conversation_messages_unknown_id_is_404(company_ids) -> None:
+    company_id = company_ids()
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(company_id)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            resp = await client.get(f"/ai/v1/conversations/{uuid.uuid4()}/messages")
+        assert resp.status_code == 404
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+@requires_postgres
+async def test_get_conversation_messages_resumes_the_caller_own_conversation(company_ids) -> None:
+    """Route-level proof GET /ai/v1/conversations/{id}/messages resumes a Playground chat
+    (PRD §6.2) scoped to the runtime token's own claims - fake_runtime_claims' user_id is
+    always "test-user" (markers.py), so the conversation below is seeded for that exact
+    external_user_id to match. Also proves tool-role messages are filtered from the
+    resumed transcript even though they were saved (save_mode=full's job, not this
+    route's)."""
+    company_id = company_ids()
+    conv_id, memory, user_id = await get_or_create_conversation(company_id, None, "test-user", None)
+    for i, (role, content) in enumerate(
+        [
+            (MessageRole.USER, "hi"),
+            (MessageRole.TOOL, "irrelevant tool observation"),
+            (MessageRole.ASSISTANT, "hello"),
+        ]
+    ):
+        memory.add(role=role, content=content, metadata={"user_id": user_id, "session_id": conv_id, "timestamp": float(i)})
+
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(company_id)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            resp = await client.get(f"/ai/v1/conversations/{conv_id}/messages")
+        assert resp.status_code == 200
+        assert resp.json() == [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+@requires_postgres
+async def test_get_conversation_messages_404_for_a_different_companys_conversation(company_ids) -> None:
+    company_a, company_b = company_ids(), company_ids()
+    conv_id, _, _ = await get_or_create_conversation(company_a, None, "test-user", None)
+
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(company_b)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            resp = await client.get(f"/ai/v1/conversations/{conv_id}/messages")
+        assert resp.status_code == 404
     finally:
         runtime_app.dependency_overrides.pop(require_runtime_auth, None)
