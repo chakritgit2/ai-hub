@@ -97,6 +97,13 @@ export interface PlaygroundStreamErrorEvent {
 	detail?: string;
 }
 
+// Fires first, before the agent run task is even created - the only way the client learns
+// which id to later call POST /ai/v1/runs/{id}/cancel with (see main_runtime.py's
+// runPlaygroundStream docstring) or GET /runs/{id}/steps to fetch this run's real trace.
+export interface PlaygroundStreamRunStartedEvent {
+	run_id: string;
+}
+
 // PRD §6.5/§8.1: an access_level: write tool call created a pending runtime.tool_approvals
 // row and is waiting (up to 5 minutes) for a human to decide via the /approvals page -
 // purely informational, doesn't replace that decide flow.
@@ -244,6 +251,13 @@ export interface DatasetItem {
 	context: string | null;
 	tags: string[];
 	created_at: string;
+}
+
+export interface DatasetItemInput {
+	question: string;
+	expected_answer?: string | null;
+	context?: string | null;
+	tags?: string[];
 }
 
 export interface DatasetImportResult {

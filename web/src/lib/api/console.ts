@@ -20,6 +20,7 @@ import type {
 	DatasetImportResult,
 	DatasetInput,
 	DatasetItem,
+	DatasetItemInput,
 	Deployment,
 	DeploymentUsage,
 	EgressAllowlistEntry,
@@ -517,6 +518,10 @@ export function deleteDataset(id: string): Promise<void> {
 
 export function listDatasetItems(id: string): Promise<DatasetItem[]> {
 	return apiFetch<DatasetItem[]>(`/datasets/${id}/items`);
+}
+
+export function createDatasetItem(id: string, input: DatasetItemInput): Promise<DatasetItem> {
+	return apiFetch<DatasetItem>(`/datasets/${id}/items`, { method: 'POST', body: input });
 }
 
 export function importDatasetItems(id: string, form: FormData): Promise<DatasetImportResult> {

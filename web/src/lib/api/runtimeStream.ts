@@ -11,6 +11,7 @@ import type {
 	PlaygroundStreamApprovalRequiredEvent,
 	PlaygroundStreamErrorEvent,
 	PlaygroundStreamFinalEvent,
+	PlaygroundStreamRunStartedEvent,
 	PlaygroundStreamTokenEvent
 } from './types';
 
@@ -27,6 +28,9 @@ export interface PlaygroundStreamHandlers {
 	// an unhandled approval_required event is otherwise silently dropped (see
 	// dispatchEvent below), which is a safe no-op, not a bug.
 	onApprovalRequired?: (event: PlaygroundStreamApprovalRequiredEvent) => void;
+	// Fires before any token - optional since a caller that doesn't need Stop-generating
+	// or the real per-run trace (GET /runs/{id}/steps) can just ignore it.
+	onRunStarted?: (event: PlaygroundStreamRunStartedEvent) => void;
 }
 
 /**
@@ -99,4 +103,19 @@ function dispatchEvent(rawEvent: string, handlers: PlaygroundStreamHandlers): vo
 	else if (eventType === 'final') handlers.onFinal(payload);
 	else if (eventType === 'error') handlers.onError(payload);
 	else if (eventType === 'approval_required') handlers.onApprovalRequired?.(payload);
+	else if (eventType === 'run_started') handlers.onRunStarted?.(payload);
+}
+
+/**
+ * POST /ai/v1/runs/{id}/cancel - the real server-side "stop generating" (PRD Goal #6),
+ * same direct-to-ai-runtime runtime-token auth as streamPlaygroundRun above. Cooperative,
+ * not a hard interrupt (see cancelRun's own docstring in main_runtime.py) - a 404 means the
+ * run already finished or was never ours, which is a safe no-op from the caller's side.
+ */
+export async function cancelPlaygroundRun(runtimeToken: string, runId: string): Promise<void> {
+	const base = (PUBLIC_AI_RUNTIME_BASE_URL ?? '').replace(/\/$/, '');
+	await fetch(`${base}/runs/${runId}/cancel`, {
+		method: 'POST',
+		headers: { Authorization: `Bearer ${runtimeToken}` }
+	}).catch(() => {});
 }

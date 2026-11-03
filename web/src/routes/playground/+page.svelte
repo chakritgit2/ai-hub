@@ -4,13 +4,22 @@
 	import { goto } from '$app/navigation';
 	import { headerContent } from '$lib/stores/header';
 	import { companyId } from '$lib/stores/company';
-	import { issueRuntimeToken, listAgents, listAgentVersions } from '$lib/api/console';
-	import { streamPlaygroundRun } from '$lib/api/runtimeStream';
+	import {
+		createDatasetItem,
+		issueRuntimeToken,
+		listAgents,
+		listAgentVersions,
+		listDatasets,
+		listRunSteps
+	} from '$lib/api/console';
+	import { cancelPlaygroundRun, streamPlaygroundRun } from '$lib/api/runtimeStream';
 	import type {
 		Agent,
 		AgentVersion,
+		Dataset,
 		PlaygroundStreamApprovalRequiredEvent,
-		PlaygroundStreamFinalEvent
+		PlaygroundStreamFinalEvent,
+		RunStep
 	} from '$lib/api/types';
 
 	headerContent.set({ menu: 'Playground', title: 'Playground' });
@@ -24,10 +33,12 @@
 		costUsd?: number;
 	}
 
-	interface TraceStep {
-		label: string;
-		phase?: 2;
-	}
+	const STEP_TYPE_LABELS: Record<RunStep['step_type'], string> = {
+		guardrail_input: 'Guardrail (input)',
+		llm: 'LLM call',
+		tool_call: 'Tool call',
+		guardrail_output: 'Guardrail (output)'
+	};
 
 	let agents = $state<Agent[]>([]);
 	let agentVersions = $state<AgentVersion[]>([]);
@@ -44,21 +55,78 @@
 	let pendingApproval = $state<PlaygroundStreamApprovalRequiredEvent | null>(null);
 	let abortController: AbortController | undefined;
 
-	// Full step-by-step trace (tool_call/tool_result/retrieval/guardrail events per run) is
-	// a separate not-yet-built feature (no logs.run_steps table/API exists yet) - this list
-	// stays the static PRD mockup roadmap, not data from a real run. Trace order per
-	// mockup screen 5: guardrail → thought → tool_call → tool_result → retrieval → llm
-	// (primary/fallback) → output guardrail → final.
-	const traceSteps: TraceStep[] = [
-		{ label: 'input guardrail' },
-		{ label: 'thought' },
-		{ label: 'tool_call', phase: 2 },
-		{ label: 'tool_result', phase: 2 },
-		{ label: 'retrieval', phase: 2 },
-		{ label: 'llm (primary)' },
-		{ label: 'output guardrail' },
-		{ label: 'final' }
-	];
+	// The run_id a run_started event hands us (main_runtime.py's runPlaygroundStream) - the
+	// only way to later call the real POST /ai/v1/runs/{id}/cancel (Stop) or fetch this
+	// run's real per-step trace via GET /runs/{id}/steps. The matching runtime token is kept
+	// alongside it since cancelPlaygroundRun needs the same auth streamPlaygroundRun used.
+	let currentRunId = $state<string | null>(null);
+	let currentRuntimeToken: string | null = null;
+
+	let steps = $state<RunStep[]>([]);
+	let stepsError = $state<string | null>(null);
+	let stepsLoading = $state(false);
+	let loops = $derived(steps.filter((s) => s.step_type === 'llm').length);
+
+	async function loadSteps(runId: string) {
+		stepsLoading = true;
+		stepsError = null;
+		try {
+			steps = await listRunSteps(runId);
+		} catch (e) {
+			stepsError = e instanceof Error ? e.message : 'Failed to load the trace.';
+		} finally {
+			stepsLoading = false;
+		}
+	}
+
+	// "Add as test case" (PRD §6.7: "add items from Playground/Runs") - the input that
+	// started the latest turn, captured in send() rather than re-derived from `messages`
+	// so it stays correct regardless of how the transcript is rendered later.
+	let lastUserInput = $state('');
+
+	let datasets = $state<Dataset[]>([]);
+	let datasetsLoaded = $state(false);
+	let datasetsError = $state<string | null>(null);
+	let showAddTestCase = $state(false);
+	let addTestCaseDatasetId = $state('');
+	let addTestCaseQuestion = $state('');
+	let addTestCaseAnswer = $state('');
+	let addTestCaseError = $state<string | null>(null);
+	let addTestCaseSaving = $state(false);
+	let addTestCaseSaved = $state(false);
+
+	async function openAddTestCase() {
+		addTestCaseQuestion = lastUserInput;
+		addTestCaseAnswer = lastResult?.output ?? '';
+		addTestCaseError = null;
+		addTestCaseSaved = false;
+		showAddTestCase = true;
+		if (!datasetsLoaded) {
+			try {
+				datasets = await listDatasets();
+				datasetsLoaded = true;
+			} catch (e) {
+				datasetsError = e instanceof Error ? e.message : 'Failed to load datasets.';
+			}
+		}
+	}
+
+	async function saveTestCase() {
+		if (!addTestCaseDatasetId || !addTestCaseQuestion.trim()) return;
+		addTestCaseSaving = true;
+		addTestCaseError = null;
+		try {
+			await createDatasetItem(addTestCaseDatasetId, {
+				question: addTestCaseQuestion.trim(),
+				expected_answer: addTestCaseAnswer.trim() || null
+			});
+			addTestCaseSaved = true;
+		} catch (e) {
+			addTestCaseError = e instanceof Error ? e.message : 'Failed to save the test case.';
+		} finally {
+			addTestCaseSaving = false;
+		}
+	}
 
 	// Set once from the ?agentId=&agentVersionId=&input= query string a "Replay" link from
 	// a run's detail page ([runs]/[id]/+page.svelte's openInPlayground()) arrives with -
@@ -146,6 +214,11 @@
 		messages.push({ role: 'user', content: text });
 		input = '';
 		runState = 'streaming';
+		currentRunId = null;
+		steps = [];
+		stepsError = null;
+		lastUserInput = text;
+		showAddTestCase = false;
 
 		const assistantMessage: Message = { role: 'assistant', content: '' };
 		messages.push(assistantMessage);
@@ -157,10 +230,14 @@
 			// A fresh 5-minute runtime token per turn (PRD §4.4-B) - simpler than tracking
 			// expires_in against wall-clock time for what's normally a cheap, infrequent call.
 			const { token } = await issueRuntimeToken(selectedAgentVersionId);
+			currentRuntimeToken = token;
 			await streamPlaygroundRun(
 				token,
 				{ input: text, conversation_id: conversationId },
 				{
+					onRunStarted: (event) => {
+						currentRunId = event.run_id;
+					},
 					onToken: (event) => {
 						messages[idx] = { ...messages[idx], content: messages[idx].content + event.delta };
 					},
@@ -174,6 +251,7 @@
 							latencyMs: event.latency_ms ?? undefined,
 							costUsd: event.cost_usd ?? undefined
 						};
+						if (currentRunId) loadSteps(currentRunId);
 					},
 					onError: (event) => {
 						pendingApproval = null;
@@ -198,10 +276,15 @@
 	}
 
 	function stop() {
-		// Only cuts off the browser's own SSE read - the already-dispatched agent run keeps
-		// going server-side (same accepted limitation main_runtime.py's runPlaygroundStream
-		// documents: a real in-flight LLM call can't be meaningfully interrupted).
+		// Cuts off the browser's own SSE read immediately, AND asks ai-runtime to cancel the
+		// real in-flight run (PRD Goal #6) via the same runtime token this turn's stream used
+		// - cooperative (see cancelPlaygroundRun's docstring), not a hard interrupt, but no
+		// longer just a client-side abort that leaves the agent running server-side for
+		// nothing. Fire-and-forget: a 404 (already finished) is a safe no-op.
 		abortController?.abort();
+		if (currentRunId && currentRuntimeToken) {
+			cancelPlaygroundRun(currentRuntimeToken, currentRunId);
+		}
 		const idx = messages.length - 1;
 		if (idx >= 0 && messages[idx].role === 'assistant') {
 			messages[idx] = { ...messages[idx], content: `${messages[idx].content} [stopped]` };
@@ -221,6 +304,12 @@
 		lastResult = null;
 		runError = null;
 		pendingApproval = null;
+		currentRunId = null;
+		currentRuntimeToken = null;
+		steps = [];
+		stepsError = null;
+		lastUserInput = '';
+		showAddTestCase = false;
 	}
 </script>
 
@@ -357,29 +446,128 @@
 				<dt class="text-neutral-400">Cost</dt>
 				<dd class="text-neutral-800">{lastResult?.cost_usd !== null && lastResult?.cost_usd !== undefined ? `$${lastResult.cost_usd.toFixed(4)}` : '—'}</dd>
 			</div>
-			<div><dt class="text-neutral-400">Loops</dt><dd class="text-neutral-800">—</dd></div>
+			<div><dt class="text-neutral-400">Loops</dt><dd class="text-neutral-800">{loops || '—'}</dd></div>
 		</dl>
 
-		<ol class="mt-4 space-y-1">
-			{#each traceSteps as step (step.label)}
-				<li class="flex items-center justify-between rounded px-2 py-1 text-xs text-neutral-600">
-					<span>{step.label}</span>
-					{#if step.phase}
-						<span class="rounded border border-neutral-300 px-1 text-[10px] text-neutral-400">P{step.phase}</span>
-					{/if}
-				</li>
-			{/each}
-		</ol>
+		{#if stepsLoading}
+			<p class="mt-4 text-xs text-neutral-400">Loading trace…</p>
+		{:else if stepsError}
+			<p class="mt-4 text-xs text-danger">{stepsError}</p>
+		{:else if steps.length === 0}
+			<p class="mt-4 text-xs text-neutral-400">
+				{runState === 'streaming' ? 'Running…' : 'Send a message to see this run\'s trace.'}
+			</p>
+		{:else}
+			<ol class="mt-4 space-y-1">
+				{#each steps as step (step.id)}
+					<li class="flex items-center justify-between rounded px-2 py-1 text-xs">
+						<span
+							class="truncate {step.status === 'error' || step.status === 'block'
+								? 'text-danger'
+								: 'text-neutral-600'}"
+						>
+							{STEP_TYPE_LABELS[step.step_type]}{step.name ? ` · ${step.name}` : ''}
+						</span>
+						{#if step.latency_ms !== null}
+							<span class="shrink-0 text-neutral-400">{step.latency_ms} ms</span>
+						{/if}
+					</li>
+				{/each}
+			</ol>
+			{#if currentRunId}
+				<a href="/runs/{currentRunId}" class="mt-2 inline-block text-xs text-primary underline">
+					View full trace
+				</a>
+			{/if}
+		{/if}
 
 		<div class="mt-4 flex flex-col gap-2">
-			<button
-				type="button"
-				disabled
-				title="Phase 3 — Evaluation"
-				class="rounded-md border border-neutral-200 px-3 py-1.5 text-xs text-neutral-400"
-			>
-				+ Add as test case (phase 3)
-			</button>
+			{#if !showAddTestCase}
+				<button
+					type="button"
+					disabled={!lastResult}
+					title={lastResult ? 'Save this turn to an Evaluation dataset' : 'Send a message first'}
+					onclick={openAddTestCase}
+					class="rounded-md border border-neutral-300 px-3 py-1.5 text-xs text-neutral-700
+						hover:bg-neutral-50 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:text-neutral-400"
+				>
+					+ Add as test case
+				</button>
+			{:else}
+				<div class="flex flex-col gap-2 rounded-md border border-neutral-200 p-3">
+					<h3 class="text-xs font-semibold text-neutral-700">Add as test case</h3>
+
+					{#if datasetsError}
+						<p class="text-xs text-danger">{datasetsError}</p>
+					{:else if !datasetsLoaded}
+						<p class="text-xs text-neutral-400">Loading datasets…</p>
+					{:else if datasets.length === 0}
+						<p class="text-xs text-neutral-400">
+							No datasets yet — create one on the <a href="/datasets" class="underline">Datasets</a> page first.
+						</p>
+					{:else}
+						<label class="flex flex-col gap-1">
+							<span class="text-xs text-neutral-500">Dataset</span>
+							<select
+								bind:value={addTestCaseDatasetId}
+								class="rounded-md border border-neutral-300 px-2 py-1 text-xs
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							>
+								<option value="" disabled>Select a dataset</option>
+								{#each datasets as dataset (dataset.id)}
+									<option value={dataset.id}>{dataset.name}</option>
+								{/each}
+							</select>
+						</label>
+						<label class="flex flex-col gap-1">
+							<span class="text-xs text-neutral-500">Question</span>
+							<textarea
+								bind:value={addTestCaseQuestion}
+								rows="2"
+								class="w-full resize-none rounded-md border border-neutral-300 px-2 py-1 text-xs
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							></textarea>
+						</label>
+						<label class="flex flex-col gap-1">
+							<span class="text-xs text-neutral-500">Expected answer (optional - edit before saving)</span>
+							<textarea
+								bind:value={addTestCaseAnswer}
+								rows="3"
+								class="w-full resize-none rounded-md border border-neutral-300 px-2 py-1 text-xs
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							></textarea>
+						</label>
+					{/if}
+
+					{#if addTestCaseError}
+						<p class="text-xs text-danger">{addTestCaseError}</p>
+					{/if}
+					{#if addTestCaseSaved}
+						<p class="text-xs text-success" role="status">Saved.</p>
+					{/if}
+
+					<div class="flex justify-end gap-2">
+						<button
+							type="button"
+							onclick={() => (showAddTestCase = false)}
+							class="rounded-md border border-neutral-300 px-3 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
+						>
+							{addTestCaseSaved ? 'Close' : 'Cancel'}
+						</button>
+						{#if !addTestCaseSaved}
+							<button
+								type="button"
+								disabled={addTestCaseSaving || !addTestCaseDatasetId || !addTestCaseQuestion.trim()}
+								onclick={saveTestCase}
+								class="rounded-md bg-primary px-3 py-1 text-xs font-medium text-white shadow-sm
+									hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								{addTestCaseSaving ? 'Saving…' : 'Save'}
+							</button>
+						{/if}
+					</div>
+				</div>
+			{/if}
 		</div>
 	</aside>
 </div>
