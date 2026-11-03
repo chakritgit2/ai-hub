@@ -641,18 +641,26 @@ export type RunSource = 'playground' | 'api' | 'eval';
 export interface Run {
 	id: string;
 	company_id: string;
-	agent_version_id: string;
+	agent_version_id: string | null;
+	// Resolved from workflow_version_id server-side - null for every agent run, the way
+	// agent_name/model are null for every workflow run.
+	workflow_version_id?: string | null;
+	workflow_name?: string | null;
 	deployment_id?: string | null;
 	conversation_id?: string | null;
 	source: RunSource;
 	status: RunStatus;
-	agent_name: string;
-	model: string;
-	tokens_in: number;
-	tokens_out: number;
+	agent_name: string | null;
+	model: string | null;
+	tokens_in: number | null;
+	tokens_out: number | null;
 	cost_usd: number | null;
-	latency_ms: number;
+	guardrail_cost_usd?: number | null;
+	latency_ms: number | null;
 	trace_id: string;
+	// Technical failure detail (e.g. a provider exception string) - never the run's raw
+	// input/output, which stay deliberately inaccessible outside Replay (PRD PII concern).
+	error?: string | null;
 	created_at: string;
 }
 
@@ -660,6 +668,14 @@ export interface RunReplay {
 	input: string | null;
 	agent_id: string;
 	agent_version_id: string;
+}
+
+// POST /runs/{id}/content - read-only counterpart to RunReplay, for viewing a run's raw
+// input/output on the Run detail page. Same write-role (admin/developer) requirement and
+// PII reasoning - see RunsController::getRunContent's docblock.
+export interface RunContent {
+	input: string | null;
+	output: string | null;
 }
 
 export type RunStepType = 'guardrail_input' | 'llm' | 'tool_call' | 'guardrail_output';

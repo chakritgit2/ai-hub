@@ -2,9 +2,16 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getRun, getRunConversation, listRunGuardrailEvents, listRunSteps, replayRun } from '$lib/api/console';
+	import {
+		getRun,
+		getRunContent,
+		getRunConversation,
+		listRunGuardrailEvents,
+		listRunSteps,
+		replayRun
+	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
-	import type { GuardrailEvent, Run, RunConversation, RunStep } from '$lib/api/types';
+	import type { GuardrailEvent, Run, RunContent, RunConversation, RunStep } from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 
@@ -24,6 +31,34 @@
 			!!run.agent_version_id &&
 			['admin', 'developer'].includes(roleForCompany($currentUser, run.company_id) ?? '')
 	);
+	// Same write-role boundary as canReplay, but without the agent_version_id requirement -
+	// getRunContent() (unlike replayRun()) works for workflow runs too, since viewing
+	// content has nothing to do with Playground's agent-only replay.
+	let canViewContent = $derived(
+		run !== null && ['admin', 'developer'].includes(roleForCompany($currentUser, run.company_id) ?? '')
+	);
+	let content = $state<RunContent | null>(null);
+	let contentLoading = $state(false);
+	let contentError = $state<string | null>(null);
+
+	async function loadContent() {
+		if (!run || contentLoading) return;
+		contentLoading = true;
+		contentError = null;
+		try {
+			content = await getRunContent(run.id);
+		} catch (e) {
+			contentError =
+				e instanceof ApiError && e.status === 403
+					? 'Viewing run content needs the admin or developer role.'
+					: e instanceof Error
+						? e.message
+						: 'Failed to load this run\'s content.';
+		} finally {
+			contentLoading = false;
+		}
+	}
+
 	let steps = $state<RunStep[]>([]);
 	let stepsError = $state<string | null>(null);
 	let conversation = $state<RunConversation | null>(null);
@@ -146,9 +181,21 @@
 	{#if run.status === 'error' || run.status === 'blocked'}
 		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-4 text-sm text-danger">
 			<p class="font-medium">This run ended in {run.status}</p>
-			<p class="mt-1 text-neutral-700">
-				Typical sequence per PRD §6.1: provider 429 → 2 retries → fallback model → 120s timeout.
-			</p>
+			{#if run.status === 'blocked'}
+				<p class="mt-1 text-neutral-700">
+					The input was blocked by a guardrail before reaching the model - see the
+					<button type="button" class="underline" onclick={() => (activeTab = 'guardrail')}>
+						Guardrail events
+					</button> tab for which check and why.
+				</p>
+			{:else if run.error}
+				<p class="mt-1 whitespace-pre-wrap font-mono text-xs text-neutral-700">{run.error}</p>
+			{:else}
+				<p class="mt-1 text-neutral-700">
+					No error detail was recorded for this run (older run, or a crash before logging ran).
+					Typical sequence per PRD §6.1: provider 429 → 2 retries → fallback model → 120s timeout.
+				</p>
+			{/if}
 		</div>
 	{/if}
 
@@ -156,7 +203,17 @@
 		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{replayError}</div>
 	{/if}
 
-	<div class="mb-4 flex justify-end">
+	<div class="mb-4 flex justify-end gap-2">
+		<button
+			type="button"
+			disabled={!canViewContent || contentLoading || content !== null}
+			title={!canViewContent ? 'Viewing run content needs the admin or developer role.' : undefined}
+			onclick={loadContent}
+			class="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50
+				disabled:cursor-not-allowed disabled:opacity-50"
+		>
+			{contentLoading ? 'Loading…' : content !== null ? 'Input/output shown below' : 'Show input/output'}
+		</button>
 		<button
 			type="button"
 			disabled={!canReplay || replaying}
@@ -173,14 +230,46 @@
 		</button>
 	</div>
 
+	{#if contentError}
+		<div class="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{contentError}</div>
+	{/if}
+
+	{#if content}
+		<div class="mb-6 grid grid-cols-1 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-2">
+			<div>
+				<dt class="text-xs font-medium text-neutral-400">Input</dt>
+				<dd class="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 font-mono text-xs text-neutral-800">
+					{content.input ?? '—'}
+				</dd>
+			</div>
+			<div>
+				<dt class="text-xs font-medium text-neutral-400">Output</dt>
+				<dd class="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 font-mono text-xs text-neutral-800">
+					{content.output ?? '—'}
+				</dd>
+			</div>
+		</div>
+	{/if}
+
 	<dl class="mb-6 grid grid-cols-2 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-4">
-		<div><dt class="text-xs text-neutral-400">Agent</dt><dd class="text-sm text-neutral-800">{run.agent_name}</dd></div>
-		<div><dt class="text-xs text-neutral-400">Model</dt><dd class="text-sm text-neutral-800">{run.model}</dd></div>
+		<div>
+			<dt class="text-xs text-neutral-400">{run.workflow_version_id ? 'Workflow' : 'Agent'}</dt>
+			<dd class="text-sm text-neutral-800">{run.agent_name ?? run.workflow_name ?? '—'}</dd>
+		</div>
+		<div><dt class="text-xs text-neutral-400">Model</dt><dd class="text-sm text-neutral-800">{run.model ?? '—'}</dd></div>
 		<div><dt class="text-xs text-neutral-400">Source</dt><dd class="text-sm text-neutral-800">{run.source}</dd></div>
 		<div><dt class="text-xs text-neutral-400">Trace ID</dt><dd class="font-mono text-sm text-neutral-800">{run.trace_id}</dd></div>
-		<div><dt class="text-xs text-neutral-400">Latency</dt><dd class="text-sm text-neutral-800">{run.latency_ms} ms</dd></div>
-		<div><dt class="text-xs text-neutral-400">Tokens in/out</dt><dd class="text-sm text-neutral-800">{run.tokens_in}/{run.tokens_out}</dd></div>
-		<div><dt class="text-xs text-neutral-400">Cost</dt><dd class="text-sm text-neutral-800">{run.cost_usd !== null ? `$${run.cost_usd.toFixed(4)}` : '—'}</dd></div>
+		<div><dt class="text-xs text-neutral-400">Latency</dt><dd class="text-sm text-neutral-800">{run.latency_ms !== null ? `${run.latency_ms} ms` : '—'}</dd></div>
+		<div><dt class="text-xs text-neutral-400">Tokens in/out</dt><dd class="text-sm text-neutral-800">{run.tokens_in ?? '—'}/{run.tokens_out ?? '—'}</dd></div>
+		<div>
+			<dt class="text-xs text-neutral-400">Cost</dt>
+			<dd class="text-sm text-neutral-800">
+				{run.cost_usd !== null ? `$${run.cost_usd.toFixed(4)}` : '—'}
+				{#if run.guardrail_cost_usd}
+					<span class="text-xs text-neutral-400">(+${run.guardrail_cost_usd.toFixed(4)} guardrail)</span>
+				{/if}
+			</dd>
+		</div>
 		<div><dt class="text-xs text-neutral-400">Conversation</dt><dd class="font-mono text-sm text-neutral-800">{run.conversation_id ?? '—'}</dd></div>
 	</dl>
 

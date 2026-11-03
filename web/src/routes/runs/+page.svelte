@@ -66,7 +66,7 @@
 			if (sourceFilter && r.source !== sourceFilter) return false;
 			const q = search.trim().toLowerCase();
 			if (!q) return true;
-			return [r.id, r.trace_id, r.conversation_id, r.agent_name].some((v) =>
+			return [r.id, r.trace_id, r.conversation_id, r.agent_name, r.workflow_name].some((v) =>
 				v?.toLowerCase().includes(q)
 			);
 		})
@@ -174,15 +174,22 @@
 								</span>
 							{/if}
 						</td>
-						<td class="px-4 py-2 text-neutral-700">{run.agent_name}</td>
+						<td class="px-4 py-2 text-neutral-700">
+							{run.agent_name ?? run.workflow_name ?? '—'}
+							{#if run.workflow_version_id}
+								<span class="ml-1 rounded-full border border-neutral-300 px-1.5 py-0.5 text-[10px] text-neutral-500">
+									workflow
+								</span>
+							{/if}
+						</td>
 						<td class="px-4 py-2 text-neutral-600">{run.source}</td>
 						<td class="px-4 py-2">
 							<span class="rounded-full px-2 py-0.5 text-xs font-medium {statusStyles[run.status] ?? 'bg-neutral-100 text-neutral-600'}">
 								{run.status}
 							</span>
 						</td>
-						<td class="px-4 py-2 text-neutral-600">{run.latency_ms} ms</td>
-						<td class="px-4 py-2 text-neutral-600">{run.tokens_in}/{run.tokens_out}</td>
+						<td class="px-4 py-2 text-neutral-600">{run.latency_ms !== null ? `${run.latency_ms} ms` : '—'}</td>
+						<td class="px-4 py-2 text-neutral-600">{run.tokens_in ?? '—'}/{run.tokens_out ?? '—'}</td>
 						<td class="px-4 py-2 text-neutral-600">{run.cost_usd !== null ? `$${run.cost_usd.toFixed(4)}` : '—'}</td>
 					</tr>
 				{/each}

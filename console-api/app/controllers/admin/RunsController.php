@@ -18,10 +18,24 @@ class RunsController extends ControllerBase
 {
     // Every logs.runs query in this controller aliases the table `r` and uses this exact
     // column list (qualified, since listRuns' agent_id filter joins console.agent_versions,
-    // which also has id/company_id columns - ambiguous otherwise).
-    private const RUN_COLUMNS = 'r.id, r.company_id, r.agent_version_id, r.deployment_id, r.conversation_id,
-                                  r.source, r.status, r.agent_name, r.model, r.tokens_in, r.tokens_out,
-                                  r.cost_usd, r.latency_ms, r.trace_id, r.created_at';
+    // which also has id/company_id columns - ambiguous otherwise). `error` and
+    // `guardrail_cost_usd` are plain technical/billing detail (provider exception text,
+    // a cost figure) - unlike raw `input`/`output` (may hold customer PII, see
+    // replayRun()'s docblock for why those two alone stay gated), nothing here is more
+    // sensitive than what formatRunStep() below already exposes to any member.
+    // `workflow_name` comes from RUN_FROM's LEFT JOINs, not logs.runs itself - null for
+    // every agent run (workflow_version_id is null), same as agent_name/model are null
+    // for every workflow run today.
+    private const RUN_COLUMNS = 'r.id, r.company_id, r.agent_version_id, r.workflow_version_id, r.deployment_id,
+                                  r.conversation_id, r.source, r.status, r.agent_name, r.model, r.tokens_in,
+                                  r.tokens_out, r.cost_usd, r.guardrail_cost_usd, r.latency_ms, r.trace_id, r.error,
+                                  r.created_at, w.name AS workflow_name';
+
+    // LEFT (not INNER) since workflow_version_id is null for every agent run - those rows
+    // must still come back, just with workflow_name null.
+    private const RUN_FROM = 'FROM logs.runs r
+                               LEFT JOIN console.workflow_versions wv ON wv.id = r.workflow_version_id
+                               LEFT JOIN console.workflows w ON w.id = wv.workflow_id';
 
     /**
      * Ninth menu in the "each menu shows only its own tenant's data" pilot (option A, see
@@ -36,7 +50,7 @@ class RunsController extends ControllerBase
     {
         [$joins, $where, $params] = $this->buildRunFilters();
         $query = fn ($db) => $db->fetchAll(
-            'SELECT ' . self::RUN_COLUMNS . " FROM logs.runs r {$joins} {$where} ORDER BY r.created_at DESC",
+            'SELECT ' . self::RUN_COLUMNS . ' ' . self::RUN_FROM . " {$joins} {$where} ORDER BY r.created_at DESC",
             Enum::FETCH_ASSOC,
             $params
         );
@@ -117,12 +131,13 @@ class RunsController extends ControllerBase
     /**
      * Returns this run's raw `input` plus the agent/version it ran against, so the console
      * can pre-fill a Playground session for a human to review, edit and resend ("Replay").
-     * Every other endpoint in this controller deliberately omits `input`/`output` from
-     * RUN_COLUMNS - this is the one place raw run content (which may hold a customer's PII)
-     * becomes visible, so it's gated by requireWriteRole() rather than requireMembership()
-     * (same write-role boundary PRD §7.2 draws everywhere else: viewer is read-only). POST
-     * (not GET) so AuditMiddleware's existing "one row per successful mutating request"
-     * logging records who replayed which run and when, with no new audit-log code needed.
+     * RUN_COLUMNS (used by every other endpoint in this controller) deliberately omits
+     * `input`/`output` - this and getRunContent() below are the only two places raw run
+     * content (which may hold a customer's PII) becomes visible, so both are gated by
+     * requireWriteRole() rather than requireMembership() (same write-role boundary PRD
+     * §7.2 draws everywhere else: viewer is read-only). POST (not GET) so AuditMiddleware's
+     * existing "one row per successful mutating request" logging records who replayed
+     * which run and when, with no new audit-log code needed.
      */
     public function replayRun(string $id): Response
     {
@@ -159,6 +174,40 @@ class RunsController extends ControllerBase
             'agent_id' => $agentId,
             'agent_version_id' => $row['agent_version_id'],
         ]);
+    }
+
+    /**
+     * Read-only counterpart to replayRun() above, for viewing a run's raw input/output
+     * directly on the Run detail page instead of having to leave for Playground just to
+     * see what was asked/answered - same requireWriteRole() PII boundary and same POST
+     * (not GET) choice, for the same AuditMiddleware audit-trail reason, as replayRun()'s
+     * own docblock explains. Works for workflow runs too (replayRun() doesn't - Playground
+     * has no workflow-replay path), since viewing content has nothing to do with Playground.
+     */
+    public function getRunContent(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireWriteRole()) !== null) {
+            return $error;
+        }
+        if (!$this->isUuid($id)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $row = $this->runInCompanyTransaction(
+            static fn ($db) => $db->fetchOne(
+                'SELECT input, output FROM logs.runs WHERE id = :id',
+                Enum::FETCH_ASSOC,
+                ['id' => $id]
+            )
+        );
+        if (empty($row)) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        return $this->jsonResponse(['input' => $row['input'], 'output' => $row['output']]);
     }
 
     /**
@@ -274,7 +323,7 @@ class RunsController extends ControllerBase
 
         $row = $this->runInCompanyTransaction(
             fn ($db) => $db->fetchOne(
-                'SELECT ' . self::RUN_COLUMNS . ' FROM logs.runs r WHERE r.id = :id',
+                'SELECT ' . self::RUN_COLUMNS . ' ' . self::RUN_FROM . ' WHERE r.id = :id',
                 Enum::FETCH_ASSOC,
                 ['id' => $id]
             )
@@ -293,6 +342,8 @@ class RunsController extends ControllerBase
             'id' => $row['id'],
             'company_id' => $row['company_id'],
             'agent_version_id' => $row['agent_version_id'],
+            'workflow_version_id' => $row['workflow_version_id'],
+            'workflow_name' => $row['workflow_name'],
             'deployment_id' => $row['deployment_id'],
             'conversation_id' => $row['conversation_id'],
             'source' => $row['source'],
@@ -302,8 +353,10 @@ class RunsController extends ControllerBase
             'tokens_in' => $row['tokens_in'] !== null ? (int) $row['tokens_in'] : null,
             'tokens_out' => $row['tokens_out'] !== null ? (int) $row['tokens_out'] : null,
             'cost_usd' => $row['cost_usd'] !== null ? (float) $row['cost_usd'] : null,
+            'guardrail_cost_usd' => $row['guardrail_cost_usd'] !== null ? (float) $row['guardrail_cost_usd'] : null,
             'latency_ms' => $row['latency_ms'] !== null ? (int) $row['latency_ms'] : null,
             'trace_id' => $row['trace_id'],
+            'error' => $row['error'],
             'created_at' => $row['created_at'],
         ];
     }

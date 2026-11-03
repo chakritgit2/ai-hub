@@ -530,18 +530,22 @@ components:
       properties:
         id: { type: string }
         company_id: { type: string }
-        agent_version_id: { type: string }
+        agent_version_id: { type: string, nullable: true }
+        workflow_version_id: { type: string, nullable: true }
+        workflow_name: { type: string, nullable: true, description: 'Resolved from workflow_version_id - null for every agent run.' }
         deployment_id: { type: string, nullable: true }
         conversation_id: { type: string, nullable: true }
         source: { type: string, enum: [playground, api, eval] }
         status: { type: string, enum: [success, error, blocked, interrupted, truncated, cancelled] }
-        agent_name: { type: string }
-        model: { type: string }
-        tokens_in: { type: integer }
-        tokens_out: { type: integer }
-        cost_usd: { type: number }
-        latency_ms: { type: integer }
+        agent_name: { type: string, nullable: true, description: 'Null for every workflow run.' }
+        model: { type: string, nullable: true, description: 'Null for every workflow run.' }
+        tokens_in: { type: integer, nullable: true }
+        tokens_out: { type: integer, nullable: true }
+        cost_usd: { type: number, nullable: true }
+        guardrail_cost_usd: { type: number, nullable: true }
+        latency_ms: { type: integer, nullable: true }
         trace_id: { type: string }
+        error: { type: string, nullable: true, description: 'Technical failure detail (e.g. a provider exception) - never the run''s raw input/output.' }
         created_at: { type: string, format: date-time }
     DashboardSummary:
       type: object
@@ -602,6 +606,11 @@ components:
         input: { type: string, nullable: true }
         agent_id: { type: string }
         agent_version_id: { type: string }
+    RunContent:
+      type: object
+      properties:
+        input: { type: string, nullable: true }
+        output: { type: string, nullable: true }
     EgressAllowlistEntry:
       type: object
       properties:
@@ -1124,6 +1133,20 @@ paths:
         "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunReplay' } } } }
         "403": { description: viewer role cannot replay a run }
         "404": { description: 'not found, or a workflow run (no single agent_version_id to replay)' }
+  /runs/{id}/content:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    post:
+      operationId: getRunContent
+      summary: >-
+        Read-only counterpart to replayRun - this run's raw input/output, for viewing on
+        the Run detail page without leaving for Playground. Same write-role requirement
+        and PII reasoning as replayRun; unlike it, works for workflow runs too.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunContent' } } } }
+        "403": { description: viewer role cannot view a run's content }
+        "404": { description: not found }
 
   /dashboard:
     get:

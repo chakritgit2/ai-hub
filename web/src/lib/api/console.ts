@@ -39,6 +39,7 @@ import type {
 	Me,
 	ModelPricing,
 	Run,
+	RunContent,
 	RunConversation,
 	RunReplay,
 	RuntimeTokenResponse,
@@ -319,6 +320,10 @@ export function listRunSteps(id: string): Promise<RunStep[]> {
 
 export function replayRun(id: string): Promise<RunReplay> {
 	return apiFetch<RunReplay>(`/runs/${id}/replay`, { method: 'POST' });
+}
+
+export function getRunContent(id: string): Promise<RunContent> {
+	return apiFetch<RunContent>(`/runs/${id}/content`, { method: 'POST' });
 }
 
 // ---- /dashboard ---------------------------------------------------------
@@ -791,6 +796,7 @@ export type {
 	Me,
 	ModelPricing,
 	Run,
+	RunContent,
 	RunConversation,
 	RunReplay,
 	RuntimeTokenResponse,
