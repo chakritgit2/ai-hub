@@ -261,6 +261,14 @@ components:
         context: { type: string, nullable: true }
         tags: { type: array, items: { type: string } }
         created_at: { type: string, format: date-time }
+    DatasetItemInput:
+      type: object
+      required: [question]
+      properties:
+        question: { type: string }
+        expected_answer: { type: string, nullable: true }
+        context: { type: string, nullable: true }
+        tags: { type: array, items: { type: string } }
     DatasetImportResult:
       type: object
       properties:
@@ -1215,6 +1223,14 @@ paths:
     get:
       operationId: listDatasetItems
       responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/DatasetItem' } } } } } }
+    post:
+      operationId: createDatasetItem
+      summary: >-
+        Adds a single dataset_items row (PRD §6.7: "add items from Playground/Runs") -
+        the one-at-a-time counterpart to the bulk CSV/JSON importDatasetItems below.
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/DatasetItemInput' } } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/DatasetItem' } } } }
   /datasets/{id}/import:
     parameters:
       - { $ref: '#/components/parameters/XCompanyId' }

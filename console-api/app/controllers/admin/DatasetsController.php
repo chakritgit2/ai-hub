@@ -217,6 +217,53 @@ class DatasetsController extends ControllerBase
         return $this->jsonResponse(array_map([$this, 'formatDatasetItem'], $rows));
     }
 
+    /**
+     * POST /datasets/{id}/items - one-at-a-time counterpart to importDatasetItems below
+     * (PRD §6.7: "add items from Playground/Runs"). Reuses the same
+     * validateDatasetItemRow() the bulk CSV/JSON import uses, so a single item and an
+     * imported row are validated identically.
+     */
+    public function createDatasetItem(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireWriteRole()) !== null) {
+            return $error;
+        }
+
+        $existing = $this->findDataset($id);
+        if ($existing === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $body = $this->request->getJsonRawBody(true) ?? [];
+        [$item, $rowError] = $this->validateDatasetItemRow($body);
+        if ($rowError !== null) {
+            return $this->jsonResponse(['error' => $rowError], 422);
+        }
+
+        $row = $this->runInCompanyTransaction(
+            fn ($db) => $db->fetchOne(
+                'INSERT INTO console.dataset_items
+                    (company_id, dataset_id, question, expected_answer, context, tags)
+                 VALUES (:company_id, :dataset_id, :question, :expected_answer, :context, :tags::jsonb)
+                 RETURNING id, question, expected_answer, context, tags, created_at',
+                Enum::FETCH_ASSOC,
+                [
+                    'company_id' => $this->getCompanyId(),
+                    'dataset_id' => $id,
+                    'question' => $item['question'],
+                    'expected_answer' => $item['expected_answer'],
+                    'context' => $item['context'],
+                    'tags' => json_encode($item['tags']),
+                ]
+            )
+        );
+
+        return $this->jsonResponse($this->formatDatasetItem($row), 201);
+    }
+
     public function importDatasetItems(string $id): Response
     {
         if (($error = $this->requireCompanyId()) !== null) {

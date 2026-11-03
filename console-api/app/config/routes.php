@@ -114,6 +114,7 @@ return function (Router $router): void {
     $admin('PATCH', '/datasets/{id:[^/]+}', 'Datasets', 'updateDataset');
     $admin('DELETE', '/datasets/{id:[^/]+}', 'Datasets', 'deleteDataset');
     $admin('GET', '/datasets/{id:[^/]+}/items', 'Datasets', 'listDatasetItems');
+    $admin('POST', '/datasets/{id:[^/]+}/items', 'Datasets', 'createDatasetItem');
     $admin('POST', '/datasets/{id:[^/]+}/import', 'Datasets', 'importDatasetItems');
 
     // --- /evals (estimateEvalCost/createEvalRun/listEvalRuns/getEvalRun/
