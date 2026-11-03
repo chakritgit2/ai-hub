@@ -1,0 +1,91 @@
+# Single-instance Prometheus scraping ai-gateway/ai-runtime's /metrics (app/core/metrics.py,
+# PRD §6.8/§7.1 — cluster-internal only, never exposed via ingress). Static scrape targets
+# by Service DNS name: only two known targets, so this skips kubernetes_sd_configs (which
+# would need its own RBAC ClusterRole this session's read-only kubeconfig can't grant
+# anyway — see deploy/k8s/HANDOFF.md for the general RBAC situation in this namespace).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: ai-hub-advws
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+
+    scrape_configs:
+      - job_name: ai-gateway
+        static_configs:
+          - targets: ["ai-gateway:8080"]
+      - job_name: ai-runtime
+        static_configs:
+          - targets: ["ai-runtime:8080"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: ai-hub-advws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      # Prometheus's image runs as uid/gid 65534 ("nobody") by default; the PVC's volume
+      # is otherwise mounted root-owned and the container can't write /prometheus.
+      securityContext:
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.5.5
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=15d
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: storage
+              mountPath: /prometheus
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: storage
+          persistentVolumeClaim:
+            claimName: prometheus-storage
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-storage
+  namespace: ai-hub-advws
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: ai-hub-advws
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090

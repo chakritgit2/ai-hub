@@ -1,0 +1,216 @@
+# Grafana, provisioned with Prometheus (app/core/metrics.py's runs_total/run_latency_ms/
+# run_tokens_total/run_cost_usd_total) and Tempo (ai/app/core/otel.py's OpenLIT traces) as
+# datasources, plus one starter dashboard. NodePort, same pattern as web-deployment.yaml's
+# dynamiq-web-nodeport — reachable from the office LAN without needing public ingress/TLS.
+#
+# GF_SECURITY_ADMIN_PASSWORD comes from a Secret this file does NOT create (same
+# TODO-generate-then-create-for-real convention as secrets.example.yaml) — create it once
+# before applying this file:
+#   kubectl -n ai-hub-advws create secret generic grafana-admin-credentials \
+#     --from-literal=admin_password="$(openssl rand -base64 24)"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: ai-hub-advws
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: ai-hub-advws
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: dynamiq
+        folder: Dynamiq
+        type: file
+        options:
+          path: /etc/grafana/provisioning/dashboards/json
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-json
+  namespace: ai-hub-advws
+data:
+  runs-overview.json: |
+    {
+      "title": "Dynamiq Runs Overview",
+      "uid": "dynamiq-runs-overview",
+      "schemaVersion": 39,
+      "timezone": "browser",
+      "time": { "from": "now-6h", "to": "now" },
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Runs per minute by status",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum(rate(runs_total[5m])) by (status)",
+              "legendFormat": "{{status}}",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Run latency (ms) — p50/p95/p99",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(run_latency_ms_bucket[5m])) by (le))",
+              "legendFormat": "p50",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(run_latency_ms_bucket[5m])) by (le))",
+              "legendFormat": "p95",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(run_latency_ms_bucket[5m])) by (le))",
+              "legendFormat": "p99",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Token throughput (tokens/sec) by direction",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum(rate(run_tokens_total[5m])) by (direction)",
+              "legendFormat": "{{direction}}",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Cost (USD/hour)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum(rate(run_cost_usd_total[5m])) * 3600",
+              "legendFormat": "cost/hour",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            }
+          ]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: ai-hub-advws
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      # Grafana's image runs as uid/gid 472 by default; the PVC's volume is otherwise
+      # mounted root-owned and the container can't write /var/lib/grafana.
+      securityContext:
+        fsGroup: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana:12.4.4
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin-credentials
+                  key: admin_password
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboard-json
+              mountPath: /etc/grafana/provisioning/dashboards/json
+            - name: storage
+              mountPath: /var/lib/grafana
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboard-json
+          configMap:
+            name: grafana-dashboard-json
+        - name: storage
+          persistentVolumeClaim:
+            claimName: grafana-storage
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-storage
+  namespace: ai-hub-advws
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamiq-grafana-nodeport
+  namespace: ai-hub-advws
+spec:
+  type: NodePort
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 31400 # fixed port on the node (30000-32767); change if it collides
