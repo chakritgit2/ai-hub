@@ -463,6 +463,10 @@ export interface MemorySpec {
 	enabled: boolean;
 	message_limit?: number | null;
 	save_mode?: MemorySaveMode;
+	// Counts whole conversation turns, never a partial one - takes priority over
+	// message_limit entirely when set (see ai/app/services/turn_aware_memory.py's module
+	// docstring). null (the default) leaves message_limit in sole control, unchanged.
+	turn_limit?: number | null;
 }
 
 // Mirrors ai/app/services/agent_spec.py's PublishGateSpec (PRD §6.7) - opt-in per

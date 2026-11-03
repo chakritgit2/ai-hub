@@ -543,6 +543,7 @@ async def _execute_agent_run_body(
             conversation_id,
             message_limit=memory_spec.message_limit,
             save_mode=memory_spec.save_mode,
+            turn_limit=memory_spec.turn_limit,
         )
 
     skill_registry = None

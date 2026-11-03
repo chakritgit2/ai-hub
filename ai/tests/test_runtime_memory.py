@@ -86,3 +86,55 @@ async def test_memory_overrides_reach_the_built_agent(
     assert memory is not None
     assert memory.message_limit == 7
     assert memory.save_mode == MemorySaveMode.INPUT_OUTPUT
+
+
+@requires_postgres
+async def test_turn_limit_reaches_the_built_agent_as_turn_aware_memory(
+    monkeypatch, company_ids, resolvable_agent_version
+) -> None:
+    """turn_limit (PRD §6.2 "Turn limit") takes priority over message_limit entirely -
+    get_memory builds a TurnAwareMemory instead of a plain Memory whenever it's set (see
+    turn_aware_memory.py's module docstring for why the two aren't combined)."""
+    captured = _capture_memory(monkeypatch)
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(
+        company_id, memory={"enabled": True, "message_limit": 7, "turn_limit": 3}
+    )
+
+    await run_playground_agent(
+        "hi",
+        agent_version_id=version_id,
+        role="developer",
+        company_id=company_id,
+        identity_sub="runtime-user-1",
+        external_user_id="ext-3",
+    )
+
+    memory = captured["memory"]
+    assert memory is not None
+    assert type(memory).__name__ == "TurnAwareMemory"
+    assert memory.turn_limit == 3
+
+
+@requires_postgres
+async def test_turn_limit_unset_keeps_plain_memory(
+    monkeypatch, company_ids, resolvable_agent_version
+) -> None:
+    """Every agent that never touches the new field is completely unaffected - still gets
+    the plain Memory class, not TurnAwareMemory."""
+    captured = _capture_memory(monkeypatch)
+    company_id = company_ids()
+    version_id = await resolvable_agent_version(company_id, memory={"enabled": True, "message_limit": 7})
+
+    await run_playground_agent(
+        "hi",
+        agent_version_id=version_id,
+        role="developer",
+        company_id=company_id,
+        identity_sub="runtime-user-1",
+        external_user_id="ext-4",
+    )
+
+    memory = captured["memory"]
+    assert memory is not None
+    assert type(memory).__name__ == "Memory"

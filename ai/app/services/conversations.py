@@ -100,16 +100,32 @@ def _get_backend() -> "PostgresMemoryBackend":
     return _backend
 
 
-def get_memory(message_limit: int | None = None, save_mode: str = "full") -> "Memory":
+def get_memory(
+    message_limit: int | None = None, save_mode: str = "full", turn_limit: int | None = None
+) -> "Memory":
     """Builds a `Memory` wrapper around the shared backend connection (`_get_backend()`).
 
     Unlike the backend, `Memory` itself holds no connection of its own - it's a plain
     pydantic object - so a fresh one is built per call with the calling agent's own
-    `message_limit`/`save_mode` (PRD §6.2's Memory tab) rather than reusing a single
-    hardcoded-default instance. Called with no arguments, behavior is unchanged from
-    before per-agent configuration existed.
+    `message_limit`/`save_mode`/`turn_limit` (PRD §6.2's Memory tab) rather than reusing a
+    single hardcoded-default instance. Called with no arguments, behavior is unchanged
+    from before per-agent configuration existed.
+
+    `turn_limit`, when set, takes priority over `message_limit` entirely - builds a
+    `TurnAwareMemory` instead of a plain `Memory`, and `message_limit` is simply not
+    passed to it (see `TurnAwareMemory`'s module docstring for why the two aren't
+    combined). `message_limit` keeps its old raw-message-count behavior whenever
+    `turn_limit` is left unset, so every agent that never touches the new field is
+    completely unaffected.
     """
-    from dynamiq.memory.memory import Memory, MemorySaveMode
+    from dynamiq.memory.memory import MemorySaveMode
+
+    if turn_limit is not None:
+        from app.services.turn_aware_memory import TurnAwareMemory
+
+        return TurnAwareMemory(backend=_get_backend(), save_mode=MemorySaveMode(save_mode), turn_limit=turn_limit)
+
+    from dynamiq.memory.memory import Memory
 
     kwargs: dict = {"backend": _get_backend(), "save_mode": MemorySaveMode(save_mode)}
     if message_limit is not None:
@@ -125,6 +141,7 @@ async def get_or_create_conversation(
     source: str = "playground",
     message_limit: int | None = None,
     save_mode: str = "full",
+    turn_limit: int | None = None,
 ) -> tuple[str, "Memory", str]:
     """Resolve a conversation and its Dynamiq memory scoping key.
 
@@ -132,9 +149,9 @@ async def get_or_create_conversation(
     `memory=memory` into `Agent(...)` and `user_id=user_id,
     session_id=conversation_id` into `agent.run(input_data={...})`.
 
-    `message_limit`/`save_mode` come from the calling agent's own `MemorySpec`
-    (PRD §6.2) and are forwarded as-is to `get_memory()` - this function doesn't
-    interpret them, just threads them through.
+    `message_limit`/`save_mode`/`turn_limit` come from the calling agent's own
+    `MemorySpec` (PRD §6.2) and are forwarded as-is to `get_memory()` - this function
+    doesn't interpret them, just threads them through.
 
     - `external_user_id` is hashed (`app/core/hashing.py`) and combined with
       `company_id` into `user_id` - never stored or used raw, and never able
@@ -185,7 +202,7 @@ async def get_or_create_conversation(
                 )
             )
 
-    memory = await asyncio.to_thread(get_memory, message_limit, save_mode)
+    memory = await asyncio.to_thread(get_memory, message_limit, save_mode, turn_limit)
     return str(resolved_id), memory, user_id
 
 

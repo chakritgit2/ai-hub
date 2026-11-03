@@ -373,16 +373,18 @@
 		enabled: boolean;
 		message_limit: string | number | null;
 		save_mode: MemorySaveMode;
+		turn_limit: string | number | null;
 	};
 
-	/** Mirrors ai/app/services/agent_spec.py's MemorySpec validation (message_limit must be a
-	 * positive int) - same "return the error message, or the built value" shape as
-	 * buildModelSpec/buildGuardrailsSpec. Validation is skipped while memory is disabled, since
-	 * the message_limit input is only rendered (and so only fixable) while `memory.enabled` is
-	 * true - a stale invalid value left over from before the user unchecked it must not block
-	 * saving a spec that has memory off. That's validation only, not a reset: the value itself
-	 * is still carried through unchanged (same as save_mode below) so re-enabling memory later
-	 * doesn't silently lose a previously-configured limit. */
+	/** Mirrors ai/app/services/agent_spec.py's MemorySpec validation (message_limit/
+	 * turn_limit must each be a positive int when set) - same "return the error message, or
+	 * the built value" shape as buildModelSpec/buildGuardrailsSpec. Validation is skipped
+	 * while memory is disabled, since the inputs are only rendered (and so only fixable)
+	 * while `memory.enabled` is true - a stale invalid value left over from before the user
+	 * unchecked it must not block saving a spec that has memory off. That's validation only,
+	 * not a reset: the value itself is still carried through unchanged (same as save_mode
+	 * below) so re-enabling memory later doesn't silently lose a previously-configured
+	 * limit. */
 	export function buildMemorySpec(): MemorySpec | string {
 		if (
 			memory.enabled &&
@@ -391,10 +393,18 @@
 		) {
 			return 'Memory: message limit must be a whole number greater than 0.';
 		}
+		if (
+			memory.enabled &&
+			!isUnset(memory.turn_limit) &&
+			(!Number.isInteger(Number(memory.turn_limit)) || Number(memory.turn_limit) <= 0)
+		) {
+			return 'Memory: turn limit must be a whole number greater than 0.';
+		}
 		return {
 			enabled: memory.enabled,
 			message_limit: isUnset(memory.message_limit) ? null : Number(memory.message_limit),
-			save_mode: memory.save_mode
+			save_mode: memory.save_mode,
+			turn_limit: isUnset(memory.turn_limit) ? null : Number(memory.turn_limit)
 		};
 	}
 
@@ -998,16 +1008,38 @@
 								step="1"
 								min="1"
 								bind:value={memory.message_limit}
+								disabled={!isUnset(memory.turn_limit)}
 								placeholder="Default"
+								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary
+									disabled:bg-neutral-50 disabled:text-neutral-400"
+							/>
+							<span class="mt-1 block text-xs text-neutral-400">
+								Counts raw messages - a tool-call-heavy turn can eat the whole limit by itself.
+								{#if !isUnset(memory.turn_limit)}Ignored while Turn limit (below) is set.{/if}
+							</span>
+						</label>
+						<label class="block">
+							<span class="text-sm font-medium text-neutral-700">Turn limit (optional)</span>
+							<input
+								type="number"
+								step="1"
+								min="1"
+								bind:value={memory.turn_limit}
+								placeholder="No turn limit"
 								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 							/>
+							<span class="mt-1 block text-xs text-neutral-400">
+								Counts whole back-and-forth turns instead - never splits a turn across the cutoff.
+								Takes priority over Message limit when set.
+							</span>
 						</label>
-						<label class="block">
+						<label class="block sm:col-span-2">
 							<span class="text-sm font-medium text-neutral-700">Save mode</span>
 							<select
 								bind:value={memory.save_mode}
-								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								class="mt-1 w-full max-w-xs rounded-md border border-neutral-300 px-3 py-2 text-sm
 									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 							>
 								<option value="full">Full — includes tool calls and reasoning</option>
@@ -1019,9 +1051,10 @@
 
 				<p class="text-xs text-neutral-500">
 					Conversation memory (PRD §6.2) recalls earlier turns of the same conversation for this
-					agent. Leave message limit blank to use Dynamiq's own default. Input/output-only save
-					mode keeps less context per turn but is cheaper and skips intermediate tool-call/reasoning
-					detail.
+					agent. Leave both limits blank to use Dynamiq's own default. Input/output-only save mode
+					keeps less context per turn but is cheaper and skips intermediate tool-call/reasoning
+					detail. Neither limit counts tokens or characters - set Save mode to "Input/output only"
+					too if tool results tend to be large and token cost is a concern.
 				</p>
 			</form>
 		{:else if activeTab === 'publish_gate'}

@@ -354,6 +354,7 @@ async def test_compile_defaults_memory_when_omitted(make_connection):
         "enabled": True,
         "message_limit": None,
         "save_mode": "full",
+        "turn_limit": None,
     }
 
 
@@ -373,6 +374,7 @@ async def test_compile_includes_memory_in_compiled_definition(make_connection):
         "enabled": False,
         "message_limit": 20,
         "save_mode": "input_output",
+        "turn_limit": None,
     }
 
 
