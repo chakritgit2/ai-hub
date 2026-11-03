@@ -225,7 +225,15 @@ async def runPlayground(
             agent_version_id=claims["agent_version_id"],
             role=claims["role"],
             company_id=claims["company_id"],
-            external_user_id=body.user.external_id if body.user else None,
+            # Falls back to the runtime token's own user_id (the logged-in console user,
+            # PRD §6.2's "{company_id}:{external_user_id}" memory key) when no simulated
+            # external user was supplied - otherwise memory/conversation_id never engage
+            # at all for a plain Playground chat (_execute_agent_run_body only wires
+            # memory when external_user_id is truthy), so every turn would start fresh
+            # with no recollection of the ones before it even within one browser session.
+            # Same fallback identity_sub already used below, just for memory scoping
+            # instead of delegated-tool JWTs.
+            external_user_id=body.user.external_id if body.user else claims["user_id"],
             conversation_id=body.conversation_id,
             claims=body.user.claims if body.user else {},
             # Falls back to the runtime token's own user_id (not `claims` above, the
@@ -286,7 +294,10 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
                 agent_version_id=claims["agent_version_id"],
                 role=claims["role"],
                 company_id=claims["company_id"],
-                external_user_id=body.user.external_id if body.user else None,
+                # See runPlayground's matching comment above - without this fallback
+                # memory never engages for a plain Playground chat (no simulated
+                # external user), so every turn forgets the ones before it.
+                external_user_id=body.user.external_id if body.user else claims["user_id"],
                 conversation_id=body.conversation_id,
                 claims=body.user.claims if body.user else {},
                 identity_sub=body.user.external_id if body.user else claims["user_id"],

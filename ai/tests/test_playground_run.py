@@ -243,10 +243,14 @@ def test_malformed_conversation_id_is_422(runtime_client) -> None:
 
 
 @requires_postgres
-async def test_conversation_id_not_echoed_without_memory(fake_agent, company_ids, resolvable_agent_version) -> None:
-    """A resolvable agent version with no external_user_id in the request means memory
-    is never used, so a client-sent conversation_id must not come back as if the
-    conversation had been continued."""
+async def test_conversation_id_persists_without_simulated_user(
+    fake_agent, company_ids, resolvable_agent_version
+) -> None:
+    """A plain Playground chat with no `user` in the request body (the common case - an
+    admin just testing the agent, not simulating an end user) still gets real memory: the
+    route falls back to the runtime token's own user_id as the memory-scoping
+    external_user_id (same fallback `identity_sub` already used), so a client-sent
+    conversation_id for that same token is genuinely continued, not silently dropped."""
     company_id = company_ids()
     version_id = await resolvable_agent_version(company_id)
     runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(
@@ -254,12 +258,16 @@ async def test_conversation_id_not_echoed_without_memory(fake_agent, company_ids
     )
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
-            resp = await client.post(
-                "/ai/v1/playground/run",
-                json={"input": "hi", "conversation_id": "3f2b8c1e-0000-4000-8000-000000000000"},
+            resp1 = await client.post("/ai/v1/playground/run", json={"input": "hi"})
+            assert resp1.status_code == 200
+            conversation_id = resp1.json()["conversation_id"]
+            assert conversation_id
+
+            resp2 = await client.post(
+                "/ai/v1/playground/run", json={"input": "hi", "conversation_id": conversation_id}
             )
-        assert resp.status_code == 200
-        assert resp.json()["conversation_id"] is None
+        assert resp2.status_code == 200
+        assert resp2.json()["conversation_id"] == conversation_id
     finally:
         runtime_app.dependency_overrides.pop(require_runtime_auth, None)
 
