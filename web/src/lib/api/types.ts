@@ -394,9 +394,20 @@ export interface ModelSpec {
 }
 
 // Mirrors ai/app/services/agent_spec.py's GuardrailCheckSpec/GuardrailsSpec exactly.
-// valid_json/valid_choices are output-only (the compiler rejects them in `input`); mask is
-// invalid for max_length/valid_json/valid_choices (nothing identifiable to redact).
-export type GuardrailCheckType = 'max_length' | 'regex_blocklist' | 'pii' | 'valid_json' | 'valid_choices';
+// valid_json/valid_choices are output-only (the compiler rejects them in `input`);
+// prompt_injection is input-only (the compiler rejects it in `output`); mask is invalid
+// for max_length/valid_json/valid_choices/prompt_injection/content_moderation (nothing
+// identifiable to redact - pii_model is the exception among the 3 model-based checks,
+// since Azure AI Language returns per-entity offsets, same as the regex-based `pii`).
+export type GuardrailCheckType =
+	| 'max_length'
+	| 'regex_blocklist'
+	| 'pii'
+	| 'valid_json'
+	| 'valid_choices'
+	| 'prompt_injection'
+	| 'pii_model'
+	| 'content_moderation';
 export type GuardrailAction = 'block' | 'mask' | 'flag';
 
 export interface GuardrailCheckSpec {
@@ -412,6 +423,11 @@ export interface GuardrailCheckSpec {
 	pattern?: string | null;
 	// check_type === 'valid_choices'
 	choices?: string[] | null;
+	// check_type is one of the 3 model-based checks (prompt_injection/pii_model/
+	// content_moderation) - a console.connections row of type "azure_content_safety" (the
+	// first two) or "azure_language" (pii_model) holding the Azure resource's endpoint +
+	// API key. Required for those 3, unused otherwise.
+	connection_id?: string | null;
 }
 
 export interface GuardrailsSpec {

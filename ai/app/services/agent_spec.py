@@ -77,13 +77,38 @@ class ModelSpec(BaseModel):
         return self
 
 
-GuardrailCheckType = Literal["max_length", "regex_blocklist", "pii", "valid_json", "valid_choices"]
+GuardrailCheckType = Literal[
+    "max_length", "regex_blocklist", "pii", "valid_json", "valid_choices",
+    "prompt_injection", "pii_model", "content_moderation",
+]
 GuardrailAction = Literal["block", "mask", "flag"]
 
+# The 3 model-based checks (PRD §6.4's PromptInjectionDetector/PIIDetector/
+# LlamaGuardDetector) - now backed by Azure AI Content Safety (prompt_injection,
+# content_moderation) and Azure AI Language (pii_model) rather than dynamiq's own
+# HuggingFace/Lakera/Replicate-calling classes (see app.services.guardrails's module
+# docstring for why). Each needs a `connection_id` pointing at a `console.connections`
+# row holding the Azure resource's endpoint (api_base) + API key (secret) - reusing that
+# table verbatim rather than adding a new one, same as how ModelSpec.connection_id
+# already does for LLM connections; `type` is a free-form string there (see
+# ConnectionsController::createConnection), so "azure_content_safety"/"azure_language"
+# need no schema change to store.
+MODEL_BASED_CHECK_TYPES: frozenset[GuardrailCheckType] = frozenset(
+    {"prompt_injection", "pii_model", "content_moderation"}
+)
 # Checks with no identifiable "matched span" to redact - block/flag only, never mask.
-_NO_MASK_CHECK_TYPES: frozenset[GuardrailCheckType] = frozenset({"max_length", "valid_json", "valid_choices"})
+# `pii_model` is the exception among the 3 model-based checks: Azure AI Language's PII
+# detection returns per-entity offsets (and a ready-made `redactedText`), so masking is
+# meaningful there exactly like the regex-based `pii` check - `prompt_injection`/
+# `content_moderation` only ever return a yes/no judgment with no span attached.
+_NO_MASK_CHECK_TYPES: frozenset[GuardrailCheckType] = frozenset(
+    {"max_length", "valid_json", "valid_choices", "prompt_injection", "content_moderation"}
+)
 # Checks that only make sense against the model's output, never the user's input.
 _OUTPUT_ONLY_CHECK_TYPES: frozenset[GuardrailCheckType] = frozenset({"valid_json", "valid_choices"})
+# The reverse: only makes sense against the user's own input, never the model's output -
+# PRD §6.4 lists PromptInjectionDetector under "Input checks" only.
+_INPUT_ONLY_CHECK_TYPES: frozenset[GuardrailCheckType] = frozenset({"prompt_injection"})
 
 
 class GuardrailCheckSpec(BaseModel):
@@ -109,6 +134,18 @@ class GuardrailCheckSpec(BaseModel):
     pattern: str | None = None
     # check_type == "valid_choices"
     choices: list[str] | None = None
+    # check_type in MODEL_BASED_CHECK_TYPES - the `console.connections` row holding the
+    # Azure resource's endpoint/key (see MODEL_BASED_CHECK_TYPES's docstring above).
+    connection_id: str | None = None
+
+    @field_validator("connection_id")
+    @classmethod
+    def _connection_id_is_uuid(cls, value: str | None) -> str | None:
+        import uuid
+
+        if value is not None:
+            uuid.UUID(value)  # raises ValueError -> wrapped as a pydantic ValidationError
+        return value
 
     @model_validator(mode="after")
     def _validate_type_specific_params(self) -> "GuardrailCheckSpec":
@@ -129,6 +166,9 @@ class GuardrailCheckSpec(BaseModel):
         if self.check_type == "valid_choices" and not self.choices:
             raise ValueError("valid_choices check requires a non-empty 'choices' list")
 
+        if self.check_type in MODEL_BASED_CHECK_TYPES and not self.connection_id:
+            raise ValueError(f"{self.check_type!r} check requires 'connection_id'")
+
         return self
 
 
@@ -143,6 +183,13 @@ class GuardrailsSpec(BaseModel):
         offending = [check.check_type for check in self.input if check.check_type in _OUTPUT_ONLY_CHECK_TYPES]
         if offending:
             raise ValueError(f"check types not valid for input: {offending}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_input_only_checks_not_in_output(self) -> "GuardrailsSpec":
+        offending = [check.check_type for check in self.output if check.check_type in _INPUT_ONLY_CHECK_TYPES]
+        if offending:
+            raise ValueError(f"check types not valid for output: {offending}")
         return self
 
 

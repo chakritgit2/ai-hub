@@ -73,13 +73,40 @@
 	}
 
 	// Mirrors ai/app/services/agent_spec.py's own constants exactly (_OUTPUT_ONLY_CHECK_TYPES,
-	// _NO_MASK_CHECK_TYPES) - the check-type dropdowns below only offer what the compiler will
-	// actually accept, same reasoning as isToolUsable/isSkillUsable above: don't let the user
-	// pick a combination that's only going to fail at publish time.
-	const ALL_CHECK_TYPES: GuardrailCheckType[] = ['max_length', 'regex_blocklist', 'pii', 'valid_json', 'valid_choices'];
+	// _INPUT_ONLY_CHECK_TYPES, _NO_MASK_CHECK_TYPES, MODEL_BASED_CHECK_TYPES) - the check-type
+	// dropdowns below only offer what the compiler will actually accept, same reasoning as
+	// isToolUsable/isSkillUsable above: don't let the user pick a combination that's only
+	// going to fail at publish time.
+	const ALL_CHECK_TYPES: GuardrailCheckType[] = [
+		'max_length',
+		'regex_blocklist',
+		'pii',
+		'valid_json',
+		'valid_choices',
+		'prompt_injection',
+		'pii_model',
+		'content_moderation'
+	];
 	const OUTPUT_ONLY_CHECK_TYPES = new Set<GuardrailCheckType>(['valid_json', 'valid_choices']);
-	const NO_MASK_CHECK_TYPES = new Set<GuardrailCheckType>(['max_length', 'valid_json', 'valid_choices']);
+	const INPUT_ONLY_CHECK_TYPES = new Set<GuardrailCheckType>(['prompt_injection']);
+	const NO_MASK_CHECK_TYPES = new Set<GuardrailCheckType>([
+		'max_length',
+		'valid_json',
+		'valid_choices',
+		'prompt_injection',
+		'content_moderation'
+	]);
+	// Azure AI Content Safety (prompt_injection/content_moderation) vs Azure AI Language
+	// (pii_model) - each model-based check needs a connection of the matching type (see
+	// GuardrailCheckSpec.connection_id's doc in $lib/api/types.ts).
+	const CONNECTION_TYPE_FOR_CHECK: Partial<Record<GuardrailCheckType, string>> = {
+		prompt_injection: 'azure_content_safety',
+		content_moderation: 'azure_content_safety',
+		pii_model: 'azure_language'
+	};
+	const MODEL_BASED_CHECK_TYPES = new Set<GuardrailCheckType>(Object.keys(CONNECTION_TYPE_FOR_CHECK) as GuardrailCheckType[]);
 	const INPUT_CHECK_TYPES = ALL_CHECK_TYPES.filter((t) => !OUTPUT_ONLY_CHECK_TYPES.has(t));
+	const OUTPUT_CHECK_TYPES = ALL_CHECK_TYPES.filter((t) => !INPUT_ONLY_CHECK_TYPES.has(t));
 
 	// `choicesText` is a UI-only raw text buffer for the comma-separated Choices input -
 	// same reason identity.languages/tags get a separate languagesInput/tagsInput buffer
@@ -108,6 +135,13 @@
 			check.choices = null;
 			check.choicesText = undefined;
 		}
+		// Always cleared on any type change, same blanket-reset style as pattern/max_length/
+		// choices above - by the time this runs, bind:value has already updated
+		// check.check_type to newType, so there's no reliable "old type" left here to tell
+		// whether e.g. a prompt_injection<->content_moderation switch could keep the same
+		// azure_content_safety connection; always resetting is simpler and still correct,
+		// just asks the user to re-pick in that one case.
+		check.connection_id = null;
 		if (check.action === 'mask' && NO_MASK_CHECK_TYPES.has(newType)) check.action = 'flag';
 	}
 
@@ -186,6 +220,9 @@
 			if (choices.length === 0) {
 				return `${where}: at least one choice is required.`;
 			}
+		}
+		if (MODEL_BASED_CHECK_TYPES.has(check.check_type) && !check.connection_id) {
+			return `${where}: an Azure connection is required.`;
 		}
 		const { choicesText: _choicesText, ...rest } = check;
 		return { ...rest, choices };
@@ -389,6 +426,14 @@
 	let connections = $state<Connection[]>([]);
 	let connectionsError = $state<string | null>(null);
 	let usableConnections = $derived(connections.filter((c) => USABLE_CONNECTION_TYPES.has(c.type)));
+
+	/** The connections usable for a given model-based guardrail check_type - filtered by
+	 * CONNECTION_TYPE_FOR_CHECK's matching `connections.type` string (same free-form `type`
+	 * field the Model tab's own connection dropdown filters by, just a different value). */
+	function connectionsForCheckType(checkType: GuardrailCheckType): Connection[] {
+		const wantedType = CONNECTION_TYPE_FOR_CHECK[checkType];
+		return wantedType ? connections.filter((c) => c.type === wantedType) : [];
+	}
 
 	// Live model dropdown (PRD follow-up: a free-typed model string had no validation at
 	// all - "openai/openai/gpt-4o-mini" went uncaught until a real run hung). Never a
@@ -1033,14 +1078,18 @@
 				<div>
 					<h3 class="text-sm font-semibold text-neutral-900">Output checks</h3>
 					<p class="mb-2 text-xs text-neutral-500">Run against the agent's reply before it reaches the user.</p>
-					{@render guardrailCheckList(guardrails.output, ALL_CHECK_TYPES, 'output')}
+					{@render guardrailCheckList(guardrails.output, OUTPUT_CHECK_TYPES, 'output')}
 				</div>
 
 				<p class="text-xs text-neutral-500">
 					<code>valid_json</code>/<code>valid_choices</code> only make sense on output (PRD §6.4) -
-					they're not offered for input checks. <code>mask</code> is unavailable for checks with
-					nothing identifiable to redact (<code>max_length</code>, <code>valid_json</code>,
-					<code>valid_choices</code>).
+					they're not offered for input checks, and <code>prompt_injection</code> only makes sense
+					on input - it's not offered for output checks. <code>mask</code> is unavailable for
+					checks with nothing identifiable to redact (<code>max_length</code>, <code>valid_json</code>,
+					<code>valid_choices</code>, <code>prompt_injection</code>, <code>content_moderation</code>).
+					<code>prompt_injection</code>/<code>pii_model</code>/<code>content_moderation</code> need an
+					Azure connection (type <code>azure_content_safety</code> or <code>azure_language</code>) -
+					<a href="/connections" class="text-primary underline">create one</a> first if none is listed.
 				</p>
 			</div>
 		{:else if activeTab === 'advanced'}
@@ -1226,6 +1275,29 @@
 							placeholder="refund, exchange, decline"
 							class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm"
 						/>
+					</label>
+				{:else if MODEL_BASED_CHECK_TYPES.has(check.check_type)}
+					{@const matchingConnections = connectionsForCheckType(check.check_type)}
+					<label class="block">
+						<span class="text-xs font-medium text-neutral-600">
+							Azure connection ({CONNECTION_TYPE_FOR_CHECK[check.check_type]})
+						</span>
+						{#if matchingConnections.length === 0}
+							<p class="mt-1 text-xs text-neutral-500">
+								No <code>{CONNECTION_TYPE_FOR_CHECK[check.check_type]}</code> connections found.
+								<a href="/connections" class="text-primary underline">Create one</a> first.
+							</p>
+						{:else}
+							<select
+								bind:value={check.connection_id}
+								class="mt-1 w-full max-w-sm rounded-md border border-neutral-300 px-2 py-1.5 text-sm"
+							>
+								<option value={null} disabled>Select a connection…</option>
+								{#each matchingConnections as c (c.id)}
+									<option value={c.id}>{c.name}</option>
+								{/each}
+							</select>
+						{/if}
 					</label>
 				{/if}
 

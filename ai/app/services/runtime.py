@@ -473,7 +473,9 @@ async def _execute_agent_run_body(
     agent_name = agent_def["name"]
     model_name = agent_def["llm"]["model"]
 
-    input_outcome = await run_checks(input_text, guardrails.input, stage="input", default_on_error=default_on_error)
+    input_outcome = await run_checks(
+        input_text, guardrails.input, stage="input", default_on_error=default_on_error, company_id=company_id
+    )
     if input_outcome.blocked:
         latency_ms = int((time.monotonic() - started) * 1000)
         # logs.runs row must exist before logs.guardrail_events.run_id can reference it
@@ -845,7 +847,7 @@ async def _execute_agent_run_body(
     else:
         output = result.output.get("content") if result.output else None
         output_outcome = await run_checks(
-            output or "", guardrails.output, stage="output", default_on_error=default_on_error
+            output or "", guardrails.output, stage="output", default_on_error=default_on_error, company_id=company_id
         )
         final_output = output_outcome.fallback_message if output_outcome.blocked else output_outcome.text
         output_events = output_outcome.events
