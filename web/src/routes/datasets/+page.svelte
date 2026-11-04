@@ -93,6 +93,11 @@
 	</button>
 {/snippet}
 
+<p class="mb-4 text-sm text-neutral-600">
+	Datasets are reusable sets of test questions used to score Evaluation runs against an
+	agent version.
+</p>
+
 {#if showForm}
 	<form
 		class="mb-6 grid grid-cols-1 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm"
@@ -153,7 +158,7 @@
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
 			No datasets yet for this tenant — a dataset is a reusable set of test questions for
-			Evaluation runs (PRD §6.7).
+			Evaluation runs.
 		</p>
 	</div>
 {:else}

@@ -601,7 +601,7 @@
 						<span class="text-sm font-medium text-neutral-700">Allowed origins (CORS)</span>
 						<textarea
 							rows="3"
-							placeholder="One origin per line, e.g. https://example.com - never &quot;*&quot; (PRD §6.3)"
+							placeholder="One origin per line, e.g. https://example.com - never &quot;*&quot;"
 							bind:value={settingsForm.allowed_origins}
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm"
 						></textarea>
@@ -614,7 +614,7 @@
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm"
 						></textarea>
 						<p class="mt-1 text-xs text-neutral-400">
-							Appended on top of the agent version's own guardrails - can only tighten, never loosen (PRD §6.4).
+							Appended on top of the agent version's own guardrails - can only tighten, never loosen.
 						</p>
 					</label>
 				</div>

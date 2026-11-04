@@ -73,6 +73,11 @@
 	</a>
 {/snippet}
 
+<p class="mb-4 text-sm text-neutral-600">
+	Workflows orchestrate multiple published agents through a sequence of states, for
+	multi-step automations that a single agent can't handle alone.
+</p>
+
 <div class="mb-4 flex items-center gap-4">
 	<label class="flex items-center gap-2 text-sm text-neutral-600">
 		<input type="checkbox" bind:checked={showArchived} />
@@ -98,7 +103,7 @@
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
 			No workflows yet for this tenant — a workflow orchestrates multiple published Agents
-			through a graph of states (PRD §6.9).
+			through a graph of states.
 		</p>
 	</div>
 {:else}

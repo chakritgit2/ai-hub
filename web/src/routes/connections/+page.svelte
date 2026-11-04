@@ -286,19 +286,23 @@
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
 			<span class="mt-1 block text-xs text-neutral-400">
-				Checked against the egress allowlist on save (PRD §7.4).
+				Checked against the egress allowlist on save - the host must already be allowed under
+				Settings.
 			</span>
 		</label>
-		<label class="block">
-			<span class="text-sm font-medium text-neutral-700">Max concurrency</span>
+		<label class="block opacity-70">
+			<span class="text-sm font-medium text-neutral-700">Max concurrency (not yet enforced)</span>
 			<input
 				type="number"
 				min="1"
 				bind:value={form.max_concurrency}
+				title="Not enforced yet - saved for a future concurrent-request limit, but has no effect on calls today."
 				class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			/>
-			<p class="mt-1 text-xs text-neutral-400">Reserved for a future concurrent-request limit - not enforced yet.</p>
+			<p class="mt-1 text-xs text-neutral-400">
+				This value is saved but has no effect yet - calls are not actually limited by it.
+			</p>
 		</label>
 		<div class="flex gap-2 sm:col-span-2">
 			<button
@@ -342,7 +346,7 @@
 {:else if connections.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
-			No connections yet for this tenant — there are no shared connections across companies (PRD §7.7).
+			No connections yet for this tenant — each company has its own, they are never shared across companies.
 		</p>
 	</div>
 {:else}
@@ -355,7 +359,9 @@
 					<th class="px-4 py-2">Type</th>
 					<th class="px-4 py-2">API base</th>
 					<th class="px-4 py-2">Key</th>
-					<th class="px-4 py-2">Max concurrency</th>
+					<th class="px-4 py-2" title="Saved but not enforced yet - calls are not actually limited by it.">
+						Max concurrency (not enforced)
+					</th>
 					<th class="px-4 py-2">Actions</th>
 				</tr>
 			</thead>
@@ -373,7 +379,12 @@
 						<td class="px-4 py-2 font-mono text-xs text-neutral-600">{connection.type}</td>
 						<td class="px-4 py-2 text-neutral-600">{connection.api_base ?? '—'}</td>
 						<td class="px-4 py-2 font-mono text-xs text-neutral-500">{connection.masked_hint ?? '••••••••'}</td>
-						<td class="px-4 py-2 text-neutral-600">{connection.max_concurrency ?? '—'}</td>
+						<td
+							class="px-4 py-2 text-neutral-400"
+							title="Saved but not enforced yet - calls are not actually limited by it."
+						>
+							{connection.max_concurrency ?? '—'}
+						</td>
 						<td class="px-4 py-2">
 							{#if isAdminFor(connection.company_id)}
 								<div class="flex flex-wrap items-center gap-2">
@@ -454,15 +465,17 @@
 													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 											/>
 											<span class="mt-1 block text-xs text-neutral-400">
-												Checked against the egress allowlist on save (PRD §7.4).
+												Checked against the egress allowlist on save - the host must already be
+												allowed under Settings.
 											</span>
 										</label>
-										<label class="block">
-											<span class="text-xs font-medium text-neutral-700">Max concurrency</span>
+										<label class="block opacity-70">
+											<span class="text-xs font-medium text-neutral-700">Max concurrency (not yet enforced)</span>
 											<input
 												type="number"
 												min="1"
 												bind:value={editForm.max_concurrency}
+												title="Not enforced yet - saved for a future concurrent-request limit, but has no effect on calls today."
 												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
 													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 											/>

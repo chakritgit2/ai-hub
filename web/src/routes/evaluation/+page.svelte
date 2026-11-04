@@ -151,6 +151,10 @@
 	</div>
 {/snippet}
 
+<p class="mb-4 text-sm text-neutral-600">
+	Evaluation runs score an agent version against a dataset using a chosen set of metrics.
+</p>
+
 {#if loading}
 	<p class="text-sm text-neutral-500" role="status">Loading eval runs…</p>
 {:else if error}
@@ -169,10 +173,15 @@
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
 			No eval runs yet for this tenant — pick an agent version, a dataset, and metrics to
-			start one (PRD §6.7).
+			start one.
 		</p>
 	</div>
 {:else}
+	<p class="mb-2 text-xs text-neutral-500">
+		Compare selected needs exactly two runs from the same company. Selecting a third run
+		drops the oldest pick, and selecting a run from a different company replaces the
+		current selection.
+	</p>
 	<div class="overflow-x-auto rounded-lg border border-neutral-200 bg-white shadow-sm">
 		<table class="min-w-full divide-y divide-neutral-200 text-sm">
 			<thead class="bg-neutral-50 text-left text-xs uppercase tracking-wide text-neutral-500">

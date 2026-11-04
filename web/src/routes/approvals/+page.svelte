@@ -73,7 +73,7 @@
 </script>
 
 <p class="mb-4 text-sm text-neutral-600">
-	`write`-access tools wait here for a human decision before they run (PRD §6.5). Approving
+	Tools that need write access wait here for a human decision before they run. Approving
 	lets the pending tool call through; rejecting blocks it.
 </p>
 

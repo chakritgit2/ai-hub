@@ -24,7 +24,7 @@
 	}
 
 	onMount(load);
-	// Reload whenever the company switcher changes (PRD §7.2 — every figure is per-company).
+	// Reload whenever the company switcher changes — every figure here is per-company.
 	$effect(() => {
 		$companyId;
 		load();
@@ -126,6 +126,11 @@
 			: []
 	);
 </script>
+
+<p class="mb-4 text-sm text-neutral-600">
+	A snapshot of this company's activity — runs today, token and cost totals for the month, error
+	rate, guardrail triggers, and a 14-day runs-per-day chart.
+</p>
 
 {#if loading}
 	<p class="text-sm text-neutral-500" role="status">Loading dashboard…</p>

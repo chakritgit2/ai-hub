@@ -193,7 +193,7 @@
 			{:else}
 				<p class="mt-1 text-neutral-700">
 					No error detail was recorded for this run (older run, or a crash before logging ran).
-					Typical sequence per PRD §6.1: provider 429 → 2 retries → fallback model → 120s timeout.
+					Typical failure sequence: a provider rate limit (429), two retries, a fallback model, then a 120-second timeout.
 				</p>
 			{/if}
 		</div>

@@ -124,6 +124,11 @@
 	</button>
 {/snippet}
 
+<p class="mb-4 text-sm text-neutral-600">
+	Skills are reusable SKILL.md instructions that an agent can load to extend what it knows
+	how to do.
+</p>
+
 {#if showForm}
 	<form
 		class="mb-6 grid grid-cols-1 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm"
@@ -168,7 +173,7 @@
 					focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 			></textarea>
 			<span class="mt-1 block text-xs text-neutral-400">
-				Max 100 KB (PRD §6.6a).
+				Max 100 KB.
 				{#if editingId !== null}
 					Editing an already-published skill creates a new version — it never changes
 					what's already published.
@@ -211,7 +216,7 @@
 {:else if skills.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
-			No skills yet for this tenant — not yet loadable by an agent (CRUD only, PRD §6.6a).
+			No skills yet for this tenant — add one below so an agent can load it.
 		</p>
 	</div>
 {:else}

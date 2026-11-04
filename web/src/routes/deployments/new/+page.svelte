@@ -170,7 +170,7 @@
 					<option value="staging">staging</option>
 				</select>
 				<p class="mt-1 text-xs text-neutral-400">
-					A staging deployment can later be Promoted to a production one (PRD §6.3).
+					A staging deployment can later be Promoted to a production one.
 				</p>
 			</label>
 		</div>

@@ -624,6 +624,12 @@
 
 <div class="mt-4">
 	{#if activeTab === 'users'}
+		<div class="mb-4">
+			<h2 class="text-sm font-semibold text-neutral-900">Users</h2>
+			<p class="mt-1 text-sm text-neutral-400">
+				Everyone synced into this company from SSO, and the role each one holds here.
+			</p>
+		</div>
 		<div class="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
 			{#each Object.entries(roleDescriptions) as [role, desc] (role)}
 				<div class="rounded-md border border-neutral-200 bg-white p-3 text-xs">
@@ -719,10 +725,15 @@
 			</div>
 		{/if}
 	{:else if activeTab === 'egress'}
-		<div class="mb-4 flex items-center justify-between">
-			<p class="text-xs text-neutral-400">
-				Hosts connections' API bases are allowed to reach (PRD §7.4) — checked again on every save.
-			</p>
+		<div class="mb-4 flex items-center justify-between gap-4">
+			<div>
+				<h2 class="text-sm font-semibold text-neutral-900">Egress allowlist</h2>
+				<p class="mt-1 text-sm text-neutral-400">
+					Connections can only reach hosts listed here. This protects internal services from
+					SSRF (server-side request forgery) by blocking any outbound call to a host that isn't
+					explicitly allowed — checked again on every save.
+				</p>
+			</div>
 			{#if isAdmin}
 				<button
 					type="button"
@@ -756,9 +767,16 @@
 						bind:value={egressForm.host_pattern}
 						required
 						placeholder="api.openai.com"
+						title="Exact hostname match, or a *.domain prefix to match its subdomains."
 						class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 font-mono text-sm
 							focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 					/>
+					<p class="mt-1 text-xs text-neutral-400">
+						Matched exactly (case-insensitive), e.g. <code>api.openai.com</code>. Use a
+						<code>*.domain</code> prefix to match subdomains only — <code>*.example.com</code> matches
+						<code>foo.example.com</code> but not <code>example.com</code> itself. No other wildcards
+						are supported.
+					</p>
 				</label>
 				<label class="block">
 					<span class="text-sm font-medium text-neutral-700">Port (optional)</span>
@@ -822,8 +840,7 @@
 		{:else if egress.length === 0}
 			<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 				<p class="text-sm text-neutral-500">
-					No egress allowlist entries yet — connections cannot reach any host until one is added
-					(PRD §7.4).
+					No egress allowlist entries yet — connections cannot reach any host until one is added.
 				</p>
 			</div>
 		{:else}
@@ -871,10 +888,15 @@
 				platform_admin only.
 			</div>
 		{:else}
-			<div class="mb-4 flex items-center justify-between">
-				<p class="text-xs text-neutral-400">
-					The org-level grouping above Companies - most deployments only ever need one.
-				</p>
+			<div class="mb-4 flex items-center justify-between gap-4">
+				<div>
+					<h2 class="text-sm font-semibold text-neutral-900">Tenants</h2>
+					<p class="mt-1 text-sm text-neutral-400">
+						A Tenant is the top-level organization grouping in the console. Each Tenant holds one
+						or more Companies underneath it — the billing and budget units where API keys,
+						connections and usage actually live. Most deployments only ever need a single Tenant.
+					</p>
+				</div>
 				<button
 					type="button"
 					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
@@ -1013,11 +1035,15 @@
 				platform_admin only.
 			</div>
 		{:else}
-			<div class="mb-4 flex items-center justify-between">
-				<p class="text-xs text-neutral-400">
-					platform_admin sees only aggregate figures here — never secrets, knowledge or conversation
-					content (PRD §7.2).
-				</p>
+			<div class="mb-4 flex items-center justify-between gap-4">
+				<div>
+					<h2 class="text-sm font-semibold text-neutral-900">Companies</h2>
+					<p class="mt-1 text-sm text-neutral-400">
+						A Company is the billing and budget unit that lives under a Tenant — API keys,
+						connections, usage and budgets are all scoped to it. platform_admin sees only
+						aggregate figures here — never secrets, knowledge or conversation content.
+					</p>
+				</div>
 				{#if tenants.length > 0}
 					<button
 						type="button"
@@ -1197,14 +1223,19 @@
 											{#if dekDestroyedIds.has(company.id)}
 												<span class="text-xs text-danger">Key destroyed</span>
 											{:else}
-												<button
-													type="button"
-													class="rounded-md border border-danger/40 px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
-													disabled={destroyingDekId === company.id}
-													onclick={() => doDestroyDek(company)}
-												>
-													{destroyingDekId === company.id ? 'Destroying…' : 'Destroy key'}
-												</button>
+												<div class="flex flex-col items-start gap-1">
+													<button
+														type="button"
+														class="rounded-md border border-danger/40 px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+														disabled={destroyingDekId === company.id}
+														onclick={() => doDestroyDek(company)}
+													>
+														{destroyingDekId === company.id ? 'Destroying…' : 'Destroy key'}
+													</button>
+													<span class="text-[11px] leading-tight text-danger/80">
+														Irreversible — permanently undecryptable connection secrets
+													</span>
+												</div>
 											{/if}
 										</div>
 									</td>
@@ -1221,11 +1252,13 @@
 				platform_admin only.
 			</div>
 		{:else}
-			<div class="mb-4 flex items-center justify-between">
-				<p class="text-xs text-neutral-400">
-					$/1K-token rates used for the Evals cost estimate (PRD §6.7) - actual run cost comes from
-					litellm directly and does not read this table.
-				</p>
+			<div class="mb-4 flex items-center justify-between gap-4">
+				<div>
+					<h2 class="text-sm font-semibold text-neutral-900">Model pricing</h2>
+					<p class="mt-1 text-sm text-neutral-400">
+						$/1K-token rates used to estimate the cost of Eval runs.
+					</p>
+				</div>
 				<button
 					type="button"
 					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
@@ -1233,6 +1266,15 @@
 				>
 					+ New pricing row
 				</button>
+			</div>
+
+			<div class="mb-4 rounded-md border border-warning/40 bg-warning/10 p-4">
+				<p class="text-sm font-medium text-warning-dark">These prices only affect Eval cost estimates</p>
+				<p class="mt-1 text-sm text-neutral-700">
+					Editing a row here changes the estimated cost shown on Eval runs only. Real spend is
+					billed by litellm directly from each provider's actual rates — it never reads this
+					table, so these numbers can drift from what you're actually charged if not kept in sync.
+				</p>
 			</div>
 
 			{#if showPricingForm}
@@ -1388,6 +1430,12 @@
 				platform_admin only.
 			</div>
 		{:else}
+			<div class="mb-4">
+				<h2 class="text-sm font-semibold text-neutral-900">Audit Log</h2>
+				<p class="mt-1 text-sm text-neutral-400">
+					A record of admin actions taken in this console — who changed what, and when.
+				</p>
+			</div>
 			<div class="mb-4 flex flex-wrap items-end gap-3">
 				<label class="block">
 					<span class="text-sm font-medium text-neutral-700">From</span>

@@ -117,6 +117,11 @@
 	</button>
 {/snippet}
 
+<p class="mb-4 text-sm text-neutral-600">
+	Knowledge bases hold imported documents that an agent can search over while answering a
+	request.
+</p>
+
 {#if showForm}
 	<form
 		class="mb-6 grid grid-cols-1 gap-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm sm:grid-cols-2"
@@ -250,7 +255,7 @@
 {:else if knowledgeBases.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
-			No knowledge bases yet for this tenant — import OKF Markdown files for an agent to search (PRD §6.6).
+			No knowledge bases yet for this tenant — import Markdown files for an agent to search.
 		</p>
 	</div>
 {:else}

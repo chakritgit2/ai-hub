@@ -82,6 +82,11 @@
 	};
 </script>
 
+<p class="mb-4 text-sm text-neutral-600">
+	A tenant-wide log of agent and workflow runs, pooled across every company under it. Search by
+	run, trace, or conversation id, filter by status or source, and open a row for its full detail.
+</p>
+
 <div class="mb-4 flex flex-wrap gap-3">
 	<label class="block">
 		<span class="sr-only">Search</span>

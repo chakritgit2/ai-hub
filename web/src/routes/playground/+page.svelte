@@ -79,9 +79,9 @@
 		}
 	}
 
-	// "Add as test case" (PRD §6.7: "add items from Playground/Runs") - the input that
-	// started the latest turn, captured in send() rather than re-derived from `messages`
-	// so it stays correct regardless of how the transcript is rendered later.
+	// "Add as test case" lets this turn's input be saved into an Evaluation dataset - the
+	// input that started the latest turn, captured in send() rather than re-derived from
+	// `messages` so it stays correct regardless of how the transcript is rendered later.
 	let lastUserInput = $state('');
 
 	let datasets = $state<Dataset[]>([]);
@@ -290,8 +290,8 @@
 		abortController = new AbortController();
 
 		try {
-			// A fresh 5-minute runtime token per turn (PRD §4.4-B) - simpler than tracking
-			// expires_in against wall-clock time for what's normally a cheap, infrequent call.
+			// A fresh 5-minute runtime token per turn - simpler than tracking expires_in
+			// against wall-clock time for what's normally a cheap, infrequent call.
 			const { token } = await issueRuntimeToken(selectedAgentVersionId);
 			currentRuntimeToken = token;
 			await streamPlaygroundRun(
@@ -511,7 +511,14 @@
 				<dt class="text-neutral-400">Cost</dt>
 				<dd class="text-neutral-800">{lastResult?.cost_usd !== null && lastResult?.cost_usd !== undefined ? `$${lastResult.cost_usd.toFixed(4)}` : '—'}</dd>
 			</div>
-			<div><dt class="text-neutral-400">Loops</dt><dd class="text-neutral-800">{loops || '—'}</dd></div>
+			<div>
+				<dt class="text-neutral-400" title="Number of LLM call iterations the agent made to produce this run's answer.">
+					Loops
+				</dt>
+				<dd class="text-neutral-800" title="Number of LLM call iterations the agent made to produce this run's answer.">
+					{loops || '—'}
+				</dd>
+			</div>
 		</dl>
 
 		{#if stepsLoading}

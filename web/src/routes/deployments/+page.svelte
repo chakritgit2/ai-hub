@@ -96,9 +96,15 @@
 					<th class="px-4 py-2">Company</th>
 					<th class="px-4 py-2">Environment</th>
 					<th class="px-4 py-2">Config version</th>
-					<th class="px-4 py-2">Rate limit / min</th>
-					<th class="px-4 py-2">Daily cost limit</th>
-					<th class="px-4 py-2">Enabled</th>
+					<th class="px-4 py-2" title="Calls past this in a rolling minute get a hard 429 response - never queued, just rejected.">
+						Rate limit / min
+					</th>
+					<th class="px-4 py-2" title="Once today's estimated spend hits this, every further call 429s until the daily reset at midnight (Asia/Bangkok) - never queued.">
+						Daily cost limit
+					</th>
+					<th class="px-4 py-2" title="Disabling a deployment makes it return 404 to every call immediately, as if it didn't exist - in-flight requests are not affected.">
+						Enabled
+					</th>
 				</tr>
 			</thead>
 			<tbody class="divide-y divide-neutral-100">
@@ -122,14 +128,25 @@
 						</td>
 						<td class="px-4 py-2 text-neutral-600">{deployment.environment}</td>
 						<td class="px-4 py-2 text-neutral-600">{deployment.config_version ?? '—'}</td>
-						<td class="px-4 py-2 text-neutral-600">{deployment.rate_limit_per_min ?? '—'}</td>
-						<td class="px-4 py-2 text-neutral-600">
+						<td
+							class="px-4 py-2 text-neutral-600"
+							title="Calls past this in a rolling minute get a hard 429 response - never queued, just rejected."
+						>
+							{deployment.rate_limit_per_min ?? '—'}
+						</td>
+						<td
+							class="px-4 py-2 text-neutral-600"
+							title="Once today's estimated spend hits this, every further call 429s until the daily reset at midnight (Asia/Bangkok) - never queued."
+						>
 							{deployment.daily_cost_limit_usd != null ? `$${deployment.daily_cost_limit_usd}` : '—'}
 						</td>
 						<td class="px-4 py-2">
 							<span
 								class="rounded-full px-2 py-0.5 text-xs font-medium
 									{deployment.enabled ? 'bg-primary/10 text-primary-700' : 'bg-neutral-100 text-neutral-500'}"
+								title={deployment.enabled
+									? 'Disabling this deployment makes it return 404 to every call immediately, as if it did not exist.'
+									: 'This deployment returns 404 to every call immediately, as if it did not exist. In-flight requests from before it was disabled are not affected.'}
 							>
 								{deployment.enabled ? 'enabled' : 'disabled'}
 							</span>

@@ -371,12 +371,18 @@
 				<span class="text-sm font-medium text-neutral-700">Auth mode</span>
 				<select
 					bind:value={form.auth_mode}
+					title="Service: every call uses the one secret you set below. Delegated: every call instead carries a short-lived, per-request credential identifying the specific end-user who triggered it."
 					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 				>
 					<option value="service">Service (static token)</option>
 					<option value="delegated">Delegated (end-user identity)</option>
 				</select>
+				<p class="mt-1 text-xs text-neutral-400">
+					Service: one shared secret is sent with every call (set it below after saving).
+					Delegated: each call instead carries a short-lived credential identifying the
+					end-user who triggered it, so the tool's API can tell callers apart.
+				</p>
 			</label>
 		{/if}
 		{#if form.kind === 'http' && form.auth_mode === 'delegated'}
@@ -386,12 +392,13 @@
 					type="text"
 					bind:value={form.audience}
 					placeholder="the tool host, e.g. phalcon.internal"
+					title="The value the tool's own API expects to see to confirm the credential was issued for it - ask the tool owner what to put here."
 					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 				/>
 				<p class="mt-1 text-xs text-neutral-400">
-					The <code>aud</code> claim minted into the bearer token sent with each call - set it to
-					whatever value the tool's own API expects to verify.
+					Only used with Delegated auth - identifies this tool to the token so it can confirm
+					the credential was meant for it. Ask the tool's owner what value they expect.
 				</p>
 			</label>
 		{/if}
@@ -406,7 +413,8 @@
 						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 				/>
 				<span class="mt-1 block text-xs text-neutral-400">
-					Checked against the egress allowlist on save (PRD §7.4).
+					Checked against the egress allowlist on save - the host must already be allowed under
+					Settings.
 				</span>
 			</label>
 			<label class="block">
@@ -522,7 +530,7 @@
 {:else if tools.length === 0}
 	<div class="rounded-lg border border-dashed border-neutral-300 bg-white p-8 text-center">
 		<p class="text-sm text-neutral-500">
-			No tools yet for this tenant — not yet callable by an agent (CRUD only, PRD §6.5).
+			No tools yet for this tenant — add one above so an agent can call it.
 		</p>
 	</div>
 {:else}
@@ -658,6 +666,7 @@
 											<span class="text-xs font-medium text-neutral-700">Auth mode</span>
 											<select
 												bind:value={editForm.auth_mode}
+												title="Service: every call uses the one secret set below. Delegated: every call instead carries a short-lived, per-request credential identifying the specific end-user who triggered it."
 												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
 													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 											>
@@ -673,6 +682,7 @@
 												type="text"
 												bind:value={editForm.audience}
 												placeholder="the tool host, e.g. phalcon.internal"
+												title="The value the tool's own API expects to see to confirm the credential was issued for it - ask the tool owner what to put here."
 												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
 													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 											/>

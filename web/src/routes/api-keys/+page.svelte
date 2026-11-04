@@ -281,8 +281,7 @@
 			<legend class="text-sm font-medium text-neutral-700">Scoped deployments *</legend>
 			<p class="mt-1 text-xs text-neutral-500">
 				Required — a key scoped to none can authenticate but will match nothing on the gateway
-				(every call gets 404). Server-to-server only, browsers use 5-minute session tokens instead
-				(PRD §6.3).
+				(every call gets 404). Server-to-server only; browsers use 5-minute session tokens instead.
 			</p>
 			{#if formDeployments.length === 0}
 				<p class="mt-2 text-sm text-neutral-500">No deployments yet for this company — publish one first.</p>

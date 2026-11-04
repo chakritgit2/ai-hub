@@ -80,6 +80,11 @@
 	</a>
 {/snippet}
 
+<p class="mb-4 text-sm text-neutral-600">
+	The catalog of agents configured for this tenant, pooled across every company under it.
+	Search or filter the list, or open an agent to view and edit its configuration.
+</p>
+
 <div class="mb-4 flex flex-wrap items-center gap-4">
 	<label class="block max-w-sm flex-1">
 		<span class="sr-only">Search agents</span>
