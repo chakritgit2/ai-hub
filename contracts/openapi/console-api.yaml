@@ -142,8 +142,10 @@ components:
           description: >-
             kind-specific: for http, url/method/headers/description/input_schema; for
             builtin, provider (tavily|exa); for python, optional timeout (seconds, 1-1800,
-            default 600), allow_packages (bool, default false), and domain (self-hosted
-            E2B instance override, null for E2B's own cloud).
+            default 600), allow_packages (bool, default false), domain (self-hosted E2B
+            instance override, null for E2B's own cloud), and description (an admin's own
+            "what this tool is for" note - appended after, not instead of, the fixed
+            sandbox-usage text the agent already gets, unlike http's own description).
         masked_hint: { type: string, nullable: true, description: 'Set only after PUT /tools/{id}/secret (auth_mode: service).' }
         enabled: { type: boolean }
     SkillVersion:

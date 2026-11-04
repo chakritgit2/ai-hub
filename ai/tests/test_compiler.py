@@ -754,6 +754,47 @@ async def test_compile_rejects_python_tool_kind_for_non_admin(make_connection, m
     assert PYTHON_TOOL_TYPE in result["errors"][0]["message"]
 
 
+async def test_build_python_tool_appends_custom_description_to_the_fixed_one():
+    """config.description (PRD §6.1 - an admin's own "what this tool is for" note, shown
+    on the Tools page) is appended after Dynamiq's own fixed sandbox-usage description,
+    never replaces it - the agent still needs that fixed text's technical instructions
+    (how to pass python/shell_command input, file paths, etc.) to use the tool at all."""
+    from dynamiq.nodes.tools.code_interpreter import DESCRIPTION_SANDBOX_INTERPRETER
+
+    from app.services.compiler import _build_python_tool
+
+    tool_def = {
+        "id": str(uuid.uuid4()),
+        "name": "python_sandbox",
+        "access_level": "read",
+        "config": {"description": "Use this for refund math and CSV summaries."},
+    }
+
+    tool = _build_python_tool(tool_def, "company-x")
+
+    assert tool.description.startswith("Use this for refund math and CSV summaries.")
+    assert DESCRIPTION_SANDBOX_INTERPRETER in tool.description
+
+
+async def test_build_python_tool_uses_only_the_fixed_description_when_none_set():
+    """Every python tool created before this field existed has no config.description -
+    must keep behaving exactly as before (just the fixed text, unchanged)."""
+    from dynamiq.nodes.tools.code_interpreter import DESCRIPTION_SANDBOX_INTERPRETER
+
+    from app.services.compiler import _build_python_tool
+
+    tool_def = {
+        "id": str(uuid.uuid4()),
+        "name": "python_sandbox",
+        "access_level": "read",
+        "config": {},
+    }
+
+    tool = _build_python_tool(tool_def, "company-x")
+
+    assert tool.description == DESCRIPTION_SANDBOX_INTERPRETER
+
+
 @requires_postgres
 async def test_compile_rejects_python_tool_with_invalid_auth_mode(make_connection, make_tool):
     company_id = str(uuid.uuid4())

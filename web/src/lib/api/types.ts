@@ -158,8 +158,11 @@ export interface Tool {
 	audience?: string | null;
 	// kind-specific: for http, url/method/headers/description/input_schema; for builtin,
 	// { provider: 'tavily' | 'exa' } (always auth_mode: service); for python (E2B sandbox,
-	// always auth_mode: service), { timeout?, allow_packages?, domain? } - no "code" field
-	// here, the agent writes and runs code itself at call time.
+	// always auth_mode: service), { timeout?, allow_packages?, domain?, description? } - no
+	// "code" field here, the agent writes and runs code itself at call time. Unlike http's
+	// own config.description (which fully replaces what the LLM sees), python's is only a
+	// human note appended after Dynamiq's own fixed sandbox-usage text (compiler.py), so an
+	// admin can tell tools apart on this page without having to read it to the LLM at all.
 	config: Record<string, unknown>;
 	// Set only after PUT /tools/{id}/secret (auth_mode: service).
 	masked_hint?: string | null;

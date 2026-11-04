@@ -166,7 +166,8 @@
 								? {
 										timeout: form.timeout,
 										allow_packages: form.allow_packages,
-										domain: form.domain.trim() || null
+										domain: form.domain.trim() || null,
+										description: form.description.trim() || null
 									}
 								: {}
 			});
@@ -210,7 +211,8 @@
 			audience: tool.audience ?? '',
 			url: tool.kind === 'http' ? ((tool.config.url as string) ?? '') : '',
 			method: tool.kind === 'http' ? ((tool.config.method as string) ?? 'GET') : 'GET',
-			description: tool.kind === 'http' ? ((tool.config.description as string) ?? '') : '',
+			description:
+				tool.kind === 'http' || tool.kind === 'python' ? ((tool.config.description as string) ?? '') : '',
 			provider: tool.kind === 'builtin' ? ((tool.config.provider as 'tavily' | 'exa') ?? 'tavily') : 'tavily',
 			timeout: tool.kind === 'python' ? ((tool.config.timeout as number) ?? null) : null,
 			allow_packages: tool.kind === 'python' ? Boolean(tool.config.allow_packages) : false,
@@ -242,7 +244,8 @@
 									? {
 											timeout: editForm.timeout,
 											allow_packages: editForm.allow_packages,
-											domain: editForm.domain.trim() || null
+											domain: editForm.domain.trim() || null,
+											description: editForm.description.trim() || null
 										}
 									: tool.config,
 					enabled: editForm.enabled
@@ -458,6 +461,21 @@
 				configure here, just sandbox settings. Every call always requires human approval before
 				it runs, regardless of access level. Set the E2B API key via "Set secret" after saving.
 			</p>
+			<label class="block sm:col-span-2">
+				<span class="text-sm font-medium text-neutral-700">Description (optional)</span>
+				<input
+					type="text"
+					bind:value={form.description}
+					placeholder="e.g. for calculations and summarizing CSV data"
+					class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+						focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+				/>
+				<span class="mt-1 block text-xs text-neutral-400">
+					A note for your own reference (shown in the table below) on what this tool is for -
+					added to what the agent is told, alongside (not instead of) the fixed sandbox
+					instructions it already gets.
+				</span>
+			</label>
 			<label class="block">
 				<span class="text-sm font-medium text-neutral-700">Timeout (seconds, optional)</span>
 				<input
@@ -544,7 +562,7 @@
 					<th class="px-4 py-2">Access</th>
 					<th class="px-4 py-2">Auth mode</th>
 					<th class="px-4 py-2">Secret</th>
-					<th class="px-4 py-2">URL / Provider</th>
+					<th class="px-4 py-2">Details</th>
 					<th class="px-4 py-2">Enabled</th>
 					<th class="px-4 py-2"></th>
 				</tr>
@@ -569,11 +587,20 @@
 								: '—'}
 						</td>
 						<td class="px-4 py-2 text-neutral-600">
-							{tool.kind === 'builtin'
-								? `Provider: ${(tool.config.provider as string) ?? '—'}`
-								: tool.kind === 'python'
-									? `Sandbox timeout: ${(tool.config.timeout as number) ?? 600}s`
-									: ((tool.config.url as string) ?? '—')}
+							{#if tool.kind === 'builtin'}
+								Provider: {(tool.config.provider as string) ?? '—'}
+							{:else if tool.kind === 'python'}
+								{#if tool.config.description}
+									<span class="text-neutral-800">{tool.config.description}</span>
+									<span class="text-neutral-400"> · {(tool.config.timeout as number) ?? 600}s timeout</span>
+								{:else}
+									<span class="text-neutral-400">
+										No description set · {(tool.config.timeout as number) ?? 600}s timeout
+									</span>
+								{/if}
+							{:else}
+								{(tool.config.url as string) ?? '—'}
+							{/if}
 						</td>
 						<td class="px-4 py-2 text-neutral-600">{tool.enabled ? 'Yes' : 'No'}</td>
 						<td class="px-4 py-2 text-right">
@@ -732,6 +759,16 @@
 										</label>
 									{/if}
 									{#if tool.kind === 'python'}
+										<label class="block sm:col-span-2">
+											<span class="text-xs font-medium text-neutral-700">Description</span>
+											<input
+												type="text"
+												bind:value={editForm.description}
+												placeholder="e.g. for calculations and summarizing CSV data"
+												class="mt-1 w-full rounded-md border border-neutral-300 px-2 py-1 text-xs
+													focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+											/>
+										</label>
 										<label class="block">
 											<span class="text-xs font-medium text-neutral-700">Timeout (seconds)</span>
 											<input

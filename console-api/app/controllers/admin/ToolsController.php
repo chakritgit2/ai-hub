@@ -536,6 +536,12 @@ class ToolsController extends ControllerBase
      * crosses the PHP/Python boundary anywhere else in this codebase either). `domain` is
      * the one knob a future self-hosted E2B instance would need
      * (`dynamiq.connections.E2B.domain`) - optional, `null` means E2B's own public cloud.
+     * `description` (unlike `http`'s own `config.description`, which fully replaces what
+     * the LLM sees) is appended after Dynamiq's own fixed sandbox-usage description
+     * (`compiler.py::_build_python_tool`) rather than replacing it - that fixed text
+     * carries technical instructions the agent genuinely needs (how to pass `python`/
+     * `shell_command` input, file paths, etc.), so a company's own "when to use this"
+     * note can't be allowed to silently drop it.
      *
      * @param array<string, mixed> $config
      */
@@ -557,6 +563,9 @@ class ToolsController extends ControllerBase
         }
         if (array_key_exists('domain', $config) && $config['domain'] !== null && !is_string($config['domain'])) {
             return $this->jsonResponse(['error' => 'invalid_config_domain'], 400);
+        }
+        if (array_key_exists('description', $config) && $config['description'] !== null && !is_string($config['description'])) {
+            return $this->jsonResponse(['error' => 'invalid_config_description'], 400);
         }
 
         return null;

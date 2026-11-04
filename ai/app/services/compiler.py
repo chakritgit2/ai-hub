@@ -503,19 +503,34 @@ def _build_python_tool(
 
     `config.domain` is forwarded straight into the `E2B` connection unchanged (`None` by
     default - E2B's own public cloud) - the one knob a future self-hosted E2B instance
-    would need, already wired for free (see `dynamiq.connections.E2B.domain`)."""
+    would need, already wired for free (see `dynamiq.connections.E2B.domain`).
+
+    `config.description`, when set, is appended after Dynamiq's own fixed sandbox-usage
+    description rather than replacing it (unlike `kind: "http"`'s `config.description`,
+    which *is* the tool's whole description) - that fixed text is technical instructions
+    the agent genuinely needs (how to pass `python`/`shell_command` input, file paths,
+    etc.), only this company's own "when to use this" note is missing from it, not a
+    replacement for it."""
     from dynamiq.connections import E2B
+    from dynamiq.nodes.tools.code_interpreter import DESCRIPTION_SANDBOX_INTERPRETER
 
     from app.integrations.safe_python_tool import SafePythonTool
 
     api_key = secret or _COMPILE_TIME_PLACEHOLDER_API_KEY
     config = tool_def["config"]
     access_level = tool_def.get("access_level", "read")
+    custom_description = (config.get("description") or "").strip()
+    description = (
+        f"{custom_description}\n\n{DESCRIPTION_SANDBOX_INTERPRETER}"
+        if custom_description
+        else DESCRIPTION_SANDBOX_INTERPRETER
+    )
     # See SafeHttpApiCall.loop's docstring - same reasoning applies to this tool's own
     # write-gate DB call.
     loop = asyncio.get_running_loop()
     return SafePythonTool(
         name=tool_def["name"],
+        description=description,
         connection=E2B(api_key=api_key, domain=config.get("domain")),
         timeout=config.get("timeout") or _PYTHON_DEFAULT_TIMEOUT_SECONDS,
         company_id=company_id,
