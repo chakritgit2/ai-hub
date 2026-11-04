@@ -19,5 +19,5 @@ data:
   # only way to point at a non-subdomain-pattern self-hosted instance; the Tools page's
   # per-tool "Domain" field can't do it for this setup. E2B_API_KEY is deliberately NOT
   # here - it's a per-tool secret (console Tools page -> "Set secret"), never an env var.
-  E2B_API_URL: http://192.168.35.122:3000
-  E2B_SANDBOX_URL: http://192.168.35.122:3002
+  E2B_API_URL: http://192.168.33.200:3000
+  E2B_SANDBOX_URL: http://192.168.33.200:3002
