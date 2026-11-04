@@ -13,3 +13,11 @@ data:
   GATEWAY_JWKS_KID: gw-2026-09
   KB_STORAGE_ROOT: /data/kb-storage
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
+  # Self-hosted E2B (kind: python tool sandbox) - the e2b SDK reads these two directly via
+  # os.getenv() (dynamiq's own E2B connection only ever forwards api_key/domain, never
+  # api_url/sandbox_url - see e2b's connection_config.py), so real pod env vars are the
+  # only way to point at a non-subdomain-pattern self-hosted instance; the Tools page's
+  # per-tool "Domain" field can't do it for this setup. E2B_API_KEY is deliberately NOT
+  # here - it's a per-tool secret (console Tools page -> "Set secret"), never an env var.
+  E2B_API_URL: http://192.168.35.122:3000
+  E2B_SANDBOX_URL: http://192.168.35.122:3002
