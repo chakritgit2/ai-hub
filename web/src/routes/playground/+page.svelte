@@ -226,7 +226,11 @@
 		}
 	}
 
-	async function resumeConversation(agentVersionId: string) {
+	// Bumped on every agent/version switch and on "New conversation" so a resume() still in
+	// flight from a previous switch can be told it's been superseded and must not land.
+	let resumeSeq = 0;
+
+	async function resumeConversation(agentVersionId: string, seq: number) {
 		let savedId: string | null = null;
 		try {
 			savedId = localStorage.getItem(conversationStorageKey(agentVersionId));
@@ -238,6 +242,11 @@
 		try {
 			const { token } = await issueRuntimeToken(agentVersionId);
 			const resumed = await getConversationMessages(token, savedId);
+			// Superseded by a later switch/new-conversation, or the user already started
+			// chatting under this same version while this network round-trip was in
+			// flight - either way, never clobber what's on screen now.
+			if (seq !== resumeSeq || selectedAgentVersionId !== agentVersionId) return;
+			if (messages.length > 0 || conversationId) return;
 			if (resumed.length > 0) {
 				messages = resumed.map((m) => ({ role: m.role, content: m.content }));
 				conversationId = savedId;
@@ -246,6 +255,7 @@
 			// Expired/swept/never-ours (404) or a transient failure - either way there's
 			// nothing to resume right now; drop the stale pointer and start fresh silently,
 			// same as a first-ever visit.
+			if (seq !== resumeSeq || selectedAgentVersionId !== agentVersionId) return;
 			saveConversationId(agentVersionId, null);
 		}
 	}
@@ -257,11 +267,15 @@
 			suppressNextResume = false;
 			return;
 		}
-		// Only on a clean slate - never clobber an in-progress chat if this effect re-fires
-		// for an unrelated reason while messages are already populated.
-		if (messages.length === 0) {
-			resumeConversation(versionId);
-		}
+		// Switching agent/version must never leave the previous version's transcript or
+		// conversation_id on screen: the backend only continues a conversation when the
+		// client supplies its id, so clearing conversationId here (same reset
+		// newConversation() does) is what stops the next turn from being sent under the
+		// old agent/version's conversation_id and silently extending its memory.
+		resumeSeq++;
+		const seq = resumeSeq;
+		resetConversationState();
+		resumeConversation(versionId, seq);
 	});
 
 	async function send() {
@@ -357,12 +371,11 @@
 		pendingApproval = null;
 	}
 
-	function newConversation() {
+	function resetConversationState() {
 		// Must abort any in-flight run first - otherwise its onToken/onFinal closures keep
 		// writing into `messages[idx]` of the array this function is about to replace,
 		// corrupting the brand-new conversation with stale previous-conversation tokens.
 		abortController?.abort();
-		if (selectedAgentVersionId) saveConversationId(selectedAgentVersionId, null);
 		runState = 'done';
 		messages = [];
 		conversationId = null;
@@ -375,6 +388,14 @@
 		stepsError = null;
 		lastUserInput = '';
 		showAddTestCase = false;
+	}
+
+	function newConversation() {
+		// Supersede any resume() still in flight from a just-prior agent/version switch -
+		// otherwise it could land right after this and silently bring the old chat back.
+		resumeSeq++;
+		if (selectedAgentVersionId) saveConversationId(selectedAgentVersionId, null);
+		resetConversationState();
 	}
 </script>
 
