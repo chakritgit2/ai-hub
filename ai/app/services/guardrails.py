@@ -157,10 +157,15 @@ async def run_checks(
     """
     events: list[CheckEvent] = []
     working_text = text
+    # Keyed by connection_id - a company with e.g. both an input and output
+    # content_moderation check against the same Azure connection would otherwise re-resolve
+    # (resolve_connection + decrypt_connection_secret + list_egress_allowlist, 3 DB round
+    # trips) identical connection data once per check instead of once per call here.
+    azure_cache: dict[str, tuple[str, str, list[EgressAllowlistEntry]]] = {}
 
     for check in checks:
         try:
-            triggered, detail, masked_text = await _run_one(working_text, check, company_id)
+            triggered, detail, masked_text = await _run_one(working_text, check, company_id, azure_cache)
             action = check.action if triggered else None
         except Exception as exc:  # noqa: BLE001 - one bad check (bug in _run_one, or a model-based check's Azure call failing) must route through on_error, not crash every check still in the loop
             triggered, detail, masked_text = True, {"error": str(exc)}, None
@@ -184,7 +189,12 @@ async def run_checks(
     return GuardrailOutcome(blocked=False, text=working_text, fallback_message=None, events=events)
 
 
-async def _run_one(text: str, check: GuardrailCheckSpec, company_id: str | None) -> tuple[bool, dict, str | None]:
+async def _run_one(
+    text: str,
+    check: GuardrailCheckSpec,
+    company_id: str | None,
+    azure_cache: dict[str, tuple[str, str, list[EgressAllowlistEntry]]] | None = None,
+) -> tuple[bool, dict, str | None]:
     """Returns (triggered, detail, masked_text). masked_text is only set when the check
     triggered with action="mask" - None otherwise (nothing to carry forward)."""
     if check.check_type == "max_length":
@@ -218,7 +228,18 @@ async def _run_one(text: str, check: GuardrailCheckSpec, company_id: str | None)
     if check.check_type in ("prompt_injection", "pii_model", "content_moderation"):
         if not company_id:
             raise ValueError(f"{check.check_type!r} check requires a company_id (see run_checks's docstring)")
-        api_base, secret, allowlist = await _resolve_azure_connection(company_id, check.connection_id)
+        # Keyed by (connection_id, check_type), not connection_id alone - caching across
+        # check_types would skip _resolve_azure_connection's type validation for whichever
+        # check_type didn't trigger the first resolution.
+        cache_key = f"{check.connection_id}:{check.check_type}"
+        if azure_cache is not None and cache_key in azure_cache:
+            api_base, secret, allowlist = azure_cache[cache_key]
+        else:
+            api_base, secret, allowlist = await _resolve_azure_connection(
+                company_id, check.connection_id, check.check_type
+            )
+            if azure_cache is not None:
+                azure_cache[cache_key] = (api_base, secret, allowlist)
         if check.check_type == "prompt_injection":
             return await _run_prompt_injection_check(text, api_base, secret, allowlist)
         if check.check_type == "content_moderation":
@@ -228,8 +249,19 @@ async def _run_one(text: str, check: GuardrailCheckSpec, company_id: str | None)
     raise ValueError(f"unknown guardrail check type: {check.check_type!r}")
 
 
+# Mirrors web/src/lib/components/agents/AgentSpecTabs.svelte's CONNECTION_TYPE_FOR_CHECK -
+# the frontend only *offers* a matching connection in its dropdown, it doesn't stop a spec
+# built outside the UI (a direct API call, an imported spec) from naming any connection_id,
+# so this module needs its own copy of the same rule to actually enforce it.
+_EXPECTED_CONNECTION_TYPE = {
+    "prompt_injection": "azure_content_safety",
+    "content_moderation": "azure_content_safety",
+    "pii_model": "azure_language",
+}
+
+
 async def _resolve_azure_connection(
-    company_id: str, connection_id: str | None
+    company_id: str, connection_id: str | None, check_type: str
 ) -> tuple[str, str, list[EgressAllowlistEntry]]:
     """Shared resolution for the 3 Azure-backed checks: the connection's endpoint
     (`api_base`), its decrypted secret, and the company's current egress allowlist (fresh
@@ -244,6 +276,15 @@ async def _resolve_azure_connection(
     connection = await resolve_connection(company_id, connection_id)
     if connection is None:
         raise ValueError(f"no connection found for connection_id={connection_id!r}")
+    expected_type = _EXPECTED_CONNECTION_TYPE[check_type]
+    if connection.type != expected_type:
+        # Without this, a misrouted connection_id would send the run's own input/output
+        # text plus that connection's secret to whatever host its api_base names - not just
+        # a misconfiguration, a potential data/credential leak to the wrong endpoint.
+        raise ValueError(
+            f"connection {connection_id!r} has type {connection.type!r}, but a {check_type!r} check"
+            f" requires a {expected_type!r} connection"
+        )
     if not connection.api_base:
         raise ValueError(f"connection {connection_id!r} has no api_base (Azure resource endpoint) configured")
     secret = await decrypt_connection_secret(company_id, connection_id)
@@ -321,9 +362,18 @@ async def _run_pii_model_check(
             "analysisInput": {"documents": [{"id": "1", "text": text}]},
         },
     )
-    documents = result.get("results", {}).get("documents", [])
+    results = result.get("results", {})
+    documents = results.get("documents", [])
     if not documents:
-        return False, {}, None
+        # A missing `documents` entry means Azure couldn't analyze this text at all (its own
+        # per-document error, e.g. over the character limit or an unsupported language,
+        # reported under `results.errors` instead) - NOT that it analyzed it and found no
+        # PII. Raising here, instead of silently returning "clean", routes this through
+        # run_checks's same try/except -> on_error fail-closed handling every other failure
+        # in this module gets, rather than letting unscanned text through a block-configured
+        # check.
+        errors = results.get("errors", [])
+        raise ValueError(f"Azure Language returned no document result for the PII check: {errors}")
     document = documents[0]
     entities = document.get("entities", [])
     if not entities:

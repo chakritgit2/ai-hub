@@ -795,6 +795,33 @@ async def test_build_python_tool_uses_only_the_fixed_description_when_none_set()
     assert tool.description == DESCRIPTION_SANDBOX_INTERPRETER
 
 
+async def test_build_python_tool_defaults_allow_packages_to_false():
+    """A real code-review finding: config.allow_packages must actually reach SafePythonTool
+    (where it's enforced in execute()), not just round-trip into the stored tool config."""
+    from app.services.compiler import _build_python_tool
+
+    tool_def = {"id": str(uuid.uuid4()), "name": "python_sandbox", "access_level": "read", "config": {}}
+
+    tool = _build_python_tool(tool_def, "company-x")
+
+    assert tool.allow_packages is False
+
+
+async def test_build_python_tool_threads_allow_packages_true():
+    from app.services.compiler import _build_python_tool
+
+    tool_def = {
+        "id": str(uuid.uuid4()),
+        "name": "python_sandbox",
+        "access_level": "read",
+        "config": {"allow_packages": True},
+    }
+
+    tool = _build_python_tool(tool_def, "company-x")
+
+    assert tool.allow_packages is True
+
+
 @requires_postgres
 async def test_compile_rejects_python_tool_with_invalid_auth_mode(make_connection, make_tool):
     company_id = str(uuid.uuid4())

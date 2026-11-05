@@ -174,6 +174,87 @@ async def test_python_tool_test_reports_success_when_the_sandbox_runs_cleanly(
     assert body["ok"] is True
 
 
+def _make_safe_python_tool(*, allow_packages=False, domain=None, company_id="company-x"):
+    from dynamiq.connections import E2B
+
+    from app.integrations.safe_python_tool import SafePythonTool
+
+    return SafePythonTool(
+        name="python_sandbox",
+        connection=E2B(api_key="fake-key", domain=domain),
+        company_id=company_id,
+        allow_packages=allow_packages,
+    )
+
+
+def test_safe_python_tool_blocks_packages_when_not_allowed():
+    """A real code-review finding: config.allow_packages was validated and stored but never
+    enforced - the agent could always install arbitrary pip packages regardless of it."""
+    from dynamiq.nodes.agents.exceptions import ToolExecutionException
+    from dynamiq.nodes.tools.code_interpreter import CodeInterpreterInputSchema
+
+    tool = _make_safe_python_tool(allow_packages=False)
+
+    with pytest.raises(ToolExecutionException, match="allow_packages"):
+        tool._check_packages_allowed(CodeInterpreterInputSchema(packages="requests", python="import requests"))
+
+
+def test_safe_python_tool_allows_empty_packages_when_not_allowed():
+    from dynamiq.nodes.tools.code_interpreter import CodeInterpreterInputSchema
+
+    tool = _make_safe_python_tool(allow_packages=False)
+
+    tool._check_packages_allowed(CodeInterpreterInputSchema(python="print(1)"))  # must not raise
+
+
+def test_safe_python_tool_allows_packages_when_allowed():
+    from dynamiq.nodes.tools.code_interpreter import CodeInterpreterInputSchema
+
+    tool = _make_safe_python_tool(allow_packages=True)
+
+    # must not raise
+    tool._check_packages_allowed(CodeInterpreterInputSchema(packages="requests", python="import requests"))
+
+
+async def test_safe_python_tool_skips_the_egress_check_for_e2bs_own_public_cloud():
+    """domain=None (the default) is E2B's own public cloud, not a company-configured
+    destination - must not even query the egress allowlist for it."""
+    tool = _make_safe_python_tool(domain=None, company_id=str(uuid.uuid4()))
+
+    await tool._check_custom_domain_allowed()  # must not raise, no allowlist row exists at all
+
+
+@requires_postgres
+async def test_safe_python_tool_blocks_a_self_hosted_domain_not_in_the_allowlist():
+    """A real code-review finding: config.domain was forwarded straight into the E2B
+    connection with no egress-allowlist check, unlike every other outbound destination in
+    this codebase."""
+    from app.integrations.safe_http_client import EgressBlockedError
+
+    tool = _make_safe_python_tool(domain="e2b.attacker.example", company_id=str(uuid.uuid4()))
+
+    with pytest.raises(Exception) as exc_info:
+        await tool._check_custom_domain_allowed()
+    assert "egress_blocked" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, EgressBlockedError)
+
+
+@requires_postgres
+async def test_safe_python_tool_allows_a_self_hosted_domain_in_the_allowlist(monkeypatch, make_egress_allowlist_entry):
+    import app.integrations.safe_http_client as safe_http_client_module
+
+    async def fake_resolve_ips(host):
+        return ["203.0.113.5"]
+
+    monkeypatch.setattr(safe_http_client_module, "_resolve_ips", fake_resolve_ips)
+
+    company_id = str(uuid.uuid4())
+    make_egress_allowlist_entry(company_id, "e2b.internal.example", port=443)
+    tool = _make_safe_python_tool(domain="e2b.internal.example", company_id=company_id)
+
+    await tool._check_custom_domain_allowed()  # must not raise
+
+
 @requires_postgres
 async def test_http_tool_with_no_url_is_ok_false(internal_client, make_tool):
     client, company_id = internal_client

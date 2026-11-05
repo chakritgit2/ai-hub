@@ -504,6 +504,13 @@ def _build_python_tool(
     `config.domain` is forwarded straight into the `E2B` connection unchanged (`None` by
     default - E2B's own public cloud) - the one knob a future self-hosted E2B instance
     would need, already wired for free (see `dynamiq.connections.E2B.domain`).
+    `SafePythonTool.execute` allowlist-checks a non-default `domain` at call time (same
+    "fresh on every call" reasoning as `SafeHttpApiCall`'s own egress check), not here -
+    this function never makes a real network call, see this module's own docstring.
+
+    `config.allow_packages` (default `False`) is likewise enforced in
+    `SafePythonTool.execute`, not here - rejecting a non-empty `packages` input before the
+    write-approval gate, so a disallowed request never reaches a human reviewer at all.
 
     `config.description`, when set, is appended after Dynamiq's own fixed sandbox-usage
     description rather than replacing it (unlike `kind: "http"`'s `config.description`,
@@ -536,6 +543,7 @@ def _build_python_tool(
         company_id=company_id,
         tool_id=tool_def["id"],
         access_level=access_level,
+        allow_packages=bool(config.get("allow_packages")),
         run_id=run_id,
         allow_write_tools=allow_write_tools,
         stream_handler=stream_handler,

@@ -555,6 +555,103 @@ async def test_model_based_check_fails_closed_when_no_secret_is_stored(monkeypat
     assert "no secret stored" in outcome.events[0].detail["error"]
 
 
+@requires_postgres
+async def test_pii_model_fails_closed_when_azure_returns_no_document_result(
+    monkeypatch, make_connection, store_connection_secret
+):
+    """A real code-review finding: Azure reports a per-document error (over the character
+    limit, unsupported language, ...) under `results.errors` instead of `results.documents`
+    - that must fail closed like every other failure in this module, not be read as
+    "analyzed, no PII found" just because `documents` happens to be empty."""
+    import app.services.guardrails as guardrails_module
+
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id, connection_type="azure_language", api_base="https://fake-resource.cognitiveservices.azure.com")
+    await store_connection_secret(company_id, connection_id, "fake-azure-key")
+
+    async def fake_request(self, method, url, **kwargs):
+        return _fake_azure_response(
+            200,
+            {"results": {"errors": [{"id": "1", "error": {"code": "InvalidDocument", "message": "document too long"}}], "documents": []}},
+        )
+
+    monkeypatch.setattr(guardrails_module.SafeHttpClient, "request", fake_request)
+    check = GuardrailCheckSpec(check_type="pii_model", action="block", on_error="block", connection_id=connection_id)
+
+    outcome = await run_checks("some oversized text", [check], stage="input", company_id=company_id)
+
+    assert outcome.blocked is True
+    assert "no document result" in outcome.events[0].detail["error"]
+
+
+@requires_postgres
+async def test_model_based_check_fails_closed_when_connection_type_mismatches(
+    monkeypatch, make_connection, store_connection_secret
+):
+    """A real code-review finding: a prompt_injection/content_moderation check must use an
+    azure_content_safety connection, pii_model must use azure_language - without this check,
+    a misrouted connection_id would send the run's own text plus that connection's secret to
+    whatever host its api_base names."""
+    import app.services.guardrails as guardrails_module
+
+    company_id = str(uuid.uuid4())
+    # A real azure_language connection, used for a prompt_injection check that requires
+    # azure_content_safety.
+    connection_id = make_connection(company_id, connection_type="azure_language", api_base="https://fake-resource.cognitiveservices.azure.com")
+    await store_connection_secret(company_id, connection_id, "fake-azure-key")
+
+    async def fake_request(self, method, url, **kwargs):  # pragma: no cover - must never be reached
+        raise AssertionError("Azure must not be called with a mismatched connection type")
+
+    monkeypatch.setattr(guardrails_module.SafeHttpClient, "request", fake_request)
+    check = GuardrailCheckSpec(check_type="prompt_injection", action="block", on_error="block", connection_id=connection_id)
+
+    outcome = await run_checks("irrelevant", [check], stage="input", company_id=company_id)
+
+    assert outcome.blocked is True
+    assert "azure_content_safety" in outcome.events[0].detail["error"]
+    assert "azure_language" in outcome.events[0].detail["error"]
+
+
+@requires_postgres
+async def test_two_checks_sharing_a_connection_resolve_it_only_once(
+    monkeypatch, make_connection, store_connection_secret
+):
+    """An efficiency finding from code review: an input + output content_moderation check
+    against the same connection_id previously re-resolved the connection/secret/allowlist
+    (3 DB round trips) once per check instead of once per run_checks call."""
+    import app.services.guardrails as guardrails_module
+
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id, connection_type="azure_content_safety", api_base="https://fake-resource.cognitiveservices.azure.com")
+    await store_connection_secret(company_id, connection_id, "fake-azure-key")
+
+    resolve_calls = 0
+    real_resolve_connection = guardrails_module.resolve_connection
+
+    async def counting_resolve_connection(*args, **kwargs):
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return await real_resolve_connection(*args, **kwargs)
+
+    async def fake_request(self, method, url, **kwargs):
+        return _fake_azure_response(
+            200, {"categoriesAnalysis": [{"category": c, "severity": 0} for c in ["Hate", "SelfHarm", "Sexual", "Violence"]]}
+        )
+
+    monkeypatch.setattr(guardrails_module, "resolve_connection", counting_resolve_connection)
+    monkeypatch.setattr(guardrails_module.SafeHttpClient, "request", fake_request)
+    checks = [
+        GuardrailCheckSpec(check_type="content_moderation", action="flag", connection_id=connection_id),
+        GuardrailCheckSpec(check_type="content_moderation", action="flag", connection_id=connection_id),
+    ]
+
+    outcome = await run_checks("text checked twice", checks, stage="input", company_id=company_id)
+
+    assert outcome.blocked is False
+    assert resolve_calls == 1
+
+
 async def test_model_based_check_fails_closed_when_company_id_is_missing():
     """A caller that forgets to pass company_id (e.g. a new call site added later) must
     fail closed through on_error, not raise a confusing TypeError/AttributeError deep in
