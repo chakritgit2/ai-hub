@@ -26,6 +26,7 @@ async def log_run(
     company_id: str,
     trace_id: str,
     status: str,
+    otel_trace_id: str | None = None,
     source: str = "playground",
     agent_version_id: str | None = None,
     workflow_version_id: str | None = None,
@@ -43,7 +44,12 @@ async def log_run(
     """The `logs.runs` write is a no-op for a blank `company_id` (no company context to
     scope it to - same convention as `app.services.conversations`/
     `app.services.guardrails`), but the metrics below carry no company label and have no
-    such reason to skip, so they're recorded regardless."""
+    such reason to skip, so they're recorded regardless.
+
+    `otel_trace_id` is the real OpenTelemetry/Tempo trace id (see
+    `app.services.runtime._StepCollector`), `None` whenever tracing was a no-op for this
+    run (no `OTEL_EXPORTER_OTLP_ENDPOINT`) - distinct from `trace_id`, this service's own
+    unrelated uuid4() log-grouping id, which every run always has."""
     usage = usage or RunUsage()
 
     if company_id:
@@ -69,6 +75,7 @@ async def log_run(
                     "guardrail_cost_usd": guardrail_cost_usd,
                     "latency_ms": latency_ms,
                     "trace_id": trace_id,
+                    "otel_trace_id": otel_trace_id,
                     "error": error,
                 },
             )

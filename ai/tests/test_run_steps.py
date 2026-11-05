@@ -1,5 +1,7 @@
 import uuid
 
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
+
 from app.core.db import get_company_session
 from app.db.tables import run_steps_table
 from app.services.guardrails import CheckEvent
@@ -8,6 +10,16 @@ from app.services.runs import log_run
 from app.services.runtime import _StepCollector
 
 from .markers import requires_postgres
+
+
+def _fake_span(trace_id: int) -> NonRecordingSpan:
+    context = SpanContext(
+        trace_id=trace_id,
+        span_id=0x1,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    )
+    return NonRecordingSpan(context)
 
 
 def _node(group: str, name: str) -> dict:
@@ -78,6 +90,50 @@ def test_step_collector_marks_fallback_llm_step_in_detail():
     primary_step, fallback_step = collector.steps
     assert primary_step.detail == {}
     assert fallback_step.detail == {"is_fallback": True}
+
+
+def test_step_collector_captures_the_real_otel_trace_id_from_the_active_span():
+    """_StepCollector.otel_trace_id (PRD §6.9 Trace tab waterfall) must come from
+    whatever OpenLIT's real OpenTelemetry span context is active when on_node_start fires
+    - this is the only point in the run's control flow nested inside that span (see the
+    class's own docstring)."""
+    collector = _StepCollector()
+    run_id = str(uuid.uuid4())
+    trace_id = 0x1234567890ABCDEF1234567890ABCDEF
+
+    with use_span(_fake_span(trace_id)):
+        collector.on_node_start(_node("llms", "gpt-4o-mini"), {"input": "hi"}, run_id=run_id)
+
+    assert collector.otel_trace_id == format(trace_id, "032x")
+
+
+def test_step_collector_only_captures_the_otel_trace_id_once():
+    """on_node_start fires once per node, not once per run - a later node (a different
+    span in dynamiq's own per-node instrumentation) must not overwrite the run's actual
+    root trace id captured from the first node."""
+    collector = _StepCollector()
+    first_run_id, second_run_id = str(uuid.uuid4()), str(uuid.uuid4())
+    first_trace_id, second_trace_id = 0x1111, 0x2222
+
+    with use_span(_fake_span(first_trace_id)):
+        collector.on_node_start(_node("llms", "gpt-4o-mini"), {"input": "hi"}, run_id=first_run_id)
+    with use_span(_fake_span(second_trace_id)):
+        collector.on_node_start(_node("tools", "search_order"), {"query": "x"}, run_id=second_run_id)
+
+    assert collector.otel_trace_id == format(first_trace_id, "032x")
+
+
+def test_step_collector_leaves_otel_trace_id_none_when_tracing_is_a_noop():
+    """No OTEL_EXPORTER_OTLP_ENDPOINT configured (app/core/otel.py) means openlit.init()
+    never ran, so there's no real span active - get_span_context().is_valid is False in
+    that case (the default NonRecordingSpan's all-zeros context), must not be captured as
+    a fake trace id."""
+    collector = _StepCollector()
+    run_id = str(uuid.uuid4())
+
+    collector.on_node_start(_node("llms", "gpt-4o-mini"), {"input": "hi"}, run_id=run_id)
+
+    assert collector.otel_trace_id is None
 
 
 def test_guardrail_run_steps_converts_check_events():

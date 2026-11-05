@@ -99,6 +99,8 @@ spec:
               value: http://ai-runtime:8080
             - name: AI_RUNTIME_PUBLIC_BASE_URL
               value: http://ai-runtime:8080
+            - name: TEMPO_BASE_URL
+              value: http://tempo:3200
           volumeMounts:
             - name: jwt-keys
               mountPath: /etc/dynamiq/keys

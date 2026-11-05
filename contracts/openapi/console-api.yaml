@@ -547,6 +547,7 @@ components:
         guardrail_cost_usd: { type: number, nullable: true }
         latency_ms: { type: integer, nullable: true }
         trace_id: { type: string }
+        otel_trace_id: { type: string, nullable: true, description: 'Real OpenTelemetry/Tempo trace id (PRD §6.9 Trace tab waterfall) - null for every run before this field existed, or where tracing was a no-op. Distinct from trace_id above, an unrelated internal log-grouping id.' }
         error: { type: string, nullable: true, description: 'Technical failure detail (e.g. a provider exception) - never the run''s raw input/output.' }
         created_at: { type: string, format: date-time }
     DashboardSummary:
@@ -602,6 +603,28 @@ components:
         error: { type: string, nullable: true }
         detail: { type: object, additionalProperties: true }
         created_at: { type: string, format: date-time }
+    TraceSpan:
+      type: object
+      description: One flattened OTLP span (console-api's TempoTraceFlattener), relative to the trace's earliest span start.
+      properties:
+        span_id: { type: string }
+        parent_span_id: { type: string, nullable: true }
+        name: { type: string }
+        start_ms_relative: { type: number, description: Milliseconds after the trace's earliest span started. }
+        duration_ms: { type: number }
+        attributes: { type: object, additionalProperties: true }
+        status: { type: string, enum: [unset, ok, error] }
+    RunTrace:
+      type: object
+      properties:
+        ok: { type: boolean }
+        trace:
+          type: object
+          nullable: true
+          description: Null when otel_trace_id is unset, Tempo is unreachable, or the trace aged past its 14-day retention - never an error, the Trace tab falls back to /runs/{id}/steps.
+          properties:
+            trace_id: { type: string }
+            spans: { type: array, items: { $ref: '#/components/schemas/TraceSpan' } }
     RunReplay:
       type: object
       properties:
@@ -1120,6 +1143,16 @@ paths:
       summary: 'Step-by-step trace (PRD §6.8/§6.9 Trace tab) - reads logs.run_steps directly, ordered by step_index.'
       responses:
         "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RunStep' } } } } }
+        "404": { description: not found }
+  /runs/{id}/trace:
+    parameters:
+      - { $ref: '#/components/parameters/XCompanyId' }
+      - { $ref: '#/components/parameters/IdParam' }
+    get:
+      operationId: getRunTrace
+      summary: 'Span-level trace waterfall (PRD §6.9 Trace tab), sourced from Grafana Tempo via console-api''s TempoClient. Always a clean 200 trace:null rather than a 502 when unavailable.'
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunTrace' } } } }
         "404": { description: not found }
   /runs/{id}/replay:
     parameters:

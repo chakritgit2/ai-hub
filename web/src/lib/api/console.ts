@@ -44,6 +44,7 @@ import type {
 	RunReplay,
 	RuntimeTokenResponse,
 	RunStep,
+	RunTrace,
 	Skill,
 	Tenant,
 	Tool,
@@ -316,6 +317,10 @@ export function listRunGuardrailEvents(id: string): Promise<GuardrailEvent[]> {
 
 export function listRunSteps(id: string): Promise<RunStep[]> {
 	return apiFetch<RunStep[]>(`/runs/${id}/steps`);
+}
+
+export function getRunTrace(id: string): Promise<RunTrace> {
+	return apiFetch<RunTrace>(`/runs/${id}/trace`);
 }
 
 export function replayRun(id: string): Promise<RunReplay> {
@@ -801,6 +806,7 @@ export type {
 	RunReplay,
 	RuntimeTokenResponse,
 	RunStep,
+	RunTrace,
 	Skill,
 	Tenant,
 	Tool,

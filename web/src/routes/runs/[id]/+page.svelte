@@ -6,12 +6,21 @@
 		getRun,
 		getRunContent,
 		getRunConversation,
+		getRunTrace,
 		listRunGuardrailEvents,
 		listRunSteps,
 		replayRun
 	} from '$lib/api/console';
 	import { ApiError } from '$lib/api/client';
-	import type { GuardrailEvent, Run, RunContent, RunConversation, RunStep } from '$lib/api/types';
+	import type {
+		GuardrailEvent,
+		Run,
+		RunContent,
+		RunConversation,
+		RunStep,
+		RunTrace,
+		TraceSpan
+	} from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 
@@ -61,6 +70,9 @@
 
 	let steps = $state<RunStep[]>([]);
 	let stepsError = $state<string | null>(null);
+	let trace = $state<RunTrace['trace']>(null);
+	let traceError = $state<string | null>(null);
+	let hoveredSpanId = $state<string | null>(null);
 	let conversation = $state<RunConversation | null>(null);
 	let conversationError = $state<string | null>(null);
 	let guardrailEvents = $state<GuardrailEvent[]>([]);
@@ -83,6 +95,90 @@
 		flag: 'Flagged'
 	};
 
+	// --- Trace waterfall geometry (same hand-rolled-SVG convention as the Dashboard's
+	// runs-per-day chart: bars <=24px thick, rounded trailing edge/square leading edge,
+	// label selectively, no charting library) -------------------------------------------
+	const WATERFALL_WIDTH = 700;
+	const LABEL_WIDTH = 220;
+	const TIMELINE_WIDTH = WATERFALL_WIDTH - LABEL_WIDTH;
+	const ROW_HEIGHT = 20;
+	const ROW_GAP = 6;
+	const ROW_STEP = ROW_HEIGHT + ROW_GAP;
+	const INDENT_PX = 14;
+	const TOP_PADDING = 4;
+
+	interface OrderedSpan {
+		span: TraceSpan;
+		depth: number;
+	}
+
+	// Depth-first walk of the parent/child tree, each level sorted by start time - a span
+	// whose parent_span_id isn't present in this trace (the true root, or a parent Tempo
+	// didn't return) is treated as a root too, rather than dropped.
+	function orderSpansDepthFirst(spans: TraceSpan[]): OrderedSpan[] {
+		const spanIds = new Set(spans.map((s) => s.span_id));
+		const childrenByParent = new Map<string | null, TraceSpan[]>();
+		for (const span of spans) {
+			const parentKey = span.parent_span_id !== null && spanIds.has(span.parent_span_id) ? span.parent_span_id : null;
+			const siblings = childrenByParent.get(parentKey) ?? [];
+			siblings.push(span);
+			childrenByParent.set(parentKey, siblings);
+		}
+		for (const siblings of childrenByParent.values()) {
+			siblings.sort((a, b) => a.start_ms_relative - b.start_ms_relative);
+		}
+
+		const ordered: OrderedSpan[] = [];
+		function visit(parentKey: string | null, depth: number) {
+			for (const span of childrenByParent.get(parentKey) ?? []) {
+				ordered.push({ span, depth });
+				visit(span.span_id, depth + 1);
+			}
+		}
+		visit(null, 0);
+		return ordered;
+	}
+
+	let orderedSpans = $derived(trace ? orderSpansDepthFirst(trace.spans) : []);
+	let totalDurationMs = $derived(
+		Math.max(1, ...(trace?.spans ?? []).map((s) => s.start_ms_relative + s.duration_ms))
+	);
+
+	interface WaterfallRow {
+		span: TraceSpan;
+		depth: number;
+		x: number;
+		width: number;
+		y: number;
+	}
+
+	let waterfallRows = $derived<WaterfallRow[]>(
+		orderedSpans.map(({ span, depth }, i) => ({
+			span,
+			depth,
+			x: LABEL_WIDTH + (span.start_ms_relative / totalDurationMs) * TIMELINE_WIDTH,
+			width: Math.max(2, (span.duration_ms / totalDurationMs) * TIMELINE_WIDTH),
+			y: TOP_PADDING + i * ROW_STEP
+		}))
+	);
+
+	let waterfallHeight = $derived(TOP_PADDING * 2 + waterfallRows.length * ROW_STEP);
+
+	// Square leading edge / rounded trailing edge, mirroring the Dashboard chart's
+	// rounded-top/square-baseline vertical bars - here "baseline" is the bar's start.
+	function waterfallBarPath(row: WaterfallRow): string {
+		const { x, y, width: w } = row;
+		const h = ROW_HEIGHT;
+		if (w <= 0) return '';
+		const r = Math.min(3, w, h / 2);
+		return `M${x},${y} L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h - r} Q${x + w},${y + h} ${x + w - r},${y + h} L${x},${y + h} Z`;
+	}
+
+	function spanAttribute(span: TraceSpan, key: string): string | null {
+		const value = span.attributes[key];
+		return value === undefined ? null : String(value);
+	}
+
 	async function load(id: string) {
 		loading = true;
 		error = null;
@@ -98,8 +194,9 @@
 
 		const hasConversation = run.conversation_id !== null && run.conversation_id !== undefined;
 
-		const [stepsResult, conversationResult, guardrailResult] = await Promise.allSettled([
+		const [stepsResult, traceResult, conversationResult, guardrailResult] = await Promise.allSettled([
 			listRunSteps(id),
+			getRunTrace(id),
 			hasConversation ? getRunConversation(id) : Promise.resolve(null),
 			listRunGuardrailEvents(id)
 		]);
@@ -109,6 +206,15 @@
 		} else {
 			stepsError =
 				stepsResult.reason instanceof Error ? stepsResult.reason.message : 'Failed to load the trace.';
+		}
+
+		if (traceResult.status === 'fulfilled') {
+			trace = traceResult.value.trace;
+		} else {
+			// Not fatal - the Trace tab falls back to the flat step list above, same as a
+			// null `trace` (no otel_trace_id, Tempo unreachable, retention expired) does.
+			traceError =
+				traceResult.reason instanceof Error ? traceResult.reason.message : 'Failed to load the span trace.';
 		}
 
 		if (conversationResult.status === 'fulfilled') {
@@ -290,44 +396,109 @@
 
 	<div class="mt-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
 		{#if activeTab === 'trace'}
-			{#if stepsError}
-				<p class="text-sm text-danger">{stepsError}</p>
-			{:else if steps.length === 0}
-				<p class="text-sm text-neutral-500">No steps recorded for this run.</p>
-			{:else}
-				<ol class="divide-y divide-neutral-200">
-					{#each steps as step (step.id)}
-						<li class="flex flex-wrap items-center gap-3 py-2 text-sm">
-							<span
-								class="rounded-full px-2 py-0.5 text-xs font-medium {step.status === 'error' ||
-								step.status === 'block'
-									? 'bg-danger/10 text-danger'
-									: 'bg-primary/10 text-primary-700'}"
+			{#if trace && trace.spans.length > 0}
+				<div class="relative">
+					<svg
+						viewBox="0 0 {WATERFALL_WIDTH} {waterfallHeight}"
+						class="w-full"
+						style="height: {waterfallHeight}px;"
+						role="img"
+						aria-label="Span trace waterfall, {trace.spans.length} spans"
+					>
+						{#each waterfallRows as row (row.span.span_id)}
+							<text
+								x={row.depth * INDENT_PX}
+								y={row.y + ROW_HEIGHT / 2 + 3}
+								class="fill-neutral-600 text-[10px]"
 							>
-								{STEP_TYPE_LABELS[step.step_type]}
-							</span>
-							<span class="font-medium text-neutral-800">{step.name ?? '—'}</span>
-							{#if step.detail?.is_fallback}
-								<span class="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-									Fallback model
+								{row.span.name}
+							</text>
+							<path
+								d={waterfallBarPath(row)}
+								class={hoveredSpanId === row.span.span_id
+									? row.span.status === 'error'
+										? 'fill-danger/80'
+										: 'fill-primary-600'
+									: row.span.status === 'error'
+										? 'fill-danger/60'
+										: 'fill-primary-500'}
+								role="button"
+								tabindex="0"
+								aria-label="{row.span.name}: {row.span.duration_ms.toFixed(0)} ms, starting {row.span.start_ms_relative.toFixed(0)} ms in"
+								onmouseenter={() => (hoveredSpanId = row.span.span_id)}
+								onmouseleave={() => (hoveredSpanId = null)}
+								onfocus={() => (hoveredSpanId = row.span.span_id)}
+								onblur={() => (hoveredSpanId = null)}
+							/>
+						{/each}
+					</svg>
+
+					{#if hoveredSpanId !== null}
+						{@const row = waterfallRows.find((r) => r.span.span_id === hoveredSpanId)}
+						{#if row}
+							<div
+								class="pointer-events-none absolute -translate-y-full rounded-md border border-neutral-200
+									bg-white px-2 py-1 text-xs shadow-md"
+								style="left: {(row.x / WATERFALL_WIDTH) * 100}%; top: {(row.y / waterfallHeight) * 100}%;"
+							>
+								<p class="font-semibold text-neutral-900">{row.span.name}</p>
+								<p class="text-neutral-500">
+									{row.span.duration_ms.toFixed(0)} ms · starts {row.span.start_ms_relative.toFixed(0)} ms in
+								</p>
+								{#if spanAttribute(row.span, 'gen_ai.operation.name')}
+									<p class="text-neutral-500">op: {spanAttribute(row.span, 'gen_ai.operation.name')}</p>
+								{/if}
+								{#if spanAttribute(row.span, 'gen_ai.request.model')}
+									<p class="text-neutral-500">model: {spanAttribute(row.span, 'gen_ai.request.model')}</p>
+								{/if}
+							</div>
+						{/if}
+					{/if}
+				</div>
+			{:else}
+				<p class="mb-3 text-xs text-neutral-400">
+					Span-level trace not available for this run — showing recorded steps instead.
+					{#if traceError}<span class="block">({traceError})</span>{/if}
+				</p>
+				{#if stepsError}
+					<p class="text-sm text-danger">{stepsError}</p>
+				{:else if steps.length === 0}
+					<p class="text-sm text-neutral-500">No steps recorded for this run.</p>
+				{:else}
+					<ol class="divide-y divide-neutral-200">
+						{#each steps as step (step.id)}
+							<li class="flex flex-wrap items-center gap-3 py-2 text-sm">
+								<span
+									class="rounded-full px-2 py-0.5 text-xs font-medium {step.status === 'error' ||
+									step.status === 'block'
+										? 'bg-danger/10 text-danger'
+										: 'bg-primary/10 text-primary-700'}"
+								>
+									{STEP_TYPE_LABELS[step.step_type]}
 								</span>
-							{/if}
-							<span class="text-neutral-400">{step.status}</span>
-							{#if step.latency_ms !== null}
-								<span class="text-neutral-500">{step.latency_ms} ms</span>
-							{/if}
-							{#if step.tokens_in !== null || step.tokens_out !== null}
-								<span class="text-neutral-500">{step.tokens_in ?? 0}/{step.tokens_out ?? 0} tok</span>
-							{/if}
-							{#if step.cost_usd !== null}
-								<span class="text-neutral-500">${step.cost_usd.toFixed(4)}</span>
-							{/if}
-							{#if step.error}
-								<span class="w-full text-xs text-danger">{step.error}</span>
-							{/if}
-						</li>
-					{/each}
-				</ol>
+								<span class="font-medium text-neutral-800">{step.name ?? '—'}</span>
+								{#if step.detail?.is_fallback}
+									<span class="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+										Fallback model
+									</span>
+								{/if}
+								<span class="text-neutral-400">{step.status}</span>
+								{#if step.latency_ms !== null}
+									<span class="text-neutral-500">{step.latency_ms} ms</span>
+								{/if}
+								{#if step.tokens_in !== null || step.tokens_out !== null}
+									<span class="text-neutral-500">{step.tokens_in ?? 0}/{step.tokens_out ?? 0} tok</span>
+								{/if}
+								{#if step.cost_usd !== null}
+									<span class="text-neutral-500">${step.cost_usd.toFixed(4)}</span>
+								{/if}
+								{#if step.error}
+									<span class="w-full text-xs text-danger">{step.error}</span>
+								{/if}
+							</li>
+						{/each}
+					</ol>
+				{/if}
 			{/if}
 		{:else if activeTab === 'conversation'}
 			{#if !run.conversation_id}

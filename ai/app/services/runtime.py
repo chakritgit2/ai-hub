@@ -26,9 +26,11 @@ from dynamiq.callbacks.base import BaseCallbackHandler, get_run_id
 from dynamiq.callbacks.streaming import AsyncStreamingIteratorCallbackHandler
 from dynamiq.runnables.base import RunnableConfig, RunnableStatus
 from dynamiq.types.streaming import StreamingConfig, StreamingEventMessage, StreamingMode
+from opentelemetry import trace
 
 from app.core.config import get_settings
 from app.integrations.skill_registry import ConsoleSkillRegistry, get_console_skill_registry
+from app.services import run_registry
 from app.services.agent_spec import GuardrailCheckSpec, GuardrailsSpec, MemorySpec
 from app.services.agent_versions import resolve_agent_version
 from app.services.company_budget import check_monthly_budget_not_exceeded
@@ -40,7 +42,6 @@ from app.services.egress_allowlist import list_egress_allowlist
 from app.services.guardrails import CheckEvent, log_guardrail_events, output_checks_are_chunk_streamable, run_checks
 from app.services.identity import DelegatedIdentityContext
 from app.services.quotas import QuotaExceededError, check_rate_limit, reconcile_quota, reserve_quota
-from app.services import run_registry
 from app.services.run_steps import RunStep, guardrail_run_steps, log_run_steps
 from app.services.runs import RunUsage, log_run
 from app.services.streaming_events import extract_answer_delta, with_answer_delta
@@ -109,6 +110,16 @@ class _StepCollector(BaseCallbackHandler):
     synchronously in a single thread (the ReAct loop calls one node at a time), node
     `on_node_end`/`on_node_error` calls arrive in true execution order, so `self.steps`
     needs no re-sorting.
+
+    Also captures the real OpenTelemetry/Tempo trace id (`self.otel_trace_id`, PRD §6.9
+    Trace tab waterfall) the first time a node starts - OpenLIT's root span for this run
+    only exists while `agent.run()` itself is executing (it's created fresh per call and
+    torn down when `agent.run()` returns), and `agent.run()` runs inside a worker thread
+    (`asyncio.to_thread`) this collector's own callbacks also fire on - so `on_node_start`
+    is the first point in this codebase's control flow that's actually nested inside that
+    active span context. `None` whenever tracing was a no-op for this run (no
+    `OTEL_EXPORTER_OTLP_ENDPOINT` set, see app/core/otel.py) - `get_span_context().is_valid`
+    is `False` in that case, not a fake all-zeros id.
     """
 
     _STEP_GROUPS = {"llms": "llm", "tools": "tool_call"}
@@ -116,9 +127,15 @@ class _StepCollector(BaseCallbackHandler):
     def __init__(self) -> None:
         super().__init__()
         self.steps: list[RunStep] = []
+        self.otel_trace_id: str | None = None
         self._pending: dict[Any, dict[str, Any]] = {}
 
     def on_node_start(self, serialized: dict[str, Any], input_data: dict[str, Any], **kwargs: Any) -> None:
+        if self.otel_trace_id is None:
+            span_context = trace.get_current_span().get_span_context()
+            if span_context.is_valid:
+                self.otel_trace_id = format(span_context.trace_id, "032x")
+
         step_type = self._STEP_GROUPS.get(serialized.get("group"))
         if step_type is None:
             return
@@ -501,6 +518,7 @@ async def _execute_agent_run_body(
         return {
             "output": input_outcome.fallback_message,
             "trace_id": trace_id,
+            "otel_trace_id": None,  # input guardrail blocked before agent.run() ever started
             "latency_ms": latency_ms,
             "conversation_id": None,
             "guardrail_events": input_outcome.events,
@@ -682,6 +700,7 @@ async def _execute_agent_run_body(
             run_id=run_id,
             company_id=company_id,
             trace_id=trace_id,
+            otel_trace_id=step_collector.otel_trace_id,
             status=status,
             source=source,
             agent_version_id=agent_version_id,
@@ -743,6 +762,7 @@ async def _execute_agent_run_body(
         return {
             "output": None,
             "trace_id": trace_id,
+            "otel_trace_id": step_collector.otel_trace_id,
             "latency_ms": latency_ms,
             "conversation_id": resolved_conversation_id,
             "guardrail_events": [*input_outcome.events, *output_events],
@@ -873,6 +893,7 @@ async def _execute_agent_run_body(
         run_id=run_id,
         company_id=company_id,
         trace_id=trace_id,
+        otel_trace_id=step_collector.otel_trace_id,
         status="blocked" if output_blocked else "success",
         source=source,
         agent_version_id=agent_version_id,
@@ -899,6 +920,7 @@ async def _execute_agent_run_body(
     return {
         "output": final_output,
         "trace_id": trace_id,
+        "otel_trace_id": step_collector.otel_trace_id,
         "latency_ms": latency_ms,
         "conversation_id": resolved_conversation_id,
         "guardrail_events": [*input_outcome.events, *output_events],

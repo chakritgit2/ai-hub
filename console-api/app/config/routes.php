@@ -94,6 +94,7 @@ return function (Router $router): void {
     $admin('GET', '/runs/{id:[^/]+}/conversation', 'Runs', 'getRunConversation');
     $admin('GET', '/runs/{id:[^/]+}/guardrail-events', 'Runs', 'listRunGuardrailEvents');
     $admin('GET', '/runs/{id:[^/]+}/steps', 'Runs', 'listRunSteps');
+    $admin('GET', '/runs/{id:[^/]+}/trace', 'Runs', 'getRunTrace');
     $admin('POST', '/runs/{id:[^/]+}/replay', 'Runs', 'replayRun');
     $admin('POST', '/runs/{id:[^/]+}/content', 'Runs', 'getRunContent');
 

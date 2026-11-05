@@ -661,6 +661,10 @@ export interface Run {
 	guardrail_cost_usd?: number | null;
 	latency_ms: number | null;
 	trace_id: string;
+	// Real OpenTelemetry/Tempo trace id (PRD §6.9 Trace tab waterfall) - null for every run
+	// before this field existed, or where tracing was a no-op. Distinct from trace_id
+	// above, an unrelated internal log-grouping id every run always has.
+	otel_trace_id?: string | null;
 	// Technical failure detail (e.g. a provider exception string) - never the run's raw
 	// input/output, which stay deliberately inaccessible outside Replay (PRD PII concern).
 	error?: string | null;
@@ -700,6 +704,28 @@ export interface RunStep {
 	error: string | null;
 	detail: Record<string, unknown>;
 	created_at: string;
+}
+
+export type TraceSpanStatus = 'unset' | 'ok' | 'error';
+
+// One flattened OTLP span (console-api's TempoTraceFlattener) - relative to the trace's
+// earliest span start, not wall-clock time.
+export interface TraceSpan {
+	span_id: string;
+	parent_span_id: string | null;
+	name: string;
+	start_ms_relative: number;
+	duration_ms: number;
+	attributes: Record<string, string | number | boolean>;
+	status: TraceSpanStatus;
+}
+
+// GET /runs/{id}/trace - trace is null when otel_trace_id is unset, Tempo is unreachable,
+// or the trace aged past its 14-day retention - never an error; the Trace tab falls back
+// to the flat RunStep list (listRunSteps) in all three cases.
+export interface RunTrace {
+	ok: boolean;
+	trace: { trace_id: string; spans: TraceSpan[] } | null;
 }
 
 export interface RunConversation {

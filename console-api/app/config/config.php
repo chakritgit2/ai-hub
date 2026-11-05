@@ -66,4 +66,17 @@ return new Config([
         'publicBaseUrl' => $env('AI_RUNTIME_PUBLIC_BASE_URL', 'http://ai-runtime:8080'),
         'timeoutSeconds' => (int) $env('AI_RUNTIME_INTERNAL_TIMEOUT_SECONDS', 10),
     ],
+
+    // Grafana Tempo query API (PRD §6.9 Trace tab) - reachable only from console-api pods,
+    // same-namespace NetworkPolicy as ai-runtime (deploy/k8s/base/tempo-deployment.yaml).
+    // Unauthenticated at the transport level (no JWT, unlike aiRuntime) - Tempo's own
+    // query API has no such concept; access control for span data is "can this request
+    // reach this endpoint at all" (NetworkPolicy) plus RunsController's own
+    // requireMembership() check on the run a trace is being fetched for, not a bearer
+    // token. Short timeout deliberately - this is a page-load read, must not hang the
+    // request if Tempo is briefly slow/unreachable.
+    'tempo' => [
+        'baseUrl' => $env('TEMPO_BASE_URL', 'http://tempo:3200'),
+        'timeoutSeconds' => (int) $env('TEMPO_TIMEOUT_SECONDS', 5),
+    ],
 ]);

@@ -7,6 +7,8 @@ use ConsoleApi\Services\AuthService;
 use ConsoleApi\Services\CompanyContext;
 use ConsoleApi\Services\ConsoleJwks;
 use ConsoleApi\Services\RuntimeClient;
+use ConsoleApi\Services\TempoClient;
+use ConsoleApi\Services\TempoTraceFlattener;
 use ConsoleApi\Services\TokenIssuer;
 use Phalcon\Db\Adapter\Pdo\Postgresql as PdoPostgresql;
 use Phalcon\Di\FactoryDefault;
@@ -123,6 +125,20 @@ $di->setShared('runtimeClient', function () {
         $this->getShared('tokenIssuer'),
         $this->getShared('companyContext')
     );
+});
+
+// console-api -> Grafana Tempo query API, for the Trace tab's span waterfall (PRD §6.9).
+// Unlike runtimeClient, no internal JWT - Tempo's query API has no such auth concept, see
+// config.php's `tempo` block docblock.
+$di->setShared('tempoClient', function () {
+    /** @var \Phalcon\Config\Config $config */
+    $config = $this->getShared('config')->tempo;
+
+    return new TempoClient((string) $config->baseUrl, (int) $config->timeoutSeconds);
+});
+
+$di->setShared('tempoTraceFlattener', function () {
+    return new TempoTraceFlattener();
 });
 
 // Issues the 5-minute Playground runtime JWT and the 60-second internal call JWT

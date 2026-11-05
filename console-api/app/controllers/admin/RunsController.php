@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ConsoleApi\Controllers\Admin;
 
 use ConsoleApi\Controllers\ControllerBase;
+use ConsoleApi\Services\TempoClient;
+use ConsoleApi\Services\TempoTraceFlattener;
 use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
 
@@ -28,8 +30,8 @@ class RunsController extends ControllerBase
     // for every workflow run today.
     private const RUN_COLUMNS = 'r.id, r.company_id, r.agent_version_id, r.workflow_version_id, r.deployment_id,
                                   r.conversation_id, r.source, r.status, r.agent_name, r.model, r.tokens_in,
-                                  r.tokens_out, r.cost_usd, r.guardrail_cost_usd, r.latency_ms, r.trace_id, r.error,
-                                  r.created_at, w.name AS workflow_name';
+                                  r.tokens_out, r.cost_usd, r.guardrail_cost_usd, r.latency_ms, r.trace_id,
+                                  r.otel_trace_id, r.error, r.created_at, w.name AS workflow_name';
 
     // LEFT (not INNER) since workflow_version_id is null for every agent run - those rows
     // must still come back, just with workflow_name null.
@@ -313,6 +315,51 @@ class RunsController extends ControllerBase
     }
 
     /**
+     * Span-level trace waterfall for the Run detail page's Trace tab (PRD §6.9), sourced
+     * from Grafana Tempo via TempoClient. requireMembership() (not requireWriteRole()) -
+     * spans never carry message content (`capture_message_content=False`,
+     * ai/app/core/otel.py), the same sensitivity tier as the metrics/steps already exposed
+     * to any member, unlike raw input/output (see replayRun()/getRunContent()'s docblocks).
+     *
+     * Always a clean `{"ok": true, "trace": ...}`, never a 502: a missing otel_trace_id
+     * (every run before this column existed, or any run where tracing was a no-op), Tempo
+     * being unreachable, and a trace that aged past its 14-day retention all collapse into
+     * the same `trace: null` - the frontend falls back to the flat run_steps list for all
+     * three, since none of them is a real error to surface.
+     */
+    public function getRunTrace(string $id): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
+
+        $run = $this->findRun($id);
+        if ($run === null) {
+            return $this->jsonResponse(['error' => 'not_found'], 404);
+        }
+
+        $otelTraceId = $run['otel_trace_id'] ?? null;
+        if ($otelTraceId === null || $otelTraceId === '') {
+            return $this->jsonResponse(['ok' => true, 'trace' => null]);
+        }
+
+        /** @var TempoClient $tempoClient */
+        $tempoClient = $this->getDI()->getShared('tempoClient');
+        $tempoResponse = $tempoClient->getTrace($otelTraceId);
+        if ($tempoResponse === null) {
+            return $this->jsonResponse(['ok' => true, 'trace' => null]);
+        }
+
+        /** @var TempoTraceFlattener $flattener */
+        $flattener = $this->getDI()->getShared('tempoTraceFlattener');
+
+        return $this->jsonResponse(['ok' => true, 'trace' => $flattener->flatten($otelTraceId, $tempoResponse)]);
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     private function findRun(string $id): ?array
@@ -356,6 +403,7 @@ class RunsController extends ControllerBase
             'guardrail_cost_usd' => $row['guardrail_cost_usd'] !== null ? (float) $row['guardrail_cost_usd'] : null,
             'latency_ms' => $row['latency_ms'] !== null ? (int) $row['latency_ms'] : null,
             'trace_id' => $row['trace_id'],
+            'otel_trace_id' => $row['otel_trace_id'],
             'error' => $row['error'],
             'created_at' => $row['created_at'],
         ];

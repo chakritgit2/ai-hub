@@ -84,6 +84,13 @@ runs_table = sa.Table(
     sa.Column("guardrail_cost_usd", sa.Numeric(), nullable=True),
     sa.Column("latency_ms", sa.Integer(), nullable=True),
     sa.Column("trace_id", sa.String(length=64), nullable=False),
+    # The REAL OpenTelemetry/Tempo trace id (32 lowercase hex chars) captured from the
+    # active span OpenLIT creates during agent.run() - see app.services.runtime's
+    # _StepCollector. NOT the same thing as `trace_id` above, which is an unrelated
+    # pre-existing uuid4() this service generates itself for its own log-grouping purposes
+    # and predates distributed tracing entirely. Nullable: every run before this column
+    # existed, and any run where OTEL_EXPORTER_OTLP_ENDPOINT wasn't set, has none.
+    sa.Column("otel_trace_id", sa.String(length=32), nullable=True),
     sa.Column("error", sa.Text(), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     schema="logs",
