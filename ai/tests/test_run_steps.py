@@ -86,6 +86,32 @@ def test_step_collector_records_error_status():
     assert collector.steps[0].error == "boom"
 
 
+def test_step_collector_uses_the_llm_nodes_real_model_field_for_the_step_name():
+    """A real code-review finding: dynamiq.nodes.llms.base.BaseLLM's node `name` is often
+    a generic configured label (e.g. "LLM"), not the model it actually calls -
+    `serialized["model"]` (a real BaseLLM field, confirmed via model_dump()) must win for
+    LLM steps, since that's the only one of the two that's actually informative on the
+    Trace tab pipeline/waterfall."""
+    collector = _StepCollector()
+    run_id = str(uuid.uuid4())
+    node = {**_node("llms", "LLM"), "model": "gpt-4o-mini"}
+
+    collector.on_node_start(node, {"input": "hi"}, run_id=run_id)
+    collector.on_node_end(node, {"content": "hello"}, run_id=run_id)
+
+    assert collector.steps[0].name == "gpt-4o-mini"
+
+
+def test_step_collector_falls_back_to_name_when_an_llm_node_has_no_model_field():
+    collector = _StepCollector()
+    run_id = str(uuid.uuid4())
+
+    collector.on_node_start(_node("llms", "gpt-4o-mini"), {"input": "hi"}, run_id=run_id)
+    collector.on_node_end(_node("llms", "gpt-4o-mini"), {"content": "hello"}, run_id=run_id)
+
+    assert collector.steps[0].name == "gpt-4o-mini"
+
+
 def test_step_collector_marks_fallback_llm_step_in_detail():
     """PRD §6.1/§11: once the primary LLM fails and dynamiq's native FallbackConfig runs
     the fallback LLM, that second node's own serialized form carries `is_fallback: True`

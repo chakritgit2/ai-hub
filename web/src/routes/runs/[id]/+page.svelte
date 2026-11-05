@@ -201,6 +201,13 @@
 		costUsd: number | null;
 		errorText: string | null;
 		isFallbackModel: boolean;
+		// Already returned by listRunSteps() to any member today (RunsController::
+		// formatRunStep - no write-role gate, unlike the run-level input/output behind
+		// "Show input/output" above), just never rendered until now. Null for every
+		// Tempo-sourced step - spans never carry message content at all
+		// (capture_message_content=False, ai/app/core/otel.py), so there's nothing to show.
+		stepInput: string | null;
+		stepOutput: string | null;
 	}
 
 	function pipelineStepsFromRunSteps(runSteps: RunStep[]): PipelineStep[] {
@@ -215,7 +222,9 @@
 			tokensOut: step.tokens_out,
 			costUsd: step.cost_usd,
 			errorText: step.error,
-			isFallbackModel: Boolean(step.detail?.is_fallback)
+			isFallbackModel: Boolean(step.detail?.is_fallback),
+			stepInput: step.input,
+			stepOutput: step.output
 		}));
 	}
 
@@ -262,7 +271,9 @@
 					tokensOut: typeof span.attributes['gen_ai.usage.output_tokens'] === 'number' ? span.attributes['gen_ai.usage.output_tokens'] : null,
 					costUsd: null,
 					errorText: null,
-					isFallbackModel: false
+					isFallbackModel: false,
+					stepInput: null,
+					stepOutput: null
 				};
 			});
 	}
@@ -554,6 +565,29 @@
 								{/if}
 								{#if step.errorText}
 									<p class="mt-1 text-xs text-danger">{step.errorText}</p>
+								{/if}
+								{#if step.stepInput !== null || step.stepOutput !== null}
+									<details class="mt-2">
+										<summary class="cursor-pointer text-xs text-neutral-400 hover:text-neutral-600">
+											Show step input/output
+										</summary>
+										<div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+											{#if step.stepInput !== null}
+												<div>
+													<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Input</p>
+													<pre
+														class="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700">{step.stepInput}</pre>
+												</div>
+											{/if}
+											{#if step.stepOutput !== null}
+												<div>
+													<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Output</p>
+													<pre
+														class="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700">{step.stepOutput}</pre>
+												</div>
+											{/if}
+										</div>
+									</details>
 								{/if}
 							</div>
 						</li>

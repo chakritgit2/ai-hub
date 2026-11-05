@@ -155,7 +155,13 @@ class _StepCollector(BaseCallbackHandler):
         step_type = self._STEP_GROUPS.get(serialized.get("group"))
         if step_type is None:
             return
-        name = serialized.get("name") or serialized.get("type")
+        # For an LLM node, `serialized["name"]` is the node's own (often generic, e.g.
+        # "LLM") configured name, not the model it's actually calling - `serialized
+        # ["model"]` is a real field on dynamiq's BaseLLM (model_dump()'d by Node.to_dict,
+        # confirmed against the installed dynamiq==0.65.0 source), always present and far
+        # more useful here, so it wins when set. Tool nodes have no such field, hence the
+        # same name/type fallback chain as before for them.
+        name = (step_type == "llm" and serialized.get("model")) or serialized.get("name") or serialized.get("type")
 
         # Child span, parented to the run's root span (`dynamiq.agent_run`, see this
         # class's own docstring) via the ambient current-context - never passed
