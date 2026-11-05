@@ -26,7 +26,10 @@ Two PRD §6.7 metrics are deliberately NOT executed yet, rejected at creation ti
   `instructions`/`inputs`/`outputs` would come from; needs its own design, a separate slice.
 - `python_evaluator` - runs admin-authored code through dynamiq's RestrictedPython
   sandbox, which still allows outbound `requests`/`urllib` and has no timeout/memory
-  limit - the same unresolved sandboxing question `kind: python` tools already have.
+  limit. `kind: python` tools no longer share this problem (they run in a real E2B
+  sandbox with a capped timeout and network isolation - `app.integrations.
+  safe_python_tool`), so that comparison is stale; `python_evaluator` itself is simply
+  not wired to use E2B instead of RestrictedPython yet - a real but separate gap.
 
 Judge LLM calls reuse the *agent's own* connection (same provider account - `judge_model`
 just names a different model string on it); there is no separate judge connection/

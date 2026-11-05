@@ -14,10 +14,14 @@ use Throwable;
  * /workflows and /workflows/{id}/versions* — workflow specs and their published versions
  * (PRD §6.9, phase 4; §8.2 `workflows` + `workflow_versions` tables).
  *
- * Slice 1 scope: CRUD + compile/validate only — no execution, no deployment/gateway
- * exposure yet (both are explicit later slices). No clone/export/import (not asked for
- * this slice, unlike AgentsController). No publish-gate check and no dependent-
- * deployments config_version bump — neither concept exists for workflows yet.
+ * This controller's own scope is CRUD + compile/validate only - execution and deployment/
+ * gateway exposure (once explicit later slices) now exist, just elsewhere: a deployment
+ * can target a published workflow version directly (DeploymentsController's
+ * agent_version_id xor workflow_version_id), and ai-runtime's
+ * app.services.workflow_runtime.run_deployment_workflow actually runs it. No clone/
+ * export/import here (not asked for this slice, unlike AgentsController). No publish-gate
+ * check and no dependent-deployments config_version bump — neither concept exists for
+ * workflows yet.
  */
 class WorkflowsController extends ControllerBase
 {
