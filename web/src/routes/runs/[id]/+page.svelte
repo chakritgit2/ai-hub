@@ -71,7 +71,6 @@
 	let steps = $state<RunStep[]>([]);
 	let stepsError = $state<string | null>(null);
 	let trace = $state<RunTrace['trace']>(null);
-	let traceError = $state<string | null>(null);
 	let hoveredSpanId = $state<string | null>(null);
 	let conversation = $state<RunConversation | null>(null);
 	let conversationError = $state<string | null>(null);
@@ -179,6 +178,28 @@
 		return value === undefined ? null : String(value);
 	}
 
+	// --- Step pipeline (primary Trace tab view) -----------------------------------------
+	// Built from `steps` (logs.run_steps via listRunSteps), not the Tempo-sourced `trace`
+	// above - run_steps is already filtered to just the 4 step types that matter to a human
+	// reading this page (guardrail/LLM/tool), in true execution order, with no parent/child
+	// tree to walk (agent.run() executes one node at a time - see _StepCollector's own
+	// docstring) - simpler and quieter than the full OTel span set, which also carries every
+	// internal DB query/memory-store call OpenLIT auto-instruments. That full set is still
+	// available below as an optional "advanced" expand, not thrown away.
+	function stepIsFailure(step: RunStep): boolean {
+		return step.status === 'error' || step.status === 'block';
+	}
+
+	let maxStepLatencyMs = $derived(Math.max(1, ...steps.map((s) => s.latency_ms ?? 0)));
+
+	// Relative to the slowest step in this run, not the OTel waterfall's absolute-time
+	// scale - a tool call that waited minutes on human approval must not shrink every other
+	// step's bar down to an invisible sliver. Floored at 4% so even a near-zero-latency
+	// step still shows a visible bar, not an empty track.
+	function durationBarWidthPct(latencyMs: number): number {
+		return Math.max(4, (latencyMs / maxStepLatencyMs) * 100);
+	}
+
 	async function load(id: string) {
 		loading = true;
 		error = null;
@@ -210,12 +231,11 @@
 
 		if (traceResult.status === 'fulfilled') {
 			trace = traceResult.value.trace;
-		} else {
-			// Not fatal - the Trace tab falls back to the flat step list above, same as a
-			// null `trace` (no otel_trace_id, Tempo unreachable, retention expired) does.
-			traceError =
-				traceResult.reason instanceof Error ? traceResult.reason.message : 'Failed to load the span trace.';
 		}
+		// A rejected traceResult just leaves `trace` null - not fatal, the Trace tab's
+		// primary pipeline is built from `steps` regardless; the optional "full distributed
+		// trace" expand simply doesn't appear, same as every other null-trace case (no
+		// otel_trace_id, Tempo unreachable, retention expired).
 
 		if (conversationResult.status === 'fulfilled') {
 			conversation = conversationResult.value;
@@ -396,108 +416,132 @@
 
 	<div class="mt-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
 		{#if activeTab === 'trace'}
-			{#if trace && trace.spans.length > 0}
-				<div class="relative">
-					<svg
-						viewBox="0 0 {WATERFALL_WIDTH} {waterfallHeight}"
-						class="w-full"
-						style="height: {waterfallHeight}px;"
-						role="img"
-						aria-label="Span trace waterfall, {trace.spans.length} spans"
-					>
-						{#each waterfallRows as row (row.span.span_id)}
-							<text
-								x={row.depth * INDENT_PX}
-								y={row.y + ROW_HEIGHT / 2 + 3}
-								class="fill-neutral-600 text-[10px]"
-							>
-								{row.span.name}
-							</text>
-							<path
-								d={waterfallBarPath(row)}
-								class={hoveredSpanId === row.span.span_id
-									? row.span.status === 'error'
-										? 'fill-danger/80'
-										: 'fill-primary-600'
-									: row.span.status === 'error'
-										? 'fill-danger/60'
-										: 'fill-primary-500'}
-								role="button"
-								tabindex="0"
-								aria-label="{row.span.name}: {row.span.duration_ms.toFixed(0)} ms, starting {row.span.start_ms_relative.toFixed(0)} ms in"
-								onmouseenter={() => (hoveredSpanId = row.span.span_id)}
-								onmouseleave={() => (hoveredSpanId = null)}
-								onfocus={() => (hoveredSpanId = row.span.span_id)}
-								onblur={() => (hoveredSpanId = null)}
-							/>
-						{/each}
-					</svg>
-
-					{#if hoveredSpanId !== null}
-						{@const row = waterfallRows.find((r) => r.span.span_id === hoveredSpanId)}
-						{#if row}
-							<div
-								class="pointer-events-none absolute -translate-y-full rounded-md border border-neutral-200
-									bg-white px-2 py-1 text-xs shadow-md"
-								style="left: {(row.x / WATERFALL_WIDTH) * 100}%; top: {(row.y / waterfallHeight) * 100}%;"
-							>
-								<p class="font-semibold text-neutral-900">{row.span.name}</p>
-								<p class="text-neutral-500">
-									{row.span.duration_ms.toFixed(0)} ms · starts {row.span.start_ms_relative.toFixed(0)} ms in
-								</p>
-								{#if spanAttribute(row.span, 'gen_ai.operation.name')}
-									<p class="text-neutral-500">op: {spanAttribute(row.span, 'gen_ai.operation.name')}</p>
-								{/if}
-								{#if spanAttribute(row.span, 'gen_ai.request.model')}
-									<p class="text-neutral-500">model: {spanAttribute(row.span, 'gen_ai.request.model')}</p>
-								{/if}
-							</div>
-						{/if}
-					{/if}
-				</div>
+			{#if stepsError}
+				<p class="text-sm text-danger">{stepsError}</p>
+			{:else if steps.length === 0}
+				<p class="text-sm text-neutral-500">No steps recorded for this run.</p>
 			{:else}
-				<p class="mb-3 text-xs text-neutral-400">
-					Span-level trace not available for this run — showing recorded steps instead.
-					{#if traceError}<span class="block">({traceError})</span>{/if}
-				</p>
-				{#if stepsError}
-					<p class="text-sm text-danger">{stepsError}</p>
-				{:else if steps.length === 0}
-					<p class="text-sm text-neutral-500">No steps recorded for this run.</p>
-				{:else}
-					<ol class="divide-y divide-neutral-200">
-						{#each steps as step (step.id)}
-							<li class="flex flex-wrap items-center gap-3 py-2 text-sm">
-								<span
-									class="rounded-full px-2 py-0.5 text-xs font-medium {step.status === 'error' ||
-									step.status === 'block'
-										? 'bg-danger/10 text-danger'
-										: 'bg-primary/10 text-primary-700'}"
-								>
-									{STEP_TYPE_LABELS[step.step_type]}
-								</span>
-								<span class="font-medium text-neutral-800">{step.name ?? '—'}</span>
-								{#if step.detail?.is_fallback}
-									<span class="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-										Fallback model
+				<ol class="relative">
+					{#each steps as step, i (step.id)}
+						<li class="relative flex gap-3 pb-5 last:pb-0">
+							{#if i < steps.length - 1}
+								<div class="absolute bottom-0 left-[11px] top-6 w-px bg-neutral-200" aria-hidden="true"></div>
+							{/if}
+							<div
+								class="relative z-10 mt-0.5 h-[22px] w-[22px] shrink-0 rounded-full border-2 border-white shadow-sm
+									{stepIsFailure(step) ? 'bg-danger' : 'bg-primary-500'}"
+								aria-hidden="true"
+							></div>
+							<div class="flex-1 rounded-lg border border-neutral-200 bg-white p-3">
+								<div class="flex flex-wrap items-center gap-2">
+									<span
+										class="rounded-full px-2 py-0.5 text-xs font-medium {stepIsFailure(step)
+											? 'bg-danger/10 text-danger'
+											: 'bg-primary/10 text-primary-700'}"
+									>
+										{STEP_TYPE_LABELS[step.step_type]}
 									</span>
-								{/if}
-								<span class="text-neutral-400">{step.status}</span>
+									<span class="font-medium text-neutral-800">{step.name ?? '—'}</span>
+									{#if step.detail?.is_fallback}
+										<span class="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+											Fallback model
+										</span>
+									{/if}
+									<span class="text-xs text-neutral-400">{step.status}</span>
+								</div>
 								{#if step.latency_ms !== null}
-									<span class="text-neutral-500">{step.latency_ms} ms</span>
+									<div class="mt-2 flex items-center gap-2">
+										<div class="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
+											<div
+												class="h-full rounded-full {stepIsFailure(step) ? 'bg-danger/70' : 'bg-primary-500'}"
+												style="width: {durationBarWidthPct(step.latency_ms)}%"
+											></div>
+										</div>
+										<span class="shrink-0 text-xs text-neutral-500">{step.latency_ms} ms</span>
+									</div>
 								{/if}
-								{#if step.tokens_in !== null || step.tokens_out !== null}
-									<span class="text-neutral-500">{step.tokens_in ?? 0}/{step.tokens_out ?? 0} tok</span>
-								{/if}
-								{#if step.cost_usd !== null}
-									<span class="text-neutral-500">${step.cost_usd.toFixed(4)}</span>
+								{#if step.tokens_in !== null || step.tokens_out !== null || step.cost_usd !== null}
+									<p class="mt-1 text-xs text-neutral-500">
+										{#if step.tokens_in !== null || step.tokens_out !== null}
+											{step.tokens_in ?? 0}/{step.tokens_out ?? 0} tok
+										{/if}
+										{#if step.cost_usd !== null}
+											· ${step.cost_usd.toFixed(4)}
+										{/if}
+									</p>
 								{/if}
 								{#if step.error}
-									<span class="w-full text-xs text-danger">{step.error}</span>
+									<p class="mt-1 text-xs text-danger">{step.error}</p>
 								{/if}
-							</li>
-						{/each}
-					</ol>
+							</div>
+						</li>
+					{/each}
+				</ol>
+
+				{#if trace && trace.spans.length > 0}
+					<details class="mt-5 border-t border-neutral-200 pt-3">
+						<summary class="cursor-pointer text-xs text-neutral-500 hover:text-neutral-700">
+							Show full distributed trace ({trace.spans.length} spans, includes internal DB/memory calls)
+						</summary>
+						<div class="relative mt-3">
+							<svg
+								viewBox="0 0 {WATERFALL_WIDTH} {waterfallHeight}"
+								class="w-full"
+								style="height: {waterfallHeight}px;"
+								role="img"
+								aria-label="Span trace waterfall, {trace.spans.length} spans"
+							>
+								{#each waterfallRows as row (row.span.span_id)}
+									<text
+										x={row.depth * INDENT_PX}
+										y={row.y + ROW_HEIGHT / 2 + 3}
+										class="fill-neutral-600 text-[10px]"
+									>
+										{row.span.name}
+									</text>
+									<path
+										d={waterfallBarPath(row)}
+										class={hoveredSpanId === row.span.span_id
+											? row.span.status === 'error'
+												? 'fill-danger/80'
+												: 'fill-primary-600'
+											: row.span.status === 'error'
+												? 'fill-danger/60'
+												: 'fill-primary-500'}
+										role="button"
+										tabindex="0"
+										aria-label="{row.span.name}: {row.span.duration_ms.toFixed(0)} ms, starting {row.span.start_ms_relative.toFixed(0)} ms in"
+										onmouseenter={() => (hoveredSpanId = row.span.span_id)}
+										onmouseleave={() => (hoveredSpanId = null)}
+										onfocus={() => (hoveredSpanId = row.span.span_id)}
+										onblur={() => (hoveredSpanId = null)}
+									/>
+								{/each}
+							</svg>
+
+							{#if hoveredSpanId !== null}
+								{@const row = waterfallRows.find((r) => r.span.span_id === hoveredSpanId)}
+								{#if row}
+									<div
+										class="pointer-events-none absolute -translate-y-full rounded-md border border-neutral-200
+											bg-white px-2 py-1 text-xs shadow-md"
+										style="left: {(row.x / WATERFALL_WIDTH) * 100}%; top: {(row.y / waterfallHeight) * 100}%;"
+									>
+										<p class="font-semibold text-neutral-900">{row.span.name}</p>
+										<p class="text-neutral-500">
+											{row.span.duration_ms.toFixed(0)} ms · starts {row.span.start_ms_relative.toFixed(0)} ms in
+										</p>
+										{#if spanAttribute(row.span, 'gen_ai.operation.name')}
+											<p class="text-neutral-500">op: {spanAttribute(row.span, 'gen_ai.operation.name')}</p>
+										{/if}
+										{#if spanAttribute(row.span, 'gen_ai.request.model')}
+											<p class="text-neutral-500">model: {spanAttribute(row.span, 'gen_ai.request.model')}</p>
+										{/if}
+									</div>
+								{/if}
+							{/if}
+						</div>
+					</details>
 				{/if}
 			{/if}
 		{:else if activeTab === 'conversation'}
