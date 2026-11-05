@@ -302,10 +302,37 @@
 			});
 	}
 
+	// Synthetic - not a real logs.run_steps row or Tempo span, just marks where the flow
+	// actually begins (the user's/API caller's own message) so the pipeline doesn't open
+	// cold on "Memory search"/"LLM call" with no visible starting point. No duration (the
+	// clock starts here), no expandable input/output (that's already one click away via
+	// the "Show input/output" button above - PRD PII reasoning, see replayRun()'s
+	// docblock - not duplicated per-step for a thing that isn't really a step).
+	const START_STEP: PipelineStep = {
+		key: '__start__',
+		typeLabel: 'Start',
+		name: 'Message received',
+		isFailure: false,
+		statusLabel: 'received',
+		latencyMs: null,
+		tokensIn: null,
+		tokensOut: null,
+		costUsd: null,
+		errorText: null,
+		isFallbackModel: false,
+		stepInput: null,
+		stepOutput: null
+	};
+
 	let usingTraceSource = $derived(trace !== null && trace.spans.length > 0);
-	let pipelineSteps = $derived<PipelineStep[]>(
+	let realPipelineSteps = $derived<PipelineStep[]>(
 		usingTraceSource && trace ? pipelineStepsFromTrace(trace.spans, steps) : pipelineStepsFromRunSteps(steps)
 	);
+	let pipelineSteps = $derived<PipelineStep[]>(
+		realPipelineSteps.length > 0 ? [START_STEP, ...realPipelineSteps] : []
+	);
+	let selectedStepKey = $state<string | null>(null);
+	let selectedStep = $derived(pipelineSteps.find((s) => s.key === selectedStepKey) ?? null);
 
 	let maxStepLatencyMs = $derived(Math.max(1, ...pipelineSteps.map((s) => s.latencyMs ?? 0)));
 
@@ -320,6 +347,7 @@
 	async function load(id: string) {
 		loading = true;
 		error = null;
+		selectedStepKey = null;
 		try {
 			run = await getRun(id);
 		} catch (e) {
@@ -538,85 +566,106 @@
 			{:else if pipelineSteps.length === 0}
 				<p class="text-sm text-neutral-500">No steps recorded for this run.</p>
 			{:else}
-				<ol class="relative">
-					{#each pipelineSteps as step, i (step.key)}
-						<li class="relative flex gap-3 pb-5 last:pb-0">
-							{#if i < pipelineSteps.length - 1}
-								<div class="absolute bottom-0 left-[11px] top-6 w-px bg-neutral-200" aria-hidden="true"></div>
+				<!-- Jenkins-style horizontal stage view: a connected row of compact stage boxes
+					(name/duration/status color only), scrolling horizontally past however many
+					steps this run had. Click a stage to pin its full detail (tokens, cost,
+					error, input/output) in the panel below - a click, not hover, so it stays
+					open while reading instead of needing the pointer held in place. -->
+				<div class="overflow-x-auto pb-2" aria-label="Run pipeline stages">
+					<div class="flex items-center">
+						{#each pipelineSteps as step, i (step.key)}
+							{#if i > 0}
+								<div class="h-px w-6 shrink-0 bg-neutral-300" aria-hidden="true"></div>
 							{/if}
-							<div
-								class="relative z-10 mt-0.5 h-[22px] w-[22px] shrink-0 rounded-full border-2 border-white shadow-sm
-									{step.isFailure ? 'bg-danger' : 'bg-primary-500'}"
-								aria-hidden="true"
-							></div>
-							<div class="flex-1 rounded-lg border border-neutral-200 bg-white p-3">
-								<div class="flex flex-wrap items-center gap-2">
-									<span
-										class="rounded-full px-2 py-0.5 text-xs font-medium {step.isFailure
-											? 'bg-danger/10 text-danger'
-											: 'bg-primary/10 text-primary-700'}"
-									>
+							<button
+								type="button"
+								aria-pressed={selectedStepKey === step.key}
+								onclick={() => (selectedStepKey = selectedStepKey === step.key ? null : step.key)}
+								class="w-36 shrink-0 overflow-hidden rounded-md border text-left transition-colors
+									{selectedStepKey === step.key
+										? 'border-primary-500 ring-2 ring-primary-100'
+										: 'border-neutral-200 hover:border-neutral-300'}"
+							>
+								<div
+									class="h-1.5 {step.isFailure ? 'bg-danger' : step.key === '__start__' ? 'bg-neutral-300' : 'bg-primary-500'}"
+									aria-hidden="true"
+								></div>
+								<div class="bg-white p-2">
+									<p class="truncate text-[10px] font-medium uppercase tracking-wide text-neutral-400">
 										{step.typeLabel}
-									</span>
-									<span class="font-medium text-neutral-800">{step.name}</span>
-									{#if step.isFallbackModel}
-										<span class="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-											Fallback model
-										</span>
-									{/if}
-									<span class="text-xs text-neutral-400">{step.statusLabel}</span>
+									</p>
+									<p class="truncate text-sm font-semibold text-neutral-900">{step.name}</p>
+									<p class="mt-1 text-xs text-neutral-500">
+										{step.latencyMs !== null ? `${step.latencyMs} ms` : '—'}
+									</p>
 								</div>
-								{#if step.latencyMs !== null}
-									<div class="mt-2 flex items-center gap-2">
-										<div class="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
-											<div
-												class="h-full rounded-full {step.isFailure ? 'bg-danger/70' : 'bg-primary-500'}"
-												style="width: {durationBarWidthPct(step.latencyMs)}%"
-											></div>
-										</div>
-										<span class="shrink-0 text-xs text-neutral-500">{step.latencyMs} ms</span>
+							</button>
+						{/each}
+					</div>
+				</div>
+
+				{#if selectedStep}
+					<div class="mt-4 rounded-lg border border-neutral-200 bg-white p-3">
+						<div class="flex flex-wrap items-center gap-2">
+							<span
+								class="rounded-full px-2 py-0.5 text-xs font-medium {selectedStep.isFailure
+									? 'bg-danger/10 text-danger'
+									: 'bg-primary/10 text-primary-700'}"
+							>
+								{selectedStep.typeLabel}
+							</span>
+							<span class="font-medium text-neutral-800">{selectedStep.name}</span>
+							{#if selectedStep.isFallbackModel}
+								<span class="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+									Fallback model
+								</span>
+							{/if}
+							<span class="text-xs text-neutral-400">{selectedStep.statusLabel}</span>
+						</div>
+						{#if selectedStep.latencyMs !== null}
+							<div class="mt-2 flex items-center gap-2">
+								<div class="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
+									<div
+										class="h-full rounded-full {selectedStep.isFailure ? 'bg-danger/70' : 'bg-primary-500'}"
+										style="width: {durationBarWidthPct(selectedStep.latencyMs)}%"
+									></div>
+								</div>
+								<span class="shrink-0 text-xs text-neutral-500">{selectedStep.latencyMs} ms</span>
+							</div>
+						{/if}
+						{#if selectedStep.tokensIn !== null || selectedStep.tokensOut !== null || selectedStep.costUsd !== null}
+							<p class="mt-1 text-xs text-neutral-500">
+								{#if selectedStep.tokensIn !== null || selectedStep.tokensOut !== null}
+									{selectedStep.tokensIn ?? 0}/{selectedStep.tokensOut ?? 0} tok
+								{/if}
+								{#if selectedStep.costUsd !== null}
+									· ${selectedStep.costUsd.toFixed(4)}
+								{/if}
+							</p>
+						{/if}
+						{#if selectedStep.errorText}
+							<p class="mt-1 text-xs text-danger">{selectedStep.errorText}</p>
+						{/if}
+						{#if selectedStep.stepInput !== null || selectedStep.stepOutput !== null}
+							<div class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+								{#if selectedStep.stepInput !== null}
+									<div>
+										<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Input</p>
+										<pre
+											class="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700">{selectedStep.stepInput}</pre>
 									</div>
 								{/if}
-								{#if step.tokensIn !== null || step.tokensOut !== null || step.costUsd !== null}
-									<p class="mt-1 text-xs text-neutral-500">
-										{#if step.tokensIn !== null || step.tokensOut !== null}
-											{step.tokensIn ?? 0}/{step.tokensOut ?? 0} tok
-										{/if}
-										{#if step.costUsd !== null}
-											· ${step.costUsd.toFixed(4)}
-										{/if}
-									</p>
-								{/if}
-								{#if step.errorText}
-									<p class="mt-1 text-xs text-danger">{step.errorText}</p>
-								{/if}
-								{#if step.stepInput !== null || step.stepOutput !== null}
-									<details class="mt-2">
-										<summary class="cursor-pointer text-xs text-neutral-400 hover:text-neutral-600">
-											Show step input/output
-										</summary>
-										<div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-											{#if step.stepInput !== null}
-												<div>
-													<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Input</p>
-													<pre
-														class="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700">{step.stepInput}</pre>
-												</div>
-											{/if}
-											{#if step.stepOutput !== null}
-												<div>
-													<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Output</p>
-													<pre
-														class="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700">{step.stepOutput}</pre>
-												</div>
-											{/if}
-										</div>
-									</details>
+								{#if selectedStep.stepOutput !== null}
+									<div>
+										<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Output</p>
+										<pre
+											class="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700">{selectedStep.stepOutput}</pre>
+									</div>
 								{/if}
 							</div>
-						</li>
-					{/each}
-				</ol>
+						{/if}
+					</div>
+				{/if}
 
 				{#if trace && trace.spans.length > 0}
 					<details class="mt-5 border-t border-neutral-200 pt-3">
