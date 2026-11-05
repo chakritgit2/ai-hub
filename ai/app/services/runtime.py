@@ -16,6 +16,7 @@ once per dataset item, same reasoning `resolve_and_compile` below already docume
 itself.
 """
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -251,6 +252,130 @@ class _StepCollector(BaseCallbackHandler):
                 detail={"is_fallback": True} if pending["is_fallback"] else {},
             )
         )
+
+
+def _wrap_memory_for_tracing(memory: Any, steps: list[RunStep]) -> None:
+    """Instance-level monkeypatch of `Memory.search()`/`.add()`/`.replace_messages()` so
+    the console Trace tab can show what memory actually retrieved/saved, not just that it
+    ran. Found via a live run whose "Memory search"/"Memory save" steps had no input/output
+    at all - unlike LLM/tool steps, `Memory.search()`/`.add()` aren't dynamiq Nodes (see
+    `_StepCollector`'s own docstring), so they never fire `on_node_start`/`on_node_end` -
+    there's no callback hook to use the way `_StepCollector` does for LLM/tool nodes, and
+    the Tempo spans OpenLIT's own dynamiq-level instrumentation creates for them never
+    carry message content either (`capture_message_content=False`, see this module's
+    `disabled_instrumentors` sibling comment in app/core/otel.py).
+
+    `object.__setattr__` bypasses `Memory`'s own pydantic `__setattr__` (which rejects
+    assigning any name that isn't a declared field, including shadowing a method) to
+    replace the bound method on this one instance only - confirmed via a real
+    `Agent(memory=memory, ...)` construction that `agent.memory is memory` still holds
+    (pydantic v2 does not copy an already-valid instance into a field), so wrapping the
+    caller's own `memory` object before `agent.run()` is reliably the same object the
+    Agent will actually call. The class itself, and every other `Memory` instance, is
+    untouched. Appends straight into the same `steps` list `_StepCollector` also appends
+    to, so memory/LLM/tool steps land in one list in true call order with no separate
+    merge step needed later.
+    """
+    original_search = memory.search
+    original_add = memory.add
+    original_replace_messages = memory.replace_messages
+
+    def traced_search(*args: Any, **kwargs: Any) -> Any:
+        bound = inspect.signature(original_search).bind(*args, **kwargs)
+        bound.apply_defaults()
+        started = time.monotonic()
+        try:
+            result = original_search(*args, **kwargs)
+        except Exception as exc:
+            steps.append(
+                RunStep(
+                    step_type="memory_search",
+                    name="Memory search",
+                    status="error",
+                    input_text=_step_text(dict(bound.arguments)),
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                    error=str(exc),
+                )
+            )
+            raise
+        steps.append(
+            RunStep(
+                step_type="memory_search",
+                name="Memory search",
+                status="success",
+                input_text=_step_text(dict(bound.arguments)),
+                output_text=_step_text([message.model_dump(mode="json", exclude_none=True) for message in result]),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+        )
+        return result
+
+    def traced_add(*args: Any, **kwargs: Any) -> Any:
+        bound = inspect.signature(original_add).bind(*args, **kwargs)
+        bound.apply_defaults()
+        # dynamiq calls .add() once for the user's message, once for the agent's reply,
+        # whenever the memory backend doesn't support an atomic replace (see
+        # traced_replace_messages below) - the real `role` tells us which, deterministically,
+        # rather than the console's own previous frontend-side positional guess.
+        # MessageRole is `class MessageRole(str, enum.Enum)` - a plain mixin, not
+        # `enum.StrEnum`, so `str(role)` would give "MessageRole.USER", not "user".
+        # `.value` (falling back to the raw argument for a caller that passed a plain
+        # string instead of the enum) is what actually matches "user"/"assistant" below.
+        role = getattr(bound.arguments.get("role"), "value", bound.arguments.get("role"))
+        name = {"user": "Memory save (user message)", "assistant": "Memory save (agent reply)"}.get(
+            role, "Memory save"
+        )
+        started = time.monotonic()
+        try:
+            result = original_add(*args, **kwargs)
+        except Exception as exc:
+            steps.append(
+                RunStep(
+                    step_type="memory_add",
+                    name=name,
+                    status="error",
+                    input_text=_step_text(dict(bound.arguments)),
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                    error=str(exc),
+                )
+            )
+            raise
+        steps.append(
+            RunStep(
+                step_type="memory_add",
+                name=name,
+                status="success",
+                input_text=_step_text(dict(bound.arguments)),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+        )
+        return result
+
+    def traced_replace_messages(*args: Any, **kwargs: Any) -> Any:
+        # Raises NotImplementedError for any backend that doesn't support an atomic scoped
+        # replace (dynamiq.nodes.agents.base.py's _save_history_to_memory catches exactly
+        # that and falls back to .add() instead, which traced_add above already covers) -
+        # a step is only recorded here when the replace actually went through, since
+        # nothing was actually saved via a call that raised.
+        bound = inspect.signature(original_replace_messages).bind(*args, **kwargs)
+        bound.apply_defaults()
+        started = time.monotonic()
+        result = original_replace_messages(*args, **kwargs)
+        messages = bound.arguments.get("messages") or []
+        steps.append(
+            RunStep(
+                step_type="memory_add",
+                name="Memory save",
+                status="success",
+                input_text=_step_text([message.model_dump(mode="json", exclude_none=True) for message in messages]),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+        )
+        return result
+
+    object.__setattr__(memory, "search", traced_search)
+    object.__setattr__(memory, "add", traced_add)
+    object.__setattr__(memory, "replace_messages", traced_replace_messages)
 
 
 def _effective_run_timeout(agent_def: dict, settings) -> int:
@@ -729,6 +854,8 @@ async def _execute_agent_run_body(
 
     usage_collector = _UsageCollector()
     step_collector = _StepCollector()
+    if memory is not None:
+        _wrap_memory_for_tracing(memory, step_collector.steps)
     callbacks: list[BaseCallbackHandler] = [usage_collector, step_collector]
     # `agent.streaming` is a plain mutable field on the already-built Node (dynamiq/nodes/
     # node.py), so setting it here needs no change to app.services.compiler.build_agent.

@@ -685,7 +685,13 @@ export interface RunContent {
 	output: string | null;
 }
 
-export type RunStepType = 'guardrail_input' | 'llm' | 'tool_call' | 'guardrail_output';
+export type RunStepType =
+	| 'guardrail_input'
+	| 'llm'
+	| 'tool_call'
+	| 'guardrail_output'
+	| 'memory_search'
+	| 'memory_add';
 export type RunStepStatus = 'success' | 'error' | 'block' | 'mask' | 'flag';
 
 export interface RunStep {

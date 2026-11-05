@@ -37,7 +37,9 @@
 		guardrail_input: 'Guardrail (input)',
 		llm: 'LLM call',
 		tool_call: 'Tool call',
-		guardrail_output: 'Guardrail (output)'
+		guardrail_output: 'Guardrail (output)',
+		memory_search: 'Memory search',
+		memory_add: 'Memory save'
 	};
 
 	let agents = $state<Agent[]>([]);

@@ -12,7 +12,7 @@ from app.db.tables import run_steps_table
 from app.services.guardrails import CheckEvent
 from app.services.run_steps import RunStep, guardrail_run_steps, log_run_steps
 from app.services.runs import log_run
-from app.services.runtime import _StepCollector
+from app.services.runtime import _StepCollector, _wrap_memory_for_tracing
 
 from .markers import requires_postgres
 
@@ -263,6 +263,97 @@ def test_step_collector_sets_a_tool_span_to_error_status_when_the_step_fails():
     assert child.attributes["gen_ai.operation.name"] == "execute_tool"
     assert child.status.status_code == trace.StatusCode.ERROR
     assert child.status.description == "boom"
+
+
+def test_wrap_memory_for_tracing_records_a_memory_search_step_with_real_content():
+    """Found via a live run showing no input/output at all on the "Memory search" card -
+    Memory.search() isn't a dynamiq Node (see _wrap_memory_for_tracing's own docstring),
+    so there's no on_node_start/on_node_end to read content from; this directly wraps the
+    real Memory instance instead."""
+    from dynamiq.memory.memory import InMemory, Memory
+
+    memory = Memory(backend=InMemory())
+    memory.add(role=MessageRole.USER, content="what's your return policy?")
+    steps: list[RunStep] = []
+
+    _wrap_memory_for_tracing(memory, steps)
+    results = memory.search(query=None)
+
+    assert len(results) == 1
+    [step] = steps
+    assert step.step_type == "memory_search"
+    assert step.status == "success"
+    assert "what's your return policy?" in step.output_text
+
+
+def test_wrap_memory_for_tracing_distinguishes_user_and_assistant_saves_by_real_role():
+    """A run's two "Memory save" cards come from dynamiq calling .add() once for the
+    user's message and once for the agent's reply (base.py's _fallback_input_output_pair) -
+    the real `role` on each call tells them apart deterministically, rather than the
+    console frontend's own positional guess (first call = user, second = agent)."""
+    from dynamiq.memory.memory import InMemory, Memory
+
+    memory = Memory(backend=InMemory())
+    steps: list[RunStep] = []
+    _wrap_memory_for_tracing(memory, steps)
+
+    memory.add(role=MessageRole.USER, content="what's your return policy?")
+    memory.add(role=MessageRole.ASSISTANT, content="30 days, unused, with a receipt.")
+
+    assert [step.name for step in steps] == ["Memory save (user message)", "Memory save (agent reply)"]
+    assert all(step.step_type == "memory_add" and step.status == "success" for step in steps)
+
+
+class _FakeReplaceMessagesMemory:
+    """A minimal stand-in, not a real dynamiq Memory - the pydantic-bypass behavior
+    `_wrap_memory_for_tracing` relies on for a real Memory is already covered by the two
+    tests above; this one only needs to exercise `_wrap_memory_for_tracing`'s own
+    success/NotImplementedError branching for replace_messages."""
+
+    def __init__(self, *, supports_replace: bool):
+        self._supports_replace = supports_replace
+
+    def search(self, query=None, filters=None, limit=None):
+        return []
+
+    def add(self, role, content, metadata=None, tool_calls=None, tool_call_id=None, name=None):
+        return None
+
+    def replace_messages(self, filters, messages):
+        if not self._supports_replace:
+            raise NotImplementedError
+        return None
+
+
+def test_wrap_memory_for_tracing_records_one_save_step_when_replace_messages_succeeds():
+    memory = _FakeReplaceMessagesMemory(supports_replace=True)
+    steps: list[RunStep] = []
+    _wrap_memory_for_tracing(memory, steps)
+
+    memory.replace_messages(filters={"user_id": "u1"}, messages=[Message(role=MessageRole.USER, content="hi")])
+
+    [step] = steps
+    assert step.step_type == "memory_add"
+    assert step.name == "Memory save"
+    assert step.status == "success"
+    assert "hi" in step.input_text
+
+
+def test_wrap_memory_for_tracing_records_nothing_when_replace_messages_is_not_implemented():
+    """Nothing was actually saved by a call that raised - the caller's own fallback to
+    .add() (traced_add) is what will actually get recorded, not this call."""
+    memory = _FakeReplaceMessagesMemory(supports_replace=False)
+    steps: list[RunStep] = []
+    _wrap_memory_for_tracing(memory, steps)
+
+    try:
+        memory.replace_messages(filters={"user_id": "u1"}, messages=[])
+        raised = False
+    except NotImplementedError:
+        raised = True
+
+    assert raised
+    assert steps == []
 
 
 def test_guardrail_run_steps_converts_check_events():

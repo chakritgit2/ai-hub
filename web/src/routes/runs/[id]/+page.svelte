@@ -85,7 +85,9 @@
 		guardrail_input: 'Guardrail (input)',
 		llm: 'LLM call',
 		tool_call: 'Tool call',
-		guardrail_output: 'Guardrail (output)'
+		guardrail_output: 'Guardrail (output)',
+		memory_search: 'Memory',
+		memory_add: 'Memory'
 	};
 
 	// Plain-language, one-line "what is this" for each step type - shown as a tooltip on
@@ -95,7 +97,9 @@
 		guardrail_input: 'Checks your message against the configured safety rules.',
 		llm: 'Asks the model to think and generate the next part of the response.',
 		tool_call: 'Calls an external tool to get information or take an action.',
-		guardrail_output: "Checks the agent's reply against the configured safety rules."
+		guardrail_output: "Checks the agent's reply against the configured safety rules.",
+		memory_search: 'Looks up anything relevant from earlier turns in this conversation.',
+		memory_add: 'Saves a message to memory, so later turns can refer back to it.'
 	};
 
 	const GUARDRAIL_ACTION_LABELS: Record<GuardrailEvent['action'], string> = {
@@ -113,13 +117,16 @@
 	// Normalizes two different data sources into one shared shape the template renders
 	// once: `trace.spans` (Tempo, curated - see pipelineStepsFromTrace below) when a real
 	// OTel trace exists, falling back to `steps` (logs.run_steps via listRunSteps) for
-	// every run that predates this trace plumbing or where Tempo has nothing. The Tempo
-	// path shows more of the real flow (memory search/save aren't `Node`s in dynamiq, so
-	// they never fire the on_node_start/on_node_end callbacks _StepCollector listens to -
-	// logs.run_steps structurally can't include them) at the cost of depending on
-	// OpenLIT's own span shape for the curation filter below, which is somewhat fragile
-	// (the same OpenLIT whose litellm instrumentor silently broke once already) - the
-	// run_steps fallback has no such dependency, which is why it stays the baseline.
+	// every run that predates this trace plumbing or where Tempo has nothing. Both sources
+	// now carry the same step types, including memory search/save (app/services/runtime.py's
+	// _wrap_memory_for_tracing instruments the real Memory instance directly, since
+	// Memory.search()/.add() aren't dynamiq `Node`s and never fire the on_node_start/
+	// on_node_end callbacks _StepCollector listens to for everything else) - the Tempo path
+	// is still preferred when available since it also shows guardrail/LLM/tool timing on a
+	// real trace timeline, at the cost of depending on OpenLIT's own span shape for the
+	// curation filter below, which is somewhat fragile (the same OpenLIT whose litellm
+	// instrumentor silently broke once already) - the run_steps fallback has no such
+	// dependency, which is why it stays the baseline.
 	interface PipelineStep {
 		key: string;
 		typeLabel: string;
@@ -136,9 +143,9 @@
 		// formatRunStep - no write-role gate, unlike the run-level input/output behind
 		// "Show input/output" above), just never rendered until now. Tempo spans never
 		// carry message content themselves (capture_message_content=False, ai/app/core/
-		// otel.py) - for a Tempo-sourced LLM/tool step, this is backfilled from the
-		// matching run_steps row instead (see pipelineStepsFromTrace); stays null for a
-		// Memory step, which has no run_steps row to backfill from at all.
+		// otel.py) - for a Tempo-sourced LLM/tool/memory step, this is backfilled from the
+		// matching run_steps row instead (see pipelineStepsFromTrace); stays null only for
+		// a run predating _wrap_memory_for_tracing/this trace plumbing entirely.
 		stepInput: string | null;
 		stepOutput: string | null;
 		// Plain-language "what is this step" - see STEP_TYPE_DESCRIPTIONS above.
@@ -190,26 +197,40 @@
 	// creates both the Tempo span and the RunStep row for every LLM/tool call, in the same
 	// order, so the Nth curated "chat"/"execute_tool" span and the Nth run_steps row of
 	// that same type are guaranteed to be the same underlying call - not a fuzzy guess.
-	// Memory steps have no run_steps counterpart at all (Memory.search()/add() aren't
-	// dynamiq Nodes, see pipelineStepsFromRunSteps's own comment) - input/output stays
-	// null for those, there is genuinely nothing recorded to show.
-	function runStepInputOutputByPosition(runSteps: RunStep[]): Record<'llm' | 'tool_call', RunStep[]> {
-		const byType: Record<'llm' | 'tool_call', RunStep[]> = { llm: [], tool_call: [] };
+	// Memory steps DO now have a run_steps counterpart too (app/services/runtime.py's
+	// _wrap_memory_for_tracing, added after the LLM/tool-only version of this comment
+	// shipped) - Memory.search()/.add() still aren't dynamiq Nodes, so there's still no
+	// on_node_start/on_node_end to hook, but the backend wraps the real Memory instance's
+	// methods directly instead and logs a real row, same as every other step type.
+	type PositionMatchedStepType = 'llm' | 'tool_call' | 'memory_search' | 'memory_add';
+	function runStepInputOutputByPosition(runSteps: RunStep[]): Record<PositionMatchedStepType, RunStep[]> {
+		const byType: Record<PositionMatchedStepType, RunStep[]> = {
+			llm: [],
+			tool_call: [],
+			memory_search: [],
+			memory_add: []
+		};
 		for (const step of runSteps) {
-			if (step.step_type === 'llm' || step.step_type === 'tool_call') byType[step.step_type].push(step);
+			if (step.step_type in byType) byType[step.step_type as PositionMatchedStepType].push(step);
 		}
 		return byType;
 	}
 
 	function pipelineStepsFromTrace(spans: TraceSpan[], runSteps: RunStep[]): PipelineStep[] {
 		const runStepsByType = runStepInputOutputByPosition(runSteps);
-		const nextIndex: Record<'llm' | 'tool_call', number> = { llm: 0, tool_call: 0 };
-		// dynamiq saves the user's message to memory first, then the agent's reply, as two
-		// separate memory.add() calls, whenever the memory backend doesn't support an atomic
-		// "replace" (ai/.venv/.../dynamiq/nodes/agents/base.py's _fallback_input_output_pair
-		// builds [user_message, assistant_message] in that fixed order, then loops over it) -
-		// the ONLY reason a run shows two "Memory save" cards. Same order every time, so the
-		// Nth dynamiq.memory_add span in start-time order reliably tells us which one it is.
+		const nextIndex: Record<PositionMatchedStepType, number> = {
+			llm: 0,
+			tool_call: 0,
+			memory_search: 0,
+			memory_add: 0
+		};
+		// Positional fallback for a run predating _wrap_memory_for_tracing (no memory_add
+		// run_steps rows to read a real name from yet): dynamiq saves the user's message to
+		// memory first, then the agent's reply, as two separate memory.add() calls, whenever
+		// the memory backend doesn't support an atomic "replace" (dynamiq/nodes/agents/
+		// base.py's _fallback_input_output_pair builds [user_message, assistant_message] in
+		// that fixed order) - same order every time, so the Nth dynamiq.memory_add span in
+		// start-time order still reliably tells us which one it is even with no backfill.
 		let memorySaveCount = 0;
 
 		return spans
@@ -219,7 +240,16 @@
 			.map((span) => {
 				const op = String(span.attributes['gen_ai.operation.name'] ?? '');
 				const isFailure = span.status === 'error';
-				const runStepType = op === 'chat' ? 'llm' : op === 'execute_tool' ? 'tool_call' : null;
+				const runStepType: PositionMatchedStepType | null =
+					op === 'chat'
+						? 'llm'
+						: op === 'execute_tool'
+							? 'tool_call'
+							: span.name === 'dynamiq.memory_search'
+								? 'memory_search'
+								: span.name === 'dynamiq.memory_add'
+									? 'memory_add'
+									: null;
 				const matchedRunStep = runStepType ? runStepsByType[runStepType][nextIndex[runStepType]++] : undefined;
 
 				let name: string;
@@ -231,15 +261,13 @@
 					name = span.name;
 					description = STEP_TYPE_DESCRIPTIONS.tool_call;
 				} else if (span.name === 'dynamiq.memory_search') {
-					name = 'Memory search';
-					description = 'Looks up anything relevant from earlier turns in this conversation.';
+					name = matchedRunStep?.name ?? 'Memory search';
+					description = STEP_TYPE_DESCRIPTIONS.memory_search;
 				} else if (span.name === 'dynamiq.memory_add') {
 					const isFirst = memorySaveCount === 0;
 					memorySaveCount++;
-					name = isFirst ? 'Memory save (user message)' : 'Memory save (agent reply)';
-					description = isFirst
-						? 'Saves your message to memory, so later turns can refer back to it.'
-						: "Saves the agent's reply to memory, so later turns can refer back to it.";
+					name = matchedRunStep?.name ?? (isFirst ? 'Memory save (user message)' : 'Memory save (agent reply)');
+					description = STEP_TYPE_DESCRIPTIONS.memory_add;
 				} else {
 					name = span.name;
 					description = 'A step in the agent run.';
