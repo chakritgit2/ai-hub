@@ -11,13 +11,20 @@
 # operations-advws itself deploys plain manifests directly (no kustomize in that repo) —
 # these resources can equally be applied with `kubectl apply -f deploy/k8s/base/` if that
 # turns out to match the team's existing Jenkins convention better than `kubectl apply -k`.
+#
+# DO NOT add secrets.example.yaml here. It documents real Secrets with literal
+# "TODO-generate" placeholder values (see that file's own header) - applying it for real
+# would overwrite the actual in-cluster Secrets (dynamiq-db-credentials, CONSOLE_MASTER_KEY,
+# JWT keys, ...) with those placeholders. `kubectl apply -k deploy/k8s/base/` is therefore
+# unsafe against a live namespace that already has real Secrets in it; apply individual
+# files instead (`kubectl apply -f deploy/k8s/base/<file>.yaml`), the way infra's own
+# tempo-infra-k8s-notes.md runbook does.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 namespace: ai-hub-advws
 
 resources:
-  - secrets.example.yaml
   - postgres-statefulset.yaml
   - redis-deployment.yaml
   - tempo-deployment.yaml

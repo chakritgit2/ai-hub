@@ -2,6 +2,18 @@
 # tracing (gated behind OTEL_EXPORTER_OTLP_ENDPOINT in ai-config.yaml's ConfigMap, which
 # points here). Local-disk storage, same non-HA scope-down as postgres/redis in this
 # namespace — not shared with other apps in cdi-advws, this is ai-hub-advws's own instance.
+#
+# Viewed from the shared Grafana in ns/monitoring via a Tempo datasource (added through the
+# Grafana UI, not provisioning — see deploy/grafana/README.md):
+#   http://tempo.ai-hub-advws.svc.cluster.local:3200
+#
+# This file mirrors what infra actually applied (tempo-infra-k8s-notes.md, 2026-11-03) -
+# storageClassName: local-storage because this cluster has NO dynamic PV provisioner (all
+# StorageClasses are kubernetes.io/no-provisioner); the matching PersistentVolume is
+# cluster-scoped and node-specific (ai-hub-advws-tempo-pv, pinned via nodeAffinity to the
+# node that has /mnt/tempo-ai-hub prepared), so infra keeps it out of this app repo's
+# kustomize base entirely - apply this file on its own, not via `kubectl apply -k
+# deploy/k8s/base/` (see kustomization.yaml's own warning about secrets.example.yaml).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,6 +23,10 @@ data:
   tempo.yaml: |
     server:
       http_listen_port: 3200
+
+    # Do not send anonymous usage stats to Grafana Labs from production
+    usage_report:
+      reporting_enabled: false
 
     distributor:
       receivers:
@@ -43,6 +59,10 @@ metadata:
   namespace: ai-hub-advws
 spec:
   replicas: 1
+  # RWO PVC: the old pod must release the volume before the new one starts, otherwise a
+  # rollout can hang on Multi-Attach if the new pod lands on another node.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: tempo
@@ -59,6 +79,10 @@ spec:
         - name: tempo
           image: grafana/tempo:2.8.3
           args: ["-config.file=/etc/tempo/tempo.yaml"]
+          env:
+            # Soft memory target for the Go GC, kept below the container limit
+            - name: GOMEMLIMIT
+              value: "900MiB"
           ports:
             - name: otlp-grpc
               containerPort: 4317
@@ -66,6 +90,12 @@ spec:
               containerPort: 4318
             - name: tempo-api
               containerPort: 3200
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
           volumeMounts:
             - name: config
               mountPath: /etc/tempo
@@ -75,7 +105,16 @@ spec:
             httpGet:
               path: /ready
               port: 3200
-            initialDelaySeconds: 5
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          # TCP check only: /ready can stay 503 briefly after start (ingester ring
+          # warm-up), which must not trigger restarts.
+          livenessProbe:
+            tcpSocket:
+              port: 3200
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
       volumes:
         - name: config
           configMap:
@@ -91,6 +130,9 @@ metadata:
   namespace: ai-hub-advws
 spec:
   accessModes: ["ReadWriteOnce"]
+  # Cluster has no dynamic provisioner: binds to the static local PV ai-hub-advws-tempo-pv,
+  # applied separately by infra (cluster-scoped, pins a node name - not in this repo).
+  storageClassName: local-storage
   resources:
     requests:
       storage: 10Gi

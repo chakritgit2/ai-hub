@@ -27,5 +27,8 @@ queries are fine at that interval; if a future metric genuinely needs 15s resolu
 needs a dedicated scrape job from infra, not a per-namespace Prometheus.
 
 Tempo (traces, [deploy/k8s/base/tempo-deployment.yaml](../k8s/base/tempo-deployment.yaml))
-is unaffected by this — it's this namespace's own instance, added as a second datasource in
-the same shared Grafana.
+is unaffected by this — it's this namespace's own instance, added as a second datasource,
+named `Tempo (ai-hub)`, in the same shared Grafana. Like the Prometheus/Loki datasources
+already there, it was added through the Grafana UI (`http://tempo.ai-hub-advws.svc.cluster
+.local:3200`) rather than provisioning — that Grafana deployment has no provisioning
+sidecar, so there's no ConfigMap-based datasource config to keep in this repo for it.
