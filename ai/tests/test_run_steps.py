@@ -1,5 +1,6 @@
 import uuid
 
+from dynamiq.prompts import Message, MessageRole, Prompt
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -100,6 +101,44 @@ def test_step_collector_uses_the_llm_nodes_real_model_field_for_the_step_name():
     collector.on_node_end(node, {"content": "hello"}, run_id=run_id)
 
     assert collector.steps[0].name == "gpt-4o-mini"
+
+
+def test_step_collector_captures_the_real_prompt_messages_for_an_llm_step():
+    """dynamiq's Agent always calls the LLM node with `input_data={}` - the real prompt
+    rides along as a separate `prompt=` kwarg (dynamiq.nodes.agents.base.py's _run_llm),
+    which `Runnable.run()` forwards straight through to on_node_start unchanged. Found via
+    a live run showing Input: "{}" on an LLM step in the console's Trace tab - confirms the
+    fix reads the real messages from `kwargs["prompt"]` instead of the always-empty
+    `input_data`."""
+    collector = _StepCollector()
+    run_id = str(uuid.uuid4())
+    prompt = Prompt(
+        messages=[
+            Message(role=MessageRole.SYSTEM, content="You are a helpful assistant."),
+            Message(role=MessageRole.USER, content="who are you?"),
+        ]
+    )
+
+    collector.on_node_start(_node("llms", "gpt-4o-mini"), {}, run_id=run_id, prompt=prompt)
+    collector.on_node_end(_node("llms", "gpt-4o-mini"), {"content": "I am an assistant."}, run_id=run_id)
+
+    [step] = collector.steps
+    assert step.input_text != "{}"
+    assert "who are you?" in step.input_text
+    assert "You are a helpful assistant." in step.input_text
+
+
+def test_step_collector_uses_input_data_for_an_llm_step_with_no_prompt_kwarg():
+    """Backward-compat: a caller that doesn't pass `prompt=` (every pre-existing test in
+    this file, and any future non-Agent caller of the LLM node) must keep getting
+    input_data as-is, not blow up on a missing kwarg."""
+    collector = _StepCollector()
+    run_id = str(uuid.uuid4())
+
+    collector.on_node_start(_node("llms", "gpt-4o-mini"), {"input": "hi"}, run_id=run_id)
+    collector.on_node_end(_node("llms", "gpt-4o-mini"), {"content": "hello"}, run_id=run_id)
+
+    assert collector.steps[0].input_text == '{"input": "hi"}'
 
 
 def test_step_collector_falls_back_to_name_when_an_llm_node_has_no_model_field():

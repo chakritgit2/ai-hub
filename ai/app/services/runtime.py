@@ -163,6 +163,23 @@ class _StepCollector(BaseCallbackHandler):
         # same name/type fallback chain as before for them.
         name = (step_type == "llm" and serialized.get("model")) or serialized.get("name") or serialized.get("type")
 
+        # dynamiq's Agent always calls the LLM node with `input_data={}` - the real prompt
+        # goes through a separate `prompt=` kwarg instead (dynamiq.nodes.agents.base.py's
+        # _run_llm: `self.llm.run(input_data={}, ..., prompt=Prompt(messages=messages),
+        # ...)`), so `input_data` for every LLM step is always an empty dict - not a bug in
+        # this collector, just the wrong field to read for "what did the run_steps console
+        # Trace tab's Input panel show". `Runnable.run()` (dynamiq/runnables/base.py)
+        # forwards unrecognized kwargs straight through run_sync -> run_on_node_start ->
+        # here unchanged, so the real `Prompt` object is sitting in `kwargs["prompt"]` the
+        # whole time - use it when present so the Trace tab shows the actual messages sent
+        # to the model instead of a misleading "{}".
+        step_input = input_data
+        prompt = kwargs.get("prompt")
+        if step_type == "llm" and prompt is not None and getattr(prompt, "messages", None):
+            step_input = {
+                "messages": [message.model_dump(mode="json", exclude_none=True) for message in prompt.messages]
+            }
+
         # Child span, parented to the run's root span (`dynamiq.agent_run`, see this
         # class's own docstring) via the ambient current-context - never passed
         # explicitly. Attribute names follow OTel's GenAI semantic conventions, the same
@@ -176,7 +193,7 @@ class _StepCollector(BaseCallbackHandler):
         self._pending[get_run_id(kwargs)] = {
             "step_type": step_type,
             "name": name,
-            "input": _step_text(input_data),
+            "input": _step_text(step_input),
             "started": time.monotonic(),
             "usage": None,
             # Stamped by dynamiq itself on the fallback LLM's own serialized form
