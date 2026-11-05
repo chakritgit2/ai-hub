@@ -245,6 +245,12 @@
 					description = 'A step in the agent run.';
 				}
 
+				// Tempo only carries what we put on the span (status, gen_ai.usage.*) - cost,
+				// the error message text, and the fallback-model flag were never attributes
+				// we set (see _StepCollector in runtime.py), so without this backfill a
+				// failed Tempo-sourced step would show as "error" with no explanation why.
+				// matchedRunStep is the exact same underlying call (see the comment on
+				// runStepInputOutputByPosition above), so this is a real value, not a guess.
 				return {
 					key: span.span_id,
 					typeLabel: TEMPO_STEP_TYPE_LABELS[op] ?? 'Step',
@@ -253,15 +259,31 @@
 					isFailure,
 					statusLabel: isFailure ? 'error' : 'success',
 					latencyMs: Math.round(span.duration_ms),
-					tokensIn: typeof span.attributes['gen_ai.usage.input_tokens'] === 'number' ? span.attributes['gen_ai.usage.input_tokens'] : null,
-					tokensOut: typeof span.attributes['gen_ai.usage.output_tokens'] === 'number' ? span.attributes['gen_ai.usage.output_tokens'] : null,
-					costUsd: null,
-					errorText: null,
-					isFallbackModel: false,
+					tokensIn:
+						(typeof span.attributes['gen_ai.usage.input_tokens'] === 'number'
+							? span.attributes['gen_ai.usage.input_tokens']
+							: null) ?? matchedRunStep?.tokens_in ?? null,
+					tokensOut:
+						(typeof span.attributes['gen_ai.usage.output_tokens'] === 'number'
+							? span.attributes['gen_ai.usage.output_tokens']
+							: null) ?? matchedRunStep?.tokens_out ?? null,
+					costUsd: matchedRunStep?.cost_usd ?? null,
+					errorText: matchedRunStep?.error ?? null,
+					isFallbackModel: Boolean(matchedRunStep?.detail?.is_fallback),
 					stepInput: matchedRunStep?.input ?? null,
 					stepOutput: matchedRunStep?.output ?? null
 				};
 			});
+	}
+
+	// Guardrail checks aren't dynamiq Nodes either (they run in app/services/guardrails.py,
+	// around agent.run() - see runtime.py's _execute_agent_run_body), so like memory
+	// search/save they never fire on_node_start and never get a Tempo span. Unlike memory,
+	// there's no Tempo-side signal for them at all - the only record is their run_steps
+	// rows. Reuses pipelineStepsFromRunSteps's per-type description/label mapping so a
+	// guardrail card looks the same whether the pipeline came from Tempo or the fallback.
+	function guardrailPipelineSteps(runSteps: RunStep[], stepType: 'guardrail_input' | 'guardrail_output'): PipelineStep[] {
+		return pipelineStepsFromRunSteps(runSteps.filter((step) => step.step_type === stepType));
 	}
 
 	// Synthetic - not a real logs.run_steps row or Tempo span, just marks where the flow
@@ -322,8 +344,19 @@
 	}
 
 	let usingTraceSource = $derived(trace !== null && trace.spans.length > 0);
+	// Input guardrail checks run before agent.run() starts, output checks run after it
+	// finishes (runtime.py's _execute_agent_run_body) - a fixed position, not a guess, so
+	// they're spliced onto the front/back of the Tempo-sourced steps rather than sorted in
+	// by a timestamp Tempo never recorded for them. The run_steps fallback already carries
+	// them inline in the right place and needs no splicing.
 	let realPipelineSteps = $derived<PipelineStep[]>(
-		usingTraceSource && trace ? pipelineStepsFromTrace(trace.spans, steps) : pipelineStepsFromRunSteps(steps)
+		usingTraceSource && trace
+			? [
+					...guardrailPipelineSteps(steps, 'guardrail_input'),
+					...pipelineStepsFromTrace(trace.spans, steps),
+					...guardrailPipelineSteps(steps, 'guardrail_output')
+				]
+			: pipelineStepsFromRunSteps(steps)
 	);
 	let pipelineSteps = $derived<PipelineStep[]>(
 		realPipelineSteps.length > 0 && run
@@ -332,6 +365,24 @@
 	);
 	let selectedStepKey = $state<string | null>(null);
 	let selectedStep = $derived(pipelineSteps.find((s) => s.key === selectedStepKey) ?? null);
+
+	// Transient "Copied" feedback on the Input/Output copy buttons below - keyed by
+	// `${step.key}-input`/`-output` rather than a single boolean so switching steps or
+	// copying the other field doesn't show stale "Copied" text on the wrong button.
+	let copiedKey = $state<string | null>(null);
+
+	async function copyStepText(key: string, text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			copiedKey = key;
+			setTimeout(() => {
+				if (copiedKey === key) copiedKey = null;
+			}, 1500);
+		} catch {
+			// Clipboard API can be unavailable (insecure context, permissions denied) - the
+			// text is already visible/selectable in the <pre> block either way, so no-op.
+		}
+	}
 
 	let maxStepLatencyMs = $derived(Math.max(1, ...pipelineSteps.map((s) => s.latencyMs ?? 0)));
 
@@ -587,14 +638,25 @@
 										: 'border-neutral-200 hover:border-neutral-300'}"
 							>
 								<div
-									class="h-1.5 {step.isFailure ? 'bg-danger' : step.key === '__start__' ? 'bg-neutral-300' : 'bg-primary-500'}"
+									class="h-1.5 {step.isFailure
+										? 'bg-danger'
+										: step.key === '__start__'
+											? 'bg-neutral-300'
+											: step.key === '__end__'
+												? 'bg-primary-700'
+												: 'bg-primary-500'}"
 									aria-hidden="true"
 								></div>
 								<div class="bg-white p-2">
 									<p class="truncate text-[10px] font-medium uppercase tracking-wide text-neutral-400">
 										{step.typeLabel}
 									</p>
-									<p class="truncate text-sm font-semibold text-neutral-900">{step.name}</p>
+									<p class="truncate text-sm font-semibold text-neutral-900">
+										{#if step.key === '__end__' && !step.isFailure}
+											<span class="text-primary-700">✓</span>
+										{/if}
+										{step.name}
+									</p>
 									<p class="mt-1 text-xs text-neutral-500">
 										{step.latencyMs !== null ? `${step.latencyMs} ms` : '—'}
 									</p>
@@ -651,14 +713,32 @@
 							<div class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
 								{#if selectedStep.stepInput !== null}
 									<div>
-										<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Input</p>
+										<div class="flex items-center justify-between">
+											<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Input</p>
+											<button
+												type="button"
+												onclick={() => copyStepText(`${selectedStep.key}-input`, selectedStep.stepInput ?? '')}
+												class="text-[10px] font-medium text-primary-600 hover:underline"
+											>
+												{copiedKey === `${selectedStep.key}-input` ? 'Copied' : 'Copy'}
+											</button>
+										</div>
 										<pre
 											class="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700">{selectedStep.stepInput}</pre>
 									</div>
 								{/if}
 								{#if selectedStep.stepOutput !== null}
 									<div>
-										<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Output</p>
+										<div class="flex items-center justify-between">
+											<p class="text-[10px] font-medium uppercase tracking-wide text-neutral-400">Output</p>
+											<button
+												type="button"
+												onclick={() => copyStepText(`${selectedStep.key}-output`, selectedStep.stepOutput ?? '')}
+												class="text-[10px] font-medium text-primary-600 hover:underline"
+											>
+												{copiedKey === `${selectedStep.key}-output` ? 'Copied' : 'Copy'}
+											</button>
+										</div>
 										<pre
 											class="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700">{selectedStep.stepOutput}</pre>
 									</div>
