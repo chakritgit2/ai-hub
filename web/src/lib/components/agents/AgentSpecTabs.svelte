@@ -30,13 +30,13 @@
 	// offering it here. Update this allowlist if the compiler gains another provider.
 	const USABLE_CONNECTION_TYPES = new Set(['dynamiq.connections.OpenAI', 'openai']);
 
-	// kind: "http" and kind: "builtin" (Tavily/Exa web search) tools can actually be built
-	// into a real node today (ai/app/services/compiler.py's _resolve_tools) - kind:
-	// "python" references fail compilation outright for every role, so there's no point
-	// offering it here. _resolve_tools also rejects an http tool with no config.url and a
-	// builtin tool with no config.provider, so those are checked too (isToolUsable below),
-	// not just the kind.
-	const USABLE_TOOL_KINDS = new Set(['http', 'builtin']);
+	// Every kind ai/app/services/compiler.py's _resolve_tools can actually build into a
+	// real node today (http, builtin: Tavily/Exa, and python: E2B sandbox since 421677d).
+	// _resolve_tools also rejects an http tool with no config.url and a builtin tool with
+	// no config.provider, so those are checked too (isToolUsable below) - python has no
+	// required config field (timeout/domain/allow_packages/description are all optional
+	// with sensible defaults), so enabled is the only check for it.
+	const USABLE_TOOL_KINDS = new Set(['http', 'builtin', 'python']);
 
 	function isToolUsable(tool: Tool): boolean {
 		if (!USABLE_TOOL_KINDS.has(tool.kind) || !tool.enabled) {
@@ -45,7 +45,10 @@
 		if (tool.kind === 'http') {
 			return !!tool.config?.url;
 		}
-		return !!tool.config?.provider;
+		if (tool.kind === 'builtin') {
+			return !!tool.config?.provider;
+		}
+		return true;
 	}
 
 	// A skill is attachable iff it has a published version (ai/app/services/compiler.py's
@@ -779,7 +782,7 @@
 				<p class="text-xs text-neutral-500">
 					The compiler assembles this identity into the agent's system prompt from a shared
 					template, including instructions to decline <code>out_of_scope</code> requests and follow
-					<code>handoff</code> (PRD §6.1a).
+					<code>handoff</code>.
 				</p>
 			</form>
 		{:else if activeTab === 'model'}
@@ -838,8 +841,7 @@
 				</div>
 
 				<p class="text-xs text-neutral-500">
-					Only connections the compiler can build an LLM from today (OpenAI-compatible) are listed
-					(PRD §6.1).
+					Only connections the compiler can build an LLM from today (OpenAI-compatible) are listed.
 				</p>
 
 				<div class="border-t border-neutral-200 pt-5">
@@ -913,9 +915,10 @@
 				{/if}
 
 				<p class="text-xs text-neutral-500">
-					Only enabled <code>http</code> tools can be attached today (PRD §6.5) — other kinds
-					fail compilation until tool-secret storage and an execution story exist for them.
-					Manage tools on the <a href="/tools" class="text-primary underline">Tools</a> page.
+					Only enabled <code>http</code>, <code>builtin</code>, and <code>python</code> tools can
+					be attached today — attaching a <code>python</code> tool still requires an admin role to
+					publish this agent version (code execution is admin-only). Manage tools on the
+					<a href="/tools" class="text-primary underline">Tools</a> page.
 				</p>
 			</div>
 		{:else if activeTab === 'knowledge'}
@@ -954,7 +957,7 @@
 				{/if}
 
 				<p class="text-xs text-neutral-500">
-					Only vector-mode knowledge bases can be attached today (PRD §6.6) — the compiler
+					Only vector-mode knowledge bases can be attached today — the compiler
 					builds a real retrieval tool from each one at publish time, which also requires at
 					least one document to have finished indexing into it.
 					Manage knowledge bases on the <a href="/knowledge-bases" class="text-primary underline">Knowledge</a> page.
@@ -996,7 +999,7 @@
 				{/if}
 
 				<p class="text-xs text-neutral-500">
-					Only published skills can be attached today (PRD §6.6a) — the compiler checks the
+					Only published skills can be attached today — the compiler checks the
 					skill name against this company's published skills at publish time.
 					Manage skills on the <a href="/skills" class="text-primary underline">Skills</a> page.
 				</p>
@@ -1078,7 +1081,7 @@
 				{/if}
 
 				<p class="text-xs text-neutral-500">
-					Conversation memory (PRD §6.2) recalls earlier turns of the same conversation for this
+					Conversation memory recalls earlier turns of the same conversation for this
 					agent. Leave all limits blank to use Dynamiq's own default. Input/output-only save mode
 					keeps less context per turn but is cheaper and skips intermediate tool-call/reasoning
 					detail. Message limit and Turn limit don't count tokens or characters, only items - use
@@ -1124,7 +1127,7 @@
 				{/if}
 
 				<p class="text-xs text-neutral-500">
-					Publish gate (PRD §6.7) - when enabled, publishing is blocked unless the most recent
+					Publish gate - when enabled, publishing is blocked unless the most recent
 					completed <a href="/evaluation" class="text-primary underline">eval run</a> for this
 					version scored at least this threshold on the chosen metric. No eval run yet, or the
 					metric wasn't scored in it, also blocks publishing. There is no override.
@@ -1144,8 +1147,8 @@
 				</div>
 
 				<p class="text-xs text-neutral-500">
-					<code>valid_json</code>/<code>valid_choices</code> only make sense on output (PRD §6.4) -
-					they're not offered for input checks, and <code>prompt_injection</code> only makes sense
+					<code>valid_json</code>/<code>valid_choices</code> only make sense on output - they're not
+					offered for input checks, and <code>prompt_injection</code> only makes sense
 					on input - it's not offered for output checks. <code>mask</code> is unavailable for
 					checks with nothing identifiable to redact (<code>max_length</code>, <code>valid_json</code>,
 					<code>valid_choices</code>, <code>prompt_injection</code>, <code>content_moderation</code>).
@@ -1165,7 +1168,7 @@
 					<div class="rounded-md border border-dashed border-neutral-300 p-8 text-center">
 						<p class="text-sm font-medium text-neutral-600">Not compiled yet</p>
 						<p class="mt-1 text-sm text-neutral-400">
-							compiled_definition is generated when a version is published (PRD §6.1) - this
+							compiled_definition is generated when a version is published - this
 							version hasn't been published yet.
 						</p>
 					</div>
