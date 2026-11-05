@@ -179,18 +179,100 @@
 	}
 
 	// --- Step pipeline (primary Trace tab view) -----------------------------------------
-	// Built from `steps` (logs.run_steps via listRunSteps), not the Tempo-sourced `trace`
-	// above - run_steps is already filtered to just the 4 step types that matter to a human
-	// reading this page (guardrail/LLM/tool), in true execution order, with no parent/child
-	// tree to walk (agent.run() executes one node at a time - see _StepCollector's own
-	// docstring) - simpler and quieter than the full OTel span set, which also carries every
-	// internal DB query/memory-store call OpenLIT auto-instruments. That full set is still
-	// available below as an optional "advanced" expand, not thrown away.
-	function stepIsFailure(step: RunStep): boolean {
-		return step.status === 'error' || step.status === 'block';
+	// Normalizes two different data sources into one shared shape the template renders
+	// once: `trace.spans` (Tempo, curated - see pipelineStepsFromTrace below) when a real
+	// OTel trace exists, falling back to `steps` (logs.run_steps via listRunSteps) for
+	// every run that predates this trace plumbing or where Tempo has nothing. The Tempo
+	// path shows more of the real flow (memory search/save aren't `Node`s in dynamiq, so
+	// they never fire the on_node_start/on_node_end callbacks _StepCollector listens to -
+	// logs.run_steps structurally can't include them) at the cost of depending on
+	// OpenLIT's own span shape for the curation filter below, which is somewhat fragile
+	// (the same OpenLIT whose litellm instrumentor silently broke once already) - the
+	// run_steps fallback has no such dependency, which is why it stays the baseline.
+	interface PipelineStep {
+		key: string;
+		typeLabel: string;
+		name: string;
+		isFailure: boolean;
+		statusLabel: string;
+		latencyMs: number | null;
+		tokensIn: number | null;
+		tokensOut: number | null;
+		costUsd: number | null;
+		errorText: string | null;
+		isFallbackModel: boolean;
 	}
 
-	let maxStepLatencyMs = $derived(Math.max(1, ...steps.map((s) => s.latency_ms ?? 0)));
+	function pipelineStepsFromRunSteps(runSteps: RunStep[]): PipelineStep[] {
+		return runSteps.map((step) => ({
+			key: step.id,
+			typeLabel: STEP_TYPE_LABELS[step.step_type],
+			name: step.name ?? '—',
+			isFailure: step.status === 'error' || step.status === 'block',
+			statusLabel: step.status,
+			latencyMs: step.latency_ms,
+			tokensIn: step.tokens_in,
+			tokensOut: step.tokens_out,
+			costUsd: step.cost_usd,
+			errorText: step.error,
+			isFallbackModel: Boolean(step.detail?.is_fallback)
+		}));
+	}
+
+	const TEMPO_STEP_TYPE_LABELS: Record<string, string> = {
+		chat: 'LLM call',
+		execute_tool: 'Tool call',
+		invoke_agent: 'Memory'
+	};
+	const TEMPO_STEP_NAME_OVERRIDES: Record<string, string> = {
+		'dynamiq.memory_search': 'Memory search',
+		'dynamiq.memory_add': 'Memory save'
+	};
+
+	// A span counts as a pipeline step when it's one WE created (gen_ai.operation.name
+	// "chat"/"execute_tool", see ai/app/services/runtime.py's _StepCollector) or one of
+	// OpenLIT's own dynamiq-level spans ("invoke_agent") - excluding the run's own root
+	// span itself (dynamiq.agent_run carries "invoke_agent" too, but it's the container
+	// the whole trace lives under, not a step within it). Everything else Tempo returns
+	// (raw Postgres QUERY/COMMIT spans, the raw HTTP POST to the LLM provider) duplicates
+	// what a kept span already represents at a level a human reading this page cares
+	// about, so it's left out here - still visible in the unfiltered "full trace" expand.
+	function isPipelineSpan(span: TraceSpan): boolean {
+		if (span.name === 'dynamiq.agent_run') return false;
+		const op = span.attributes['gen_ai.operation.name'];
+		return op === 'chat' || op === 'execute_tool' || op === 'invoke_agent';
+	}
+
+	function pipelineStepsFromTrace(spans: TraceSpan[]): PipelineStep[] {
+		return spans
+			.filter(isPipelineSpan)
+			.slice()
+			.sort((a, b) => a.start_ms_relative - b.start_ms_relative)
+			.map((span) => {
+				const op = String(span.attributes['gen_ai.operation.name'] ?? '');
+				const isFailure = span.status === 'error';
+				return {
+					key: span.span_id,
+					typeLabel: TEMPO_STEP_TYPE_LABELS[op] ?? 'Step',
+					name: TEMPO_STEP_NAME_OVERRIDES[span.name] ?? String(spanAttribute(span, 'gen_ai.request.model') ?? span.name),
+					isFailure,
+					statusLabel: isFailure ? 'error' : 'success',
+					latencyMs: Math.round(span.duration_ms),
+					tokensIn: typeof span.attributes['gen_ai.usage.input_tokens'] === 'number' ? span.attributes['gen_ai.usage.input_tokens'] : null,
+					tokensOut: typeof span.attributes['gen_ai.usage.output_tokens'] === 'number' ? span.attributes['gen_ai.usage.output_tokens'] : null,
+					costUsd: null,
+					errorText: null,
+					isFallbackModel: false
+				};
+			});
+	}
+
+	let usingTraceSource = $derived(trace !== null && trace.spans.length > 0);
+	let pipelineSteps = $derived<PipelineStep[]>(
+		usingTraceSource && trace ? pipelineStepsFromTrace(trace.spans) : pipelineStepsFromRunSteps(steps)
+	);
+
+	let maxStepLatencyMs = $derived(Math.max(1, ...pipelineSteps.map((s) => s.latencyMs ?? 0)));
 
 	// Relative to the slowest step in this run, not the OTel waterfall's absolute-time
 	// scale - a tool call that waited minutes on human approval must not shrink every other
@@ -416,62 +498,62 @@
 
 	<div class="mt-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
 		{#if activeTab === 'trace'}
-			{#if stepsError}
+			{#if !usingTraceSource && stepsError}
 				<p class="text-sm text-danger">{stepsError}</p>
-			{:else if steps.length === 0}
+			{:else if pipelineSteps.length === 0}
 				<p class="text-sm text-neutral-500">No steps recorded for this run.</p>
 			{:else}
 				<ol class="relative">
-					{#each steps as step, i (step.id)}
+					{#each pipelineSteps as step, i (step.key)}
 						<li class="relative flex gap-3 pb-5 last:pb-0">
-							{#if i < steps.length - 1}
+							{#if i < pipelineSteps.length - 1}
 								<div class="absolute bottom-0 left-[11px] top-6 w-px bg-neutral-200" aria-hidden="true"></div>
 							{/if}
 							<div
 								class="relative z-10 mt-0.5 h-[22px] w-[22px] shrink-0 rounded-full border-2 border-white shadow-sm
-									{stepIsFailure(step) ? 'bg-danger' : 'bg-primary-500'}"
+									{step.isFailure ? 'bg-danger' : 'bg-primary-500'}"
 								aria-hidden="true"
 							></div>
 							<div class="flex-1 rounded-lg border border-neutral-200 bg-white p-3">
 								<div class="flex flex-wrap items-center gap-2">
 									<span
-										class="rounded-full px-2 py-0.5 text-xs font-medium {stepIsFailure(step)
+										class="rounded-full px-2 py-0.5 text-xs font-medium {step.isFailure
 											? 'bg-danger/10 text-danger'
 											: 'bg-primary/10 text-primary-700'}"
 									>
-										{STEP_TYPE_LABELS[step.step_type]}
+										{step.typeLabel}
 									</span>
-									<span class="font-medium text-neutral-800">{step.name ?? '—'}</span>
-									{#if step.detail?.is_fallback}
+									<span class="font-medium text-neutral-800">{step.name}</span>
+									{#if step.isFallbackModel}
 										<span class="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
 											Fallback model
 										</span>
 									{/if}
-									<span class="text-xs text-neutral-400">{step.status}</span>
+									<span class="text-xs text-neutral-400">{step.statusLabel}</span>
 								</div>
-								{#if step.latency_ms !== null}
+								{#if step.latencyMs !== null}
 									<div class="mt-2 flex items-center gap-2">
 										<div class="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
 											<div
-												class="h-full rounded-full {stepIsFailure(step) ? 'bg-danger/70' : 'bg-primary-500'}"
-												style="width: {durationBarWidthPct(step.latency_ms)}%"
+												class="h-full rounded-full {step.isFailure ? 'bg-danger/70' : 'bg-primary-500'}"
+												style="width: {durationBarWidthPct(step.latencyMs)}%"
 											></div>
 										</div>
-										<span class="shrink-0 text-xs text-neutral-500">{step.latency_ms} ms</span>
+										<span class="shrink-0 text-xs text-neutral-500">{step.latencyMs} ms</span>
 									</div>
 								{/if}
-								{#if step.tokens_in !== null || step.tokens_out !== null || step.cost_usd !== null}
+								{#if step.tokensIn !== null || step.tokensOut !== null || step.costUsd !== null}
 									<p class="mt-1 text-xs text-neutral-500">
-										{#if step.tokens_in !== null || step.tokens_out !== null}
-											{step.tokens_in ?? 0}/{step.tokens_out ?? 0} tok
+										{#if step.tokensIn !== null || step.tokensOut !== null}
+											{step.tokensIn ?? 0}/{step.tokensOut ?? 0} tok
 										{/if}
-										{#if step.cost_usd !== null}
-											· ${step.cost_usd.toFixed(4)}
+										{#if step.costUsd !== null}
+											· ${step.costUsd.toFixed(4)}
 										{/if}
 									</p>
 								{/if}
-								{#if step.error}
-									<p class="mt-1 text-xs text-danger">{step.error}</p>
+								{#if step.errorText}
+									<p class="mt-1 text-xs text-danger">{step.errorText}</p>
 								{/if}
 							</div>
 						</li>
