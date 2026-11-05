@@ -29,5 +29,13 @@ def test_initializes_openlit_when_otlp_endpoint_set(monkeypatch) -> None:
             "otlp_endpoint": "http://tempo.internal:4318",
             "capture_message_content": False,
             "disable_metrics": True,
+            "disabled_instrumentors": [
+                "litellm",
+                "openai",
+                "anthropic",
+                "bedrock",
+                "vertexai",
+                "google-ai-studio",
+            ],
         }
     ]

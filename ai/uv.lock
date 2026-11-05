@@ -854,6 +854,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "opentelemetry-sdk" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -884,6 +885,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "opentelemetry-sdk", specifier = ">=1.38,<2.0" },
     { name = "pytest", specifier = ">=8.3,<9" },
     { name = "pytest-asyncio", specifier = ">=0.24,<1.0" },
     { name = "ruff", specifier = ">=0.6,<1.0" },

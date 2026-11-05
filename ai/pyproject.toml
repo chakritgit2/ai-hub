@@ -30,6 +30,11 @@ dev = [
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.24,<1.0",
     "ruff>=0.6,<1.0",
+    # Test-only: InMemorySpanExporter, to assert on the real spans _StepCollector/
+    # _execute_agent_run_body create (ai/app/services/runtime.py) without a live Tempo -
+    # already a transitive dependency of openlit, made explicit since tests import it
+    # directly.
+    "opentelemetry-sdk>=1.38,<2.0",
 ]
 
 [tool.pytest.ini_options]

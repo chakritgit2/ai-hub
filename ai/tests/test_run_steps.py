@@ -1,5 +1,9 @@
 import uuid
 
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
 
 from app.core.db import get_company_session
@@ -10,6 +14,18 @@ from app.services.runs import log_run
 from app.services.runtime import _StepCollector
 
 from .markers import requires_postgres
+
+# Module-scoped real TracerProvider + InMemorySpanExporter, set once at collection time
+# (before any test runs) - OTel only allows a global TracerProvider to be set once per
+# process, so this is the one place in the whole ai/tests/ suite that does it. Every span
+# _StepCollector/app.services.runtime._tracer create anywhere in this process (including
+# the pre-existing tests above that call on_node_start directly, with no root span wrapped
+# around them) now actually get recorded here instead of going to a no-op provider - those
+# older tests don't assert on spans at all, so this is harmless for them.
+_span_exporter = InMemorySpanExporter()
+_test_tracer_provider = TracerProvider()
+_test_tracer_provider.add_span_processor(SimpleSpanProcessor(_span_exporter))
+trace.set_tracer_provider(_test_tracer_provider)
 
 
 def _fake_span(trace_id: int) -> NonRecordingSpan:
@@ -134,6 +150,54 @@ def test_step_collector_leaves_otel_trace_id_none_when_tracing_is_a_noop():
     collector.on_node_start(_node("llms", "gpt-4o-mini"), {"input": "hi"}, run_id=run_id)
 
     assert collector.otel_trace_id is None
+
+
+def test_step_collector_creates_a_real_span_per_llm_step_with_gen_ai_attributes():
+    """A real code-review finding (2026-11-05): OpenLIT's own litellm instrumentor
+    silently fails to attach (app/core/otel.py's disabled_instrumentors comment), so
+    _StepCollector creates these spans itself - attribute names follow OTel's GenAI
+    semantic conventions, the same ones the console's Trace tab waterfall tooltip looks
+    for (web/src/routes/runs/[id]/+page.svelte's spanAttribute() calls)."""
+    _span_exporter.clear()
+    collector = _StepCollector()
+    run_id = str(uuid.uuid4())
+
+    with trace.get_tracer(__name__).start_as_current_span("dynamiq.agent_run"):
+        collector.on_node_start(_node("llms", "gpt-4o-mini"), {"input": "hi"}, run_id=run_id)
+        collector.on_node_execute_run(
+            _node("llms", "gpt-4o-mini"),
+            run_id=run_id,
+            usage_data={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens_cost_usd": 0.001},
+        )
+        collector.on_node_end(_node("llms", "gpt-4o-mini"), {"content": "hi"}, run_id=run_id)
+
+    spans = {span.name: span for span in _span_exporter.get_finished_spans()}
+    child = spans["gpt-4o-mini"]
+    assert child.attributes["gen_ai.operation.name"] == "chat"
+    assert child.attributes["gen_ai.request.model"] == "gpt-4o-mini"
+    assert child.attributes["gen_ai.usage.input_tokens"] == 10
+    assert child.attributes["gen_ai.usage.output_tokens"] == 5
+    assert child.status.status_code == trace.StatusCode.OK
+    # Parented to the root span, the way the real call site (_execute_agent_run_body)
+    # wraps agent.run() in one - see runtime.py's own comment on why a context manager.
+    assert child.parent.span_id == spans["dynamiq.agent_run"].context.span_id
+    assert child.parent.trace_id == spans["dynamiq.agent_run"].context.trace_id
+
+
+def test_step_collector_sets_a_tool_span_to_error_status_when_the_step_fails():
+    _span_exporter.clear()
+    collector = _StepCollector()
+    run_id = str(uuid.uuid4())
+
+    with trace.get_tracer(__name__).start_as_current_span("dynamiq.agent_run"):
+        collector.on_node_start(_node("tools", "flaky_tool"), {"query": "x"}, run_id=run_id)
+        collector.on_node_error(_node("tools", "flaky_tool"), RuntimeError("boom"), run_id=run_id)
+
+    spans = {span.name: span for span in _span_exporter.get_finished_spans()}
+    child = spans["flaky_tool"]
+    assert child.attributes["gen_ai.operation.name"] == "execute_tool"
+    assert child.status.status_code == trace.StatusCode.ERROR
+    assert child.status.description == "boom"
 
 
 def test_guardrail_run_steps_converts_check_events():

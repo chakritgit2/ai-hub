@@ -49,6 +49,15 @@ from app.services.tool_secrets import decrypt_tool_secret
 
 logger = logging.getLogger(__name__)
 
+# `get_tracer()` binds lazily to whatever TracerProvider is active when a span is actually
+# created, not when this module is imported - safe to create at module scope regardless of
+# whether app.core.otel.setup_tracing() has run yet (a no-op TracerProvider, matching the
+# "OTEL_EXPORTER_OTLP_ENDPOINT unset" case, is the harmless default). Used to build the
+# `dynamiq.agent_run` root span and each LLM/tool-call child span ourselves - see
+# _StepCollector's own docstring for why OpenLIT's own auto-instrumentation can't be
+# trusted for this (2026-11-05: silently fails for litellm specifically).
+_tracer = trace.get_tracer("dynamiq-console.runtime")
+
 
 class _RunCancelled(Exception):
     """Internal sentinel raised once `agent.run()` comes back with
@@ -112,14 +121,21 @@ class _StepCollector(BaseCallbackHandler):
     needs no re-sorting.
 
     Also captures the real OpenTelemetry/Tempo trace id (`self.otel_trace_id`, PRD §6.9
-    Trace tab waterfall) the first time a node starts - OpenLIT's root span for this run
-    only exists while `agent.run()` itself is executing (it's created fresh per call and
-    torn down when `agent.run()` returns), and `agent.run()` runs inside a worker thread
-    (`asyncio.to_thread`) this collector's own callbacks also fire on - so `on_node_start`
-    is the first point in this codebase's control flow that's actually nested inside that
-    active span context. `None` whenever tracing was a no-op for this run (no
-    `OTEL_EXPORTER_OTLP_ENDPOINT` set, see app/core/otel.py) - `get_span_context().is_valid`
-    is `False` in that case, not a fake all-zeros id.
+    Trace tab waterfall) the first time a node starts, and creates a real OTel child span
+    per LLM/tool node (ourselves, via `_tracer` - OpenLIT's own litellm/openai-provider
+    instrumentors silently fail to attach as of 2026-11-05, see app/core/otel.py's
+    `disabled_instrumentors` comment, so they can't be relied on for this). The run's own
+    root span (`dynamiq.agent_run`) is created by the caller in `_execute_agent_run_body`,
+    wrapping the `agent.run()` call - it only exists while that call is executing, and
+    `agent.run()` runs inside a worker thread (`asyncio.to_thread`) this collector's own
+    callbacks also fire on - so `on_node_start` is the first point in this codebase's
+    control flow that's actually nested inside that active span context, which is why both
+    the trace-id capture and each child span's parent linkage happen correctly with no
+    context passed explicitly. `otel_trace_id` stays `None` whenever tracing was a no-op
+    for this run (no `OTEL_EXPORTER_OTLP_ENDPOINT` set, see app/core/otel.py) -
+    `get_span_context().is_valid` is `False` in that case, not a fake all-zeros id; the
+    child spans created below are equally harmless no-ops in that case (a `NonRecordingSpan`
+    costs attribute-setting calls that go nowhere, nothing is ever exported).
     """
 
     _STEP_GROUPS = {"llms": "llm", "tools": "tool_call"}
@@ -139,9 +155,21 @@ class _StepCollector(BaseCallbackHandler):
         step_type = self._STEP_GROUPS.get(serialized.get("group"))
         if step_type is None:
             return
+        name = serialized.get("name") or serialized.get("type")
+
+        # Child span, parented to the run's root span (`dynamiq.agent_run`, see this
+        # class's own docstring) via the ambient current-context - never passed
+        # explicitly. Attribute names follow OTel's GenAI semantic conventions, the same
+        # ones the console's Trace tab waterfall tooltip already looks for
+        # (web/src/routes/runs/[id]/+page.svelte's spanAttribute() calls).
+        span = _tracer.start_span(name)
+        span.set_attribute("gen_ai.operation.name", "chat" if step_type == "llm" else "execute_tool")
+        if step_type == "llm":
+            span.set_attribute("gen_ai.request.model", name)
+
         self._pending[get_run_id(kwargs)] = {
             "step_type": step_type,
-            "name": serialized.get("name") or serialized.get("type"),
+            "name": name,
             "input": _step_text(input_data),
             "started": time.monotonic(),
             "usage": None,
@@ -150,6 +178,7 @@ class _StepCollector(BaseCallbackHandler):
             # has actually run - False for every ordinary node, including the primary
             # LLM's own failed attempt.
             "is_fallback": bool(serialized.get("is_fallback")),
+            "span": span,
         }
 
     def on_node_execute_run(self, serialized: dict[str, Any], **kwargs: Any) -> None:
@@ -175,6 +204,15 @@ class _StepCollector(BaseCallbackHandler):
         if pending is None:
             return
         usage = pending["usage"] or {}
+
+        span = pending["span"]
+        if usage.get("prompt_tokens") is not None:
+            span.set_attribute("gen_ai.usage.input_tokens", usage["prompt_tokens"])
+        if usage.get("completion_tokens") is not None:
+            span.set_attribute("gen_ai.usage.output_tokens", usage["completion_tokens"])
+        span.set_status(trace.Status(trace.StatusCode.ERROR, error) if error else trace.Status(trace.StatusCode.OK))
+        span.end()
+
         self.steps.append(
             RunStep(
                 step_type=pending["step_type"],
@@ -796,27 +834,40 @@ async def _execute_agent_run_body(
         )
     try:
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    agent.run,
-                    input_data={
-                        "input": input_outcome.text,
-                        "user_id": user_id,
-                        "session_id": resolved_conversation_id,
-                    },
-                    config=agent_run_config,
-                ),
-                timeout=run_timeout,
-            )
-            # Agent.run() does NOT raise on an LLM/tool failure (e.g. a rejected API key) -
-            # it returns a RunnableResult with status=FAILURE and the error captured in
-            # .error instead. Confirmed live: a bad connection secret produced a 200 with
-            # empty output until this check was added, silently hiding a real run failure.
-            if result.status == RunnableStatus.CANCELED:
-                raise _RunCancelled()
-            if result.status != RunnableStatus.SUCCESS:
-                message = result.error.message if result.error else f"agent run ended with status {result.status}"
-                raise RuntimeError(message)
+            # Root span for the whole run (PRD §6.9 Trace tab waterfall) - a context
+            # manager, not manual context.attach()/detach(), specifically because
+            # asyncio.to_thread's worker threads come from a reused pool: a missed detach
+            # on any exit path (exception, timeout, cancel) would leak this run's span
+            # context onto whatever unrelated run next lands on the same pooled thread.
+            # start_as_current_span handles attach/detach/end/exception-recording safely
+            # on every exit path. asyncio.to_thread copies the current contextvars context
+            # (stdlib behavior since Python 3.9) into the worker thread, so this span is
+            # already "current" by the time agent.run() executes there -
+            # _StepCollector.on_node_start's trace.get_current_span() call (and each
+            # LLM/tool child span it creates) picks it up with no further wiring needed.
+            with _tracer.start_as_current_span("dynamiq.agent_run"):
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        agent.run,
+                        input_data={
+                            "input": input_outcome.text,
+                            "user_id": user_id,
+                            "session_id": resolved_conversation_id,
+                        },
+                        config=agent_run_config,
+                    ),
+                    timeout=run_timeout,
+                )
+                # Agent.run() does NOT raise on an LLM/tool failure (e.g. a rejected API
+                # key) - it returns a RunnableResult with status=FAILURE and the error
+                # captured in .error instead. Confirmed live: a bad connection secret
+                # produced a 200 with empty output until this check was added, silently
+                # hiding a real run failure.
+                if result.status == RunnableStatus.CANCELED:
+                    raise _RunCancelled()
+                if result.status != RunnableStatus.SUCCESS:
+                    message = result.error.message if result.error else f"agent run ended with status {result.status}"
+                    raise RuntimeError(message)
         finally:
             if is_cancellable_run:
                 run_registry.unregister(run_id)
