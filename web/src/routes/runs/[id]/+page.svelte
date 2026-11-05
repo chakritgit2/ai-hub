@@ -17,6 +17,7 @@
 		Run,
 		RunContent,
 		RunConversation,
+		RunStatus,
 		RunStep,
 		RunTrace,
 		TraceSpan
@@ -87,6 +88,16 @@
 		guardrail_output: 'Guardrail (output)'
 	};
 
+	// Plain-language, one-line "what is this" for each step type - shown as a tooltip on
+	// the stage card and as a subtitle in the detail panel, so the pipeline reads as a
+	// narrative of what the agent actually did, not just a row of jargon labels.
+	const STEP_TYPE_DESCRIPTIONS: Record<RunStep['step_type'], string> = {
+		guardrail_input: 'Checks your message against the configured safety rules.',
+		llm: 'Asks the model to think and generate the next part of the response.',
+		tool_call: 'Calls an external tool to get information or take an action.',
+		guardrail_output: "Checks the agent's reply against the configured safety rules."
+	};
+
 	const GUARDRAIL_ACTION_LABELS: Record<GuardrailEvent['action'], string> = {
 		block: 'Blocked',
 		mask: 'Masked',
@@ -130,6 +141,8 @@
 		// Memory step, which has no run_steps row to backfill from at all.
 		stepInput: string | null;
 		stepOutput: string | null;
+		// Plain-language "what is this step" - see STEP_TYPE_DESCRIPTIONS above.
+		description: string;
 	}
 
 	function pipelineStepsFromRunSteps(runSteps: RunStep[]): PipelineStep[] {
@@ -146,7 +159,8 @@
 			errorText: step.error,
 			isFallbackModel: Boolean(step.detail?.is_fallback),
 			stepInput: step.input,
-			stepOutput: step.output
+			stepOutput: step.output,
+			description: STEP_TYPE_DESCRIPTIONS[step.step_type]
 		}));
 	}
 
@@ -154,10 +168,6 @@
 		chat: 'LLM call',
 		execute_tool: 'Tool call',
 		invoke_agent: 'Memory'
-	};
-	const TEMPO_STEP_NAME_OVERRIDES: Record<string, string> = {
-		'dynamiq.memory_search': 'Memory search',
-		'dynamiq.memory_add': 'Memory save'
 	};
 
 	// A span counts as a pipeline step when it's one WE created (gen_ai.operation.name
@@ -194,6 +204,13 @@
 	function pipelineStepsFromTrace(spans: TraceSpan[], runSteps: RunStep[]): PipelineStep[] {
 		const runStepsByType = runStepInputOutputByPosition(runSteps);
 		const nextIndex: Record<'llm' | 'tool_call', number> = { llm: 0, tool_call: 0 };
+		// dynamiq saves the user's message to memory first, then the agent's reply, as two
+		// separate memory.add() calls, whenever the memory backend doesn't support an atomic
+		// "replace" (ai/.venv/.../dynamiq/nodes/agents/base.py's _fallback_input_output_pair
+		// builds [user_message, assistant_message] in that fixed order, then loops over it) -
+		// the ONLY reason a run shows two "Memory save" cards. Same order every time, so the
+		// Nth dynamiq.memory_add span in start-time order reliably tells us which one it is.
+		let memorySaveCount = 0;
 
 		return spans
 			.filter(isPipelineSpan)
@@ -204,10 +221,35 @@
 				const isFailure = span.status === 'error';
 				const runStepType = op === 'chat' ? 'llm' : op === 'execute_tool' ? 'tool_call' : null;
 				const matchedRunStep = runStepType ? runStepsByType[runStepType][nextIndex[runStepType]++] : undefined;
+
+				let name: string;
+				let description: string;
+				if (op === 'chat') {
+					name = String(spanAttribute(span, 'gen_ai.request.model') ?? span.name);
+					description = STEP_TYPE_DESCRIPTIONS.llm;
+				} else if (op === 'execute_tool') {
+					name = span.name;
+					description = STEP_TYPE_DESCRIPTIONS.tool_call;
+				} else if (span.name === 'dynamiq.memory_search') {
+					name = 'Memory search';
+					description = 'Looks up anything relevant from earlier turns in this conversation.';
+				} else if (span.name === 'dynamiq.memory_add') {
+					const isFirst = memorySaveCount === 0;
+					memorySaveCount++;
+					name = isFirst ? 'Memory save (user message)' : 'Memory save (agent reply)';
+					description = isFirst
+						? 'Saves your message to memory, so later turns can refer back to it.'
+						: "Saves the agent's reply to memory, so later turns can refer back to it.";
+				} else {
+					name = span.name;
+					description = 'A step in the agent run.';
+				}
+
 				return {
 					key: span.span_id,
 					typeLabel: TEMPO_STEP_TYPE_LABELS[op] ?? 'Step',
-					name: TEMPO_STEP_NAME_OVERRIDES[span.name] ?? String(spanAttribute(span, 'gen_ai.request.model') ?? span.name),
+					name,
+					description,
 					isFailure,
 					statusLabel: isFailure ? 'error' : 'success',
 					latencyMs: Math.round(span.duration_ms),
@@ -232,6 +274,7 @@
 		key: '__start__',
 		typeLabel: 'Start',
 		name: 'Message received',
+		description: 'Your message arrives and the agent starts working on a reply.',
 		isFailure: false,
 		statusLabel: 'received',
 		latencyMs: null,
@@ -244,12 +287,48 @@
 		stepOutput: null
 	};
 
+	// Closes the narrative the START_STEP opens - mirrors a Jenkins pipeline's final stage,
+	// so the row always reads start-to-finish instead of trailing off after the last real
+	// step. Labeled from the run's own status rather than always "done", since a run can
+	// end in several ways (guardrail block, error, cancel) and that's exactly what a reader
+	// scanning left-to-right wants to see without opening the run's own status badge.
+	const END_STEP_BY_STATUS: Record<RunStatus, { name: string; description: string }> = {
+		success: { name: 'Reply sent', description: 'The reply is finalized and sent back.' },
+		error: { name: 'Run failed', description: 'The run hit an error before it could finish.' },
+		blocked: { name: 'Blocked', description: 'A guardrail blocked the run before it could finish.' },
+		interrupted: { name: 'Interrupted', description: 'The run was interrupted before it could finish.' },
+		truncated: { name: 'Truncated', description: 'The run was truncated before it could finish.' },
+		cancelled: { name: 'Cancelled', description: 'The run was cancelled before it could finish.' }
+	};
+
+	function endStepFor(status: RunStatus): PipelineStep {
+		const { name, description } = END_STEP_BY_STATUS[status];
+		return {
+			key: '__end__',
+			typeLabel: 'End',
+			name,
+			description,
+			isFailure: status !== 'success',
+			statusLabel: status,
+			latencyMs: null,
+			tokensIn: null,
+			tokensOut: null,
+			costUsd: null,
+			errorText: null,
+			isFallbackModel: false,
+			stepInput: null,
+			stepOutput: null
+		};
+	}
+
 	let usingTraceSource = $derived(trace !== null && trace.spans.length > 0);
 	let realPipelineSteps = $derived<PipelineStep[]>(
 		usingTraceSource && trace ? pipelineStepsFromTrace(trace.spans, steps) : pipelineStepsFromRunSteps(steps)
 	);
 	let pipelineSteps = $derived<PipelineStep[]>(
-		realPipelineSteps.length > 0 ? [START_STEP, ...realPipelineSteps] : []
+		realPipelineSteps.length > 0 && run
+			? [START_STEP, ...realPipelineSteps, endStepFor(run.status)]
+			: []
 	);
 	let selectedStepKey = $state<string | null>(null);
 	let selectedStep = $derived(pipelineSteps.find((s) => s.key === selectedStepKey) ?? null);
@@ -499,6 +578,7 @@
 							{/if}
 							<button
 								type="button"
+								title={step.description}
 								aria-pressed={selectedStepKey === step.key}
 								onclick={() => (selectedStepKey = selectedStepKey === step.key ? null : step.key)}
 								class="w-36 shrink-0 overflow-hidden rounded-md border text-left transition-colors
@@ -542,6 +622,7 @@
 							{/if}
 							<span class="text-xs text-neutral-400">{selectedStep.statusLabel}</span>
 						</div>
+						<p class="mt-1 text-xs text-neutral-500">{selectedStep.description}</p>
 						{#if selectedStep.latencyMs !== null}
 							<div class="mt-2 flex items-center gap-2">
 								<div class="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-100">
