@@ -71,7 +71,6 @@
 	let steps = $state<RunStep[]>([]);
 	let stepsError = $state<string | null>(null);
 	let trace = $state<RunTrace['trace']>(null);
-	let hoveredSpanId = $state<string | null>(null);
 	let conversation = $state<RunConversation | null>(null);
 	let conversationError = $state<string | null>(null);
 	let guardrailEvents = $state<GuardrailEvent[]>([]);
@@ -93,85 +92,6 @@
 		mask: 'Masked',
 		flag: 'Flagged'
 	};
-
-	// --- Trace waterfall geometry (same hand-rolled-SVG convention as the Dashboard's
-	// runs-per-day chart: bars <=24px thick, rounded trailing edge/square leading edge,
-	// label selectively, no charting library) -------------------------------------------
-	const WATERFALL_WIDTH = 700;
-	const LABEL_WIDTH = 220;
-	const TIMELINE_WIDTH = WATERFALL_WIDTH - LABEL_WIDTH;
-	const ROW_HEIGHT = 20;
-	const ROW_GAP = 6;
-	const ROW_STEP = ROW_HEIGHT + ROW_GAP;
-	const INDENT_PX = 14;
-	const TOP_PADDING = 4;
-
-	interface OrderedSpan {
-		span: TraceSpan;
-		depth: number;
-	}
-
-	// Depth-first walk of the parent/child tree, each level sorted by start time - a span
-	// whose parent_span_id isn't present in this trace (the true root, or a parent Tempo
-	// didn't return) is treated as a root too, rather than dropped.
-	function orderSpansDepthFirst(spans: TraceSpan[]): OrderedSpan[] {
-		const spanIds = new Set(spans.map((s) => s.span_id));
-		const childrenByParent = new Map<string | null, TraceSpan[]>();
-		for (const span of spans) {
-			const parentKey = span.parent_span_id !== null && spanIds.has(span.parent_span_id) ? span.parent_span_id : null;
-			const siblings = childrenByParent.get(parentKey) ?? [];
-			siblings.push(span);
-			childrenByParent.set(parentKey, siblings);
-		}
-		for (const siblings of childrenByParent.values()) {
-			siblings.sort((a, b) => a.start_ms_relative - b.start_ms_relative);
-		}
-
-		const ordered: OrderedSpan[] = [];
-		function visit(parentKey: string | null, depth: number) {
-			for (const span of childrenByParent.get(parentKey) ?? []) {
-				ordered.push({ span, depth });
-				visit(span.span_id, depth + 1);
-			}
-		}
-		visit(null, 0);
-		return ordered;
-	}
-
-	let orderedSpans = $derived(trace ? orderSpansDepthFirst(trace.spans) : []);
-	let totalDurationMs = $derived(
-		Math.max(1, ...(trace?.spans ?? []).map((s) => s.start_ms_relative + s.duration_ms))
-	);
-
-	interface WaterfallRow {
-		span: TraceSpan;
-		depth: number;
-		x: number;
-		width: number;
-		y: number;
-	}
-
-	let waterfallRows = $derived<WaterfallRow[]>(
-		orderedSpans.map(({ span, depth }, i) => ({
-			span,
-			depth,
-			x: LABEL_WIDTH + (span.start_ms_relative / totalDurationMs) * TIMELINE_WIDTH,
-			width: Math.max(2, (span.duration_ms / totalDurationMs) * TIMELINE_WIDTH),
-			y: TOP_PADDING + i * ROW_STEP
-		}))
-	);
-
-	let waterfallHeight = $derived(TOP_PADDING * 2 + waterfallRows.length * ROW_STEP);
-
-	// Square leading edge / rounded trailing edge, mirroring the Dashboard chart's
-	// rounded-top/square-baseline vertical bars - here "baseline" is the bar's start.
-	function waterfallBarPath(row: WaterfallRow): string {
-		const { x, y, width: w } = row;
-		const h = ROW_HEIGHT;
-		if (w <= 0) return '';
-		const r = Math.min(3, w, h / 2);
-		return `M${x},${y} L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h - r} Q${x + w},${y + h} ${x + w - r},${y + h} L${x},${y + h} Z`;
-	}
 
 	function spanAttribute(span: TraceSpan, key: string): string | null {
 		const value = span.attributes[key];
@@ -667,71 +587,6 @@
 					</div>
 				{/if}
 
-				{#if trace && trace.spans.length > 0}
-					<details class="mt-5 border-t border-neutral-200 pt-3">
-						<summary class="cursor-pointer text-xs text-neutral-500 hover:text-neutral-700">
-							Show full distributed trace ({trace.spans.length} spans, includes internal DB/memory calls)
-						</summary>
-						<div class="relative mt-3">
-							<svg
-								viewBox="0 0 {WATERFALL_WIDTH} {waterfallHeight}"
-								class="w-full"
-								style="height: {waterfallHeight}px;"
-								role="img"
-								aria-label="Span trace waterfall, {trace.spans.length} spans"
-							>
-								{#each waterfallRows as row (row.span.span_id)}
-									<text
-										x={row.depth * INDENT_PX}
-										y={row.y + ROW_HEIGHT / 2 + 3}
-										class="fill-neutral-600 text-[10px]"
-									>
-										{row.span.name}
-									</text>
-									<path
-										d={waterfallBarPath(row)}
-										class={hoveredSpanId === row.span.span_id
-											? row.span.status === 'error'
-												? 'fill-danger/80'
-												: 'fill-primary-600'
-											: row.span.status === 'error'
-												? 'fill-danger/60'
-												: 'fill-primary-500'}
-										role="button"
-										tabindex="0"
-										aria-label="{row.span.name}: {row.span.duration_ms.toFixed(0)} ms, starting {row.span.start_ms_relative.toFixed(0)} ms in"
-										onmouseenter={() => (hoveredSpanId = row.span.span_id)}
-										onmouseleave={() => (hoveredSpanId = null)}
-										onfocus={() => (hoveredSpanId = row.span.span_id)}
-										onblur={() => (hoveredSpanId = null)}
-									/>
-								{/each}
-							</svg>
-
-							{#if hoveredSpanId !== null}
-								{@const row = waterfallRows.find((r) => r.span.span_id === hoveredSpanId)}
-								{#if row}
-									<div
-										class="pointer-events-none absolute -translate-y-full rounded-md border border-neutral-200
-											bg-white px-2 py-1 text-xs shadow-md"
-										style="left: {(row.x / WATERFALL_WIDTH) * 100}%; top: {(row.y / waterfallHeight) * 100}%;"
-									>
-										<p class="font-semibold text-neutral-900">{row.span.name}</p>
-										<p class="text-neutral-500">
-											{row.span.duration_ms.toFixed(0)} ms · starts {row.span.start_ms_relative.toFixed(0)} ms in
-										</p>
-										{#if spanAttribute(row.span, 'gen_ai.operation.name')}
-											<p class="text-neutral-500">op: {spanAttribute(row.span, 'gen_ai.operation.name')}</p>
-										{/if}
-										{#if spanAttribute(row.span, 'gen_ai.request.model')}
-											<p class="text-neutral-500">model: {spanAttribute(row.span, 'gen_ai.request.model')}</p>
-										{/if}
-									</div>
-								{/if}
-							{/if}
-						</div>
-					</details>
-				{/if}
 			{/if}
 		{:else if activeTab === 'conversation'}
 			{#if !run.conversation_id}
