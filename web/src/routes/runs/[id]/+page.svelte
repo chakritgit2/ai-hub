@@ -203,9 +203,11 @@
 		isFallbackModel: boolean;
 		// Already returned by listRunSteps() to any member today (RunsController::
 		// formatRunStep - no write-role gate, unlike the run-level input/output behind
-		// "Show input/output" above), just never rendered until now. Null for every
-		// Tempo-sourced step - spans never carry message content at all
-		// (capture_message_content=False, ai/app/core/otel.py), so there's nothing to show.
+		// "Show input/output" above), just never rendered until now. Tempo spans never
+		// carry message content themselves (capture_message_content=False, ai/app/core/
+		// otel.py) - for a Tempo-sourced LLM/tool step, this is backfilled from the
+		// matching run_steps row instead (see pipelineStepsFromTrace); stays null for a
+		// Memory step, which has no run_steps row to backfill from at all.
 		stepInput: string | null;
 		stepOutput: string | null;
 	}
@@ -252,7 +254,27 @@
 		return op === 'chat' || op === 'execute_tool' || op === 'invoke_agent';
 	}
 
-	function pipelineStepsFromTrace(spans: TraceSpan[]): PipelineStep[] {
+	// Tempo spans never carry input/output text (capture_message_content=False), but the
+	// LLM/tool_call spans this page keeps DO have a real counterpart in `run_steps` - the
+	// exact same _StepCollector.on_node_start/_finish cycle (ai/app/services/runtime.py)
+	// creates both the Tempo span and the RunStep row for every LLM/tool call, in the same
+	// order, so the Nth curated "chat"/"execute_tool" span and the Nth run_steps row of
+	// that same type are guaranteed to be the same underlying call - not a fuzzy guess.
+	// Memory steps have no run_steps counterpart at all (Memory.search()/add() aren't
+	// dynamiq Nodes, see pipelineStepsFromRunSteps's own comment) - input/output stays
+	// null for those, there is genuinely nothing recorded to show.
+	function runStepInputOutputByPosition(runSteps: RunStep[]): Record<'llm' | 'tool_call', RunStep[]> {
+		const byType: Record<'llm' | 'tool_call', RunStep[]> = { llm: [], tool_call: [] };
+		for (const step of runSteps) {
+			if (step.step_type === 'llm' || step.step_type === 'tool_call') byType[step.step_type].push(step);
+		}
+		return byType;
+	}
+
+	function pipelineStepsFromTrace(spans: TraceSpan[], runSteps: RunStep[]): PipelineStep[] {
+		const runStepsByType = runStepInputOutputByPosition(runSteps);
+		const nextIndex: Record<'llm' | 'tool_call', number> = { llm: 0, tool_call: 0 };
+
 		return spans
 			.filter(isPipelineSpan)
 			.slice()
@@ -260,6 +282,8 @@
 			.map((span) => {
 				const op = String(span.attributes['gen_ai.operation.name'] ?? '');
 				const isFailure = span.status === 'error';
+				const runStepType = op === 'chat' ? 'llm' : op === 'execute_tool' ? 'tool_call' : null;
+				const matchedRunStep = runStepType ? runStepsByType[runStepType][nextIndex[runStepType]++] : undefined;
 				return {
 					key: span.span_id,
 					typeLabel: TEMPO_STEP_TYPE_LABELS[op] ?? 'Step',
@@ -272,15 +296,15 @@
 					costUsd: null,
 					errorText: null,
 					isFallbackModel: false,
-					stepInput: null,
-					stepOutput: null
+					stepInput: matchedRunStep?.input ?? null,
+					stepOutput: matchedRunStep?.output ?? null
 				};
 			});
 	}
 
 	let usingTraceSource = $derived(trace !== null && trace.spans.length > 0);
 	let pipelineSteps = $derived<PipelineStep[]>(
-		usingTraceSource && trace ? pipelineStepsFromTrace(trace.spans) : pipelineStepsFromRunSteps(steps)
+		usingTraceSource && trace ? pipelineStepsFromTrace(trace.spans, steps) : pipelineStepsFromRunSteps(steps)
 	);
 
 	let maxStepLatencyMs = $derived(Math.max(1, ...pipelineSteps.map((s) => s.latencyMs ?? 0)));
