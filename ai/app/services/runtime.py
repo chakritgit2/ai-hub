@@ -96,11 +96,18 @@ class _UsageCollector(BaseCallbackHandler):
 
 def _step_text(value: Any) -> str | None:
     """Best-effort stringification of a node's input/output dict for `logs.run_steps`
-    (always a dict/BaseException from dynamiq, never already a plain string)."""
+    (always a dict/BaseException from dynamiq, never already a plain string).
+
+    `ensure_ascii=False` - found via a live run whose Thai-language LLM output rendered
+    as unreadable `\\u0e09\\u0e31\\u0e19...` escapes in the console's Trace tab. The
+    console never re-parses this string as JSON (the frontend treats `run_steps.input`/
+    `.output` as opaque display text - see web/src/routes/runs/[id]/+page.svelte's
+    PipelineStep.stepInput/stepOutput), so there's no reason to pay for ASCII-only output;
+    Postgres's `text` column and every consumer here are UTF-8 native already."""
     if value is None:
         return None
     try:
-        return json.dumps(value, default=str)
+        return json.dumps(value, default=str, ensure_ascii=False)
     except TypeError:
         return str(value)
 

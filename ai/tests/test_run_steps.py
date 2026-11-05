@@ -12,7 +12,7 @@ from app.db.tables import run_steps_table
 from app.services.guardrails import CheckEvent
 from app.services.run_steps import RunStep, guardrail_run_steps, log_run_steps
 from app.services.runs import log_run
-from app.services.runtime import _StepCollector, _wrap_memory_for_tracing
+from app.services.runtime import _StepCollector, _step_text, _wrap_memory_for_tracing
 
 from .markers import requires_postgres
 
@@ -41,6 +41,16 @@ def _fake_span(trace_id: int) -> NonRecordingSpan:
 
 def _node(group: str, name: str) -> dict:
     return {"group": group, "name": name, "type": f"dynamiq.nodes.{group}.{name}"}
+
+
+def test_step_text_keeps_non_ascii_content_readable():
+    """Found via a live run whose Thai-language LLM output rendered as unreadable
+    `\\u0e09\\u0e31\\u0e19...` escapes in the console's Trace tab - json.dumps's default
+    ensure_ascii=True was the cause, not a frontend/encoding bug."""
+    text = _step_text({"content": "สวัสดีครับ"})
+
+    assert text == '{"content": "สวัสดีครับ"}'
+    assert "\\u" not in text
 
 
 def test_step_collector_records_llm_then_tool_in_order():
