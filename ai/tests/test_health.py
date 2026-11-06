@@ -34,14 +34,6 @@ def test_gateway_jwks(gateway_client: TestClient) -> None:
     assert keys[0]["kid"]
 
 
-def test_internal_stub_returns_501(runtime_client: TestClient) -> None:
-    """runtime_client overrides require_internal_auth with fake claims (PRD §9.2) —
-    past that gate, the route itself is still a 501 stub."""
-    resp = runtime_client.post("/internal/v1/agents/recompile-all")
-    assert resp.status_code == 501
-    assert resp.json()["operation_id"] == "recompileAllAgents"
-
-
 def test_internal_route_requires_internal_token() -> None:
     """Real auth, no override — PRD §9.2's internal-JWT gate is enforced even though
     the route past it is still a stub."""

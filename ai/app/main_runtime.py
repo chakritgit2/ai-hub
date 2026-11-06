@@ -57,7 +57,7 @@ from app.services.connection_secrets import (
     upsert_connection_secret,
 )
 from app.services.connections import resolve_connection
-from app.services.agent_versions import resolve_agent_version
+from app.services.agent_versions import recompile_all_published_agent_versions, resolve_agent_version
 from app.services.deployments import resolve_deployment
 from app.services.quotas import QuotaExceededError, read_usage_snapshot
 from app.services.approvals import ApprovalAlreadyDecidedError, ApprovalNotFoundError, decide_approval
@@ -615,9 +615,29 @@ async def compileAgentSpec(body: CompileRequest, claims: InternalAuth) -> Respon
     return CompileResult(**result)
 
 
-@app.post("/internal/v1/agents/recompile-all")
+class RecompileFailureModel(BaseModel):
+    agent_version_id: str
+    error: str
+
+
+class RecompileAllResultModel(BaseModel):
+    recompiled: int
+    failed: list[RecompileFailureModel] = []
+
+
+@app.post("/internal/v1/agents/recompile-all", response_model=RecompileAllResultModel)
 async def recompileAllAgents(claims: InternalAuth) -> Response:
-    return _not_implemented("recompileAllAgents")
+    """Re-runs the compiler against every company's published agent version after a
+    Dynamiq/compiler upgrade (PRD §12) - see `recompile_all_published_agent_versions`'s own
+    docstring for the full behavior. Ignores this request's `X-Company-Id` (required by
+    `require_internal_auth` for every `/internal/v1/*` route) since this always operates
+    across every company, never just the caller's one.
+    """
+    result = await recompile_all_published_agent_versions()
+    return RecompileAllResultModel(
+        recompiled=result.recompiled,
+        failed=[RecompileFailureModel(agent_version_id=f.agent_version_id, error=f.error) for f in result.failed],
+    )
 
 
 class CompileWorkflowRequest(BaseModel):
