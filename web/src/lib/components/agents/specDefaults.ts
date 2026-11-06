@@ -39,6 +39,11 @@ export function blankModelSpec(): ModelSpec {
 	return { connection_id: '', model: '' };
 }
 
+// Matches the backend's AgentSpecDoc.max_loops default (ai/app/services/agent_spec.py) -
+// top-level, not part of ModelSpec, so it's tracked as its own form field rather than
+// folded into ModelFormState.
+export const DEFAULT_MAX_LOOPS = 8;
+
 export function blankGuardrails(): GuardrailsSpec {
 	return { input: [], output: [] };
 }
@@ -129,6 +134,7 @@ export interface SpecFormState {
 	guardrails: GuardrailsSpec;
 	memory: MemoryFormState;
 	publishGate: PublishGateFormState;
+	maxLoops: number;
 }
 
 /** Builds editable form state from a saved version's spec, or blank defaults if there's none. */
@@ -141,6 +147,7 @@ export function formStateFromVersion(version: AgentVersion | null | undefined): 
 		selectedKnowledgeBaseIds: (version?.spec.knowledge ?? []).map((k) => k.kb_id),
 		guardrails: version?.spec.guardrails ?? blankGuardrails(),
 		memory: toMemoryFormState(version?.spec.memory),
-		publishGate: toPublishGateFormState(version?.spec.publish_gate)
+		publishGate: toPublishGateFormState(version?.spec.publish_gate),
+		maxLoops: version?.spec.max_loops ?? DEFAULT_MAX_LOOPS
 	};
 }

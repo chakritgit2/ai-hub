@@ -26,6 +26,20 @@ def test_minimal_single_state_spec_is_valid():
     assert doc.max_loops == 15
 
 
+def test_max_loops_at_the_cap_is_accepted():
+    doc = WorkflowSpecDoc.model_validate(
+        {"states": [_state("state1")], "initial_state": "state1", "manager": _manager(), "max_loops": 20}
+    )
+    assert doc.max_loops == 20
+
+
+def test_max_loops_above_the_cap_is_rejected():
+    with pytest.raises(ValidationError):
+        WorkflowSpecDoc.model_validate(
+            {"states": [_state("state1")], "initial_state": "state1", "manager": _manager(), "max_loops": 21}
+        )
+
+
 def test_two_state_chain_is_valid():
     doc = WorkflowSpecDoc.model_validate(
         {

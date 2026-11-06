@@ -57,6 +57,7 @@
 	let guardrails = $state(blankForm.guardrails);
 	let memory = $state(blankForm.memory);
 	let publishGate = $state(blankForm.publishGate);
+	let maxLoops = $state(blankForm.maxLoops);
 
 	function loadFrom(newAgent: Agent | null, newVersions: AgentVersion[]) {
 		agent = newAgent;
@@ -71,6 +72,7 @@
 		guardrails = form.guardrails;
 		memory = form.memory;
 		publishGate = form.publishGate;
+		maxLoops = form.maxLoops;
 		versionId = latest && !latest.is_published ? latest.id : null;
 		// Clear banners left over from whatever the page was previously showing (a prior
 		// save/publish result, or - since Clone navigates within this same route/component
@@ -145,7 +147,8 @@
 				knowledge: selectedKnowledgeBaseIds.map((kb_id) => ({ kb_id })),
 				guardrails: guardrailsResult,
 				memory: memoryResult,
-				publish_gate: publishGateResult
+				publish_gate: publishGateResult,
+				max_loops: maxLoops
 			}
 		};
 	}
@@ -707,6 +710,7 @@
 			bind:guardrails
 			bind:memory
 			bind:publishGate
+			bind:maxLoops
 			{readonly}
 			{isAdmin}
 			compiledDefinition={latestVersion?.compiled_definition ?? null}

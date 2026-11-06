@@ -58,6 +58,26 @@ def test_non_uuid_connection_id_is_rejected():
         AgentSpecDoc.model_validate({"identity": VALID_IDENTITY, "model": model})
 
 
+def test_max_loops_defaults_to_8_when_omitted():
+    doc = AgentSpecDoc.model_validate({"identity": VALID_IDENTITY, "model": VALID_MODEL})
+    assert doc.max_loops == 8
+
+
+def test_max_loops_at_the_cap_is_accepted():
+    doc = AgentSpecDoc.model_validate({"identity": VALID_IDENTITY, "model": VALID_MODEL, "max_loops": 20})
+    assert doc.max_loops == 20
+
+
+def test_max_loops_above_the_cap_is_rejected():
+    with pytest.raises(ValidationError):
+        AgentSpecDoc.model_validate({"identity": VALID_IDENTITY, "model": VALID_MODEL, "max_loops": 21})
+
+
+def test_max_loops_of_zero_is_rejected():
+    with pytest.raises(ValidationError):
+        AgentSpecDoc.model_validate({"identity": VALID_IDENTITY, "model": VALID_MODEL, "max_loops": 0})
+
+
 def test_fallback_model_without_fallback_connection_is_rejected():
     model = {**VALID_MODEL, "fallback_model": "gpt-4o"}
     with pytest.raises(ValidationError):

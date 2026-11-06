@@ -285,6 +285,11 @@ class AgentSpecDoc(BaseModel):
     knowledge: list[KnowledgeRefSpec] = Field(default_factory=list)
     memory: MemorySpec = Field(default_factory=MemorySpec)
     publish_gate: PublishGateSpec = Field(default_factory=PublishGateSpec)
+    # Was entirely unwireable before this field existed - app.services.compiler always
+    # built the compiled Agent with its own hardcoded DEFAULT_MAX_LOOPS=8, the same way
+    # WorkflowSpecDoc.max_loops below is already per-workflow configurable. Default/upper
+    # bound match config.py's Settings.DEFAULT_MAX_LOOPS/MAX_MAX_LOOPS.
+    max_loops: int = Field(default=8, ge=1, le=20)
 
 
 def render_identity_prompt(identity: AgentIdentitySpec) -> str:

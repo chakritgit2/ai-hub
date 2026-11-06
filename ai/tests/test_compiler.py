@@ -54,6 +54,16 @@ async def test_missing_model_section_fails_without_db():
     assert any(error["path"] == "model" for error in result["errors"])
 
 
+async def test_compile_rejects_max_loops_above_the_cap():
+    spec = _valid_spec(str(uuid.uuid4()))
+    spec["max_loops"] = 21
+
+    result = await compile_spec(spec, "developer", str(uuid.uuid4()))
+
+    assert result["ok"] is False
+    assert any(error["path"] == "max_loops" for error in result["errors"])
+
+
 def test_compile_route_requires_internal_token():
     """Real auth, no override — matches test_health.py's test_internal_route_requires_internal_token."""
     resp = TestClient(runtime_app).post(
@@ -93,6 +103,51 @@ async def test_compile_happy_path_constructs_a_real_agent(make_connection):
     assert result["compiled_definition"]["agent"]["llm"]["connection"]["connection_id"] == connection_id
     assert result["compiler_version"]
     assert result["dynamiq_version"]
+
+
+@requires_postgres
+async def test_compile_defaults_max_loops_to_8(make_connection):
+    """single-agent max_loops was unconditionally hardcoded (compiler.py's own
+    DEFAULT_MAX_LOOPS=8 module constant) until AgentSpecDoc.max_loops was added - this
+    pins the unchanged default behavior for a spec that doesn't set it."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+
+    result = await compile_spec(_valid_spec(connection_id), "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    assert result["compiled_definition"]["agent"]["max_loops"] == 8
+
+
+@requires_postgres
+async def test_compile_includes_custom_max_loops_in_compiled_definition(make_connection):
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    spec = _valid_spec(connection_id)
+    spec["max_loops"] = 3
+
+    result = await compile_spec(spec, "developer", company_id)
+
+    assert result["ok"] is True, result["errors"]
+    assert result["compiled_definition"]["agent"]["max_loops"] == 3
+
+
+@requires_postgres
+async def test_build_agent_threads_custom_max_loops_through_to_the_built_agent(make_connection):
+    """Proves the custom max_loops value reaches the real dynamiq Agent node, not just
+    compiled_definition - mirrors how test_build_agent_wires_native_fallback_onto_the_
+    primary_llm proves fallback reaches the real LLM node."""
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(company_id)
+    spec = _valid_spec(connection_id)
+    spec["max_loops"] = 3
+
+    result = await compile_spec(spec, "developer", company_id)
+    assert result["ok"] is True, result["errors"]
+
+    agent = await build_agent(result["compiled_definition"], "sk-test-key", company_id)
+
+    assert agent.max_loops == 3
 
 
 @requires_postgres

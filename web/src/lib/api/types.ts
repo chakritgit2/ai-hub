@@ -499,6 +499,9 @@ export interface AgentVersion {
 		guardrails?: GuardrailsSpec;
 		memory?: MemorySpec;
 		publish_gate?: PublishGateSpec;
+		// Top-level, not part of ModelSpec (mirrors ai/app/services/agent_spec.py's
+		// AgentSpecDoc.max_loops exactly) - defaults to 8, capped at 20.
+		max_loops?: number;
 	};
 	spec_version: string;
 	compiled_definition?: Record<string, unknown> | null;

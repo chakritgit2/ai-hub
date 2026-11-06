@@ -81,7 +81,9 @@ class WorkflowSpecDoc(BaseModel):
     states: list[WorkflowStateSpec] = Field(min_length=1)
     initial_state: str
     manager: WorkflowManagerSpec
-    max_loops: int = Field(default=15, gt=0)  # matches GraphOrchestrator's own default
+    # Upper bound (matches config.py's Settings.MAX_MAX_LOOPS) was dead config until now -
+    # this field had no ceiling at all before, just gt=0.
+    max_loops: int = Field(default=15, gt=0, le=20)  # default matches GraphOrchestrator's own default
 
     @model_validator(mode="after")
     def _validate_graph(self) -> "WorkflowSpecDoc":

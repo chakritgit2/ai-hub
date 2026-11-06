@@ -301,6 +301,7 @@
 		guardrails = $bindable(),
 		memory = $bindable(),
 		publishGate = $bindable(),
+		maxLoops = $bindable(),
 		readonly = false,
 		compiledDefinition = null,
 		isAdmin = false
@@ -313,6 +314,7 @@
 		guardrails: GuardrailsSpec;
 		memory: MemoryFormState;
 		publishGate: PublishGateFormState;
+		maxLoops: number;
 		readonly?: boolean;
 		compiledDefinition?: Record<string, unknown> | null;
 		isAdmin?: boolean;
@@ -837,6 +839,23 @@
 							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
 								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-neutral-700">Max loops</span>
+						<input
+							type="number"
+							step="1"
+							min="1"
+							max="20"
+							bind:value={maxLoops}
+							class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+								focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						/>
+						<p class="mt-1 text-xs text-neutral-500">
+							How many think/act cycles the agent may take before it's forced to stop and answer
+							with whatever it has (1-20, default 8). Raise it for agents that need many tool
+							calls to finish a task; lower it to fail fast on a loop that's spinning.
+						</p>
 					</label>
 				</div>
 

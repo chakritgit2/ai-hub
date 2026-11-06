@@ -43,7 +43,6 @@ from app.services.tools import ToolRow, resolve_tool
 logger = logging.getLogger(__name__)
 
 COMPILER_VERSION = "1"
-DEFAULT_MAX_LOOPS = 8
 
 # Never persisted, never logged, never used to make a real API call — OpenAILLM/the
 # underlying openai.Client only raise if api_key is falsy at construction time; this just
@@ -339,7 +338,7 @@ def _build_compiled_definition(
             "type": "dynamiq.nodes.agents.Agent",
             "name": doc.identity.name,
             "role": render_identity_prompt(doc.identity),
-            "max_loops": DEFAULT_MAX_LOOPS,
+            "max_loops": doc.max_loops,
             "tools": [
                 {
                     "type": _tool_type(tool),

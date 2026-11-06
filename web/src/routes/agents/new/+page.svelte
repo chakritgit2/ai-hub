@@ -10,7 +10,8 @@
 		blankGuardrails,
 		blankMemory,
 		blankPublishGate,
-		formatPublishGateError
+		formatPublishGateError,
+		DEFAULT_MAX_LOOPS
 	} from '$lib/components/agents/specDefaults';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
 	import { companyId } from '$lib/stores/company';
@@ -24,6 +25,7 @@
 	let guardrails = $state(blankGuardrails());
 	let memory = $state(blankMemory());
 	let publishGate = $state(blankPublishGate());
+	let maxLoops = $state(DEFAULT_MAX_LOOPS);
 
 	let tabsRef: ReturnType<typeof AgentSpecTabs> | undefined;
 
@@ -80,7 +82,8 @@
 				knowledge: selectedKnowledgeBaseIds.map((kb_id) => ({ kb_id })),
 				guardrails: guardrailsResult,
 				memory: memoryResult,
-				publish_gate: publishGateResult
+				publish_gate: publishGateResult,
+				max_loops: maxLoops
 			}
 		};
 	}
@@ -236,6 +239,7 @@
 	bind:guardrails
 	bind:memory
 	bind:publishGate
+	bind:maxLoops
 	{isAdmin}
 	compiledDefinition={null}
 />
