@@ -286,12 +286,14 @@ async def _deploymentCorsPreflight(slug: str, request: Request) -> Response:
 
 
 # Registered against every session-token-reachable deployment route `_enforce_cors` is
-# called from (`runDeployment`/`streamDeployment`/`getDeploymentInfo`) - one shared
-# handler via `app.options(path)(handler)` rather than three near-identical `@app.options`
-# functions, since the preflight logic itself has nothing route-specific about it.
+# called from (`runDeployment`/`streamDeployment`/`getDeploymentInfo`/`decideApproval`) -
+# one shared handler via `app.options(path)(handler)` rather than near-identical
+# `@app.options` functions, since the preflight logic itself has nothing route-specific
+# about it.
 app.options("/v1/deployments/{slug}/run")(_deploymentCorsPreflight)
 app.options("/v1/deployments/{slug}/stream")(_deploymentCorsPreflight)
 app.options("/v1/deployments/{slug}/info")(_deploymentCorsPreflight)
+app.options("/v1/deployments/{slug}/approvals/{id}")(_deploymentCorsPreflight)
 
 
 GatewayAuth = Annotated[GatewayIdentity, Depends(require_gateway_auth)]
@@ -649,17 +651,38 @@ class ApprovalResponse(BaseModel):
 
 
 @app.post("/v1/deployments/{slug}/approvals/{id}", response_model=ApprovalResponse)
-async def decideApproval(slug: str, id: str, body: DecideApprovalRequest, identity: GatewayAuth) -> Response:
+async def decideApproval(slug: str, id: str, body: DecideApprovalRequest, identity: GatewayAuth, request: Request) -> Response:
     """Approve/reject a write tool call from the calling app (PRD §6.5) - same
     `decide_approval` service console-api's own `decideApproval` forwards to
     (ai-internal.yaml), reached here with ordinary API-key/session-token gateway auth
     instead of the internal JWT. `GatewayIdentity` carries no console user id, so
     `decided_by` records the session token's end user when there is one, falling back to a
-    descriptor of the deployment/auth kind for a bare API-key call."""
+    descriptor of the deployment/auth kind for a bare API-key call.
+
+    PRD §9.3 lists this route as "API key or session token" alongside run/stream/info, so
+    it's just as browser-reachable as those - but unlike them, it never called
+    `_enforce_cors` at all, meaning a session-token caller from any origin (not just the
+    deployment's own `allowed_origins`) could decide an approval. Resolves `deployment`
+    (never needed before, since `decide_approval` itself only takes `company_id`) purely
+    to get `allowed_origins` for that check - enforced on a throwaway `Response` *before*
+    the decision is applied (same ordering as `runDeployment`), not after, so a
+    disallowed-origin caller 403s without the approval ever being decided. Headers are
+    then copied onto the real `JSONResponse` the same way `streamDeployment` does: that
+    docstring's note applies here too - returning a `Response` subclass directly from the
+    endpoint bypasses FastAPI's usual merge of an injected `response: Response`
+    parameter's headers.
+    """
     try:
         UUID(id)
     except ValueError:
         raise HTTPException(status_code=404, detail="not_found")
+
+    deployment = await resolve_deployment(identity.company_id, identity.deployment_id)
+    if deployment is None or not deployment.enabled:
+        raise HTTPException(status_code=404, detail="deployment_not_found")
+
+    cors_response = Response(status_code=204)
+    _enforce_cors(identity, deployment, request, cors_response)
 
     decided_by = identity.external_user_id or f"gateway:{identity.auth_kind}:{identity.deployment_id}"
 
@@ -680,7 +703,8 @@ async def decideApproval(slug: str, id: str, body: DecideApprovalRequest, identi
             decided_by=approval.decided_by,
             decided_at=approval.decided_at.isoformat() if approval.decided_at else None,
             created_at=approval.created_at.isoformat(),
-        ).model_dump()
+        ).model_dump(),
+        headers=dict(cors_response.headers),
     )
 
 

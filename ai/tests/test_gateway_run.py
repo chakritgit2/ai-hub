@@ -532,3 +532,53 @@ async def test_run_ignores_body_user_when_session_token_present(
     # both turns resolve to the same conversation (same real_user identity), proving the
     # body's spoofed external_id on turn one was never used to key memory.
     assert first.json()["conversation_id"] == second.json()["conversation_id"]
+
+
+@requires_postgres
+async def test_decide_approval_rejects_session_token_from_disallowed_origin(
+    gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment
+) -> None:
+    """decideApproval used to never call `_enforce_cors` at all, even though PRD §9.3
+    lists it as session-token-reachable alongside run/stream/info - a session token from
+    any origin could decide an approval. Mirrors test_run_rejects_session_token_from_
+    disallowed_origin above."""
+    from app.services.approvals import create_pending_approval
+
+    company_id = company_ids()
+    make_company(company_id)
+    version_id = await resolvable_agent_version(company_id)
+    deployment_id, slug = make_deployment(company_id, version_id, allowed_origins=["https://example.com"])
+    session_token, _ = mint_session_token(company_id, deployment_id, "user-1")
+    approval_id = await create_pending_approval(company_id, str(uuid.uuid4()), str(uuid.uuid4()), request={})
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/approvals/{approval_id}",
+        json={"decision": "approved"},
+        headers={"Authorization": f"Bearer {session_token}", "Origin": "https://evil.example"},
+    )
+
+    assert resp.status_code == 403
+
+
+@requires_postgres
+async def test_decide_approval_accepts_session_token_from_allowed_origin(
+    gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment
+) -> None:
+    from app.services.approvals import create_pending_approval
+
+    company_id = company_ids()
+    make_company(company_id)
+    version_id = await resolvable_agent_version(company_id)
+    deployment_id, slug = make_deployment(company_id, version_id, allowed_origins=["https://example.com"])
+    session_token, _ = mint_session_token(company_id, deployment_id, "user-1")
+    approval_id = await create_pending_approval(company_id, str(uuid.uuid4()), str(uuid.uuid4()), request={})
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/approvals/{approval_id}",
+        json={"decision": "approved"},
+        headers={"Authorization": f"Bearer {session_token}", "Origin": "https://example.com"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://example.com"
+    assert resp.json()["status"] == "approved"

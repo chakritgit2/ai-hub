@@ -75,12 +75,21 @@ def test_preflight_denies_for_an_unknown_slug(gateway_client, monkeypatch) -> No
     assert "access-control-allow-origin" not in resp.headers
 
 
-@pytest.mark.parametrize("path", ["/v1/deployments/some-slug/run", "/v1/deployments/some-slug/stream", "/v1/deployments/some-slug/info"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/deployments/some-slug/run",
+        "/v1/deployments/some-slug/stream",
+        "/v1/deployments/some-slug/info",
+        "/v1/deployments/some-slug/approvals/some-id",
+    ],
+)
 def test_preflight_is_wired_on_every_session_token_reachable_route(gateway_client, monkeypatch, path) -> None:
-    """The three routes `_enforce_cors` is actually called from (runDeployment/
-    streamDeployment/getDeploymentInfo) must each have a real OPTIONS responder - a
-    missing one would 405 (Starlette's default for an unregistered method), which blocks
-    a real browser from ever sending the request this route exists to serve."""
+    """The four routes `_enforce_cors` is actually called from (runDeployment/
+    streamDeployment/getDeploymentInfo/decideApproval) must each have a real OPTIONS
+    responder - a missing one would 405 (Starlette's default for an unregistered method),
+    which blocks a real browser from ever sending the request this route exists to
+    serve."""
     _patch_cors(monkeypatch, DeploymentCors(allowed_origins=["https://example.com"], enabled=True))
 
     resp = gateway_client.options(path, headers={"Origin": "https://example.com"})

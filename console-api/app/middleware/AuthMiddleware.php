@@ -15,9 +15,9 @@ use Phalcon\Mvc\Dispatcher;
  * company memberships via AuthService (PRD §7.1). The decoded, synced record is attached
  * to the dispatcher as the `authUser` param for controllers (see ControllerBase::getAuthUser()).
  *
- * GET /healthz and GET /admin/.well-known/jwks.json are the only exempt routes —
- * k8s liveness/readiness probes send no Authorization header (PRD §11), and the JWKS
- * endpoint must be reachable by anything verifying console-api-issued tokens, which
+ * GET /healthz, GET /readyz, and GET /admin/.well-known/jwks.json are the only exempt
+ * routes — k8s liveness/readiness probes send no Authorization header (PRD §11), and the
+ * JWKS endpoint must be reachable by anything verifying console-api-issued tokens, which
  * obviously can't itself present one.
  */
 class AuthMiddleware

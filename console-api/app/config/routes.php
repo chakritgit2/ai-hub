@@ -193,11 +193,17 @@ return function (Router $router): void {
     // --- /audit-logs (platform_admin only; no X-Company-Id) -----------------------
     $admin('GET', '/audit-logs', 'AuditLogs', 'listAuditLogs');
 
-    // --- Ops route, not part of the OpenAPI contract, never exposed via ingress ---
+    // --- Ops routes, not part of the OpenAPI contract, never exposed via ingress -----
     $router
         ->add('/healthz', [
             'controller' => 'Health',
             'action' => 'index',
+        ])
+        ->via('GET');
+    $router
+        ->add('/readyz', [
+            'controller' => 'Health',
+            'action' => 'ready',
         ])
         ->via('GET');
 

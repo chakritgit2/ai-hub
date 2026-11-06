@@ -82,6 +82,9 @@ class DeploymentsController extends ControllerBase
         if (!is_string($slug) || trim($slug) === '') {
             return $this->jsonResponse(['error' => 'slug_required'], 400);
         }
+        if (!$this->isValidSlug($slug)) {
+            return $this->jsonResponse(['error' => 'invalid_slug_format'], 400);
+        }
 
         $agentVersionId = $body['agent_version_id'] ?? null;
         $workflowVersionId = $body['workflow_version_id'] ?? null;
@@ -237,6 +240,9 @@ class DeploymentsController extends ControllerBase
         if (array_key_exists('slug', $body)) {
             if (!is_string($body['slug']) || trim($body['slug']) === '') {
                 return $this->jsonResponse(['error' => 'slug_required'], 400);
+            }
+            if (!$this->isValidSlug($body['slug'])) {
+                return $this->jsonResponse(['error' => 'invalid_slug_format'], 400);
             }
             $columns['slug'] = $body['slug'];
         }
@@ -455,6 +461,50 @@ class DeploymentsController extends ControllerBase
         });
 
         return $this->jsonResponse($this->formatDeployment($row));
+    }
+
+    /**
+     * PRD §6.3: "slug is globally unique in the form `<company_code>-<name>`" - never
+     * enforced before, so any string (including one spoofing another company's code
+     * prefix, which `resolve_api_key(key_hash, slug)` trusts to resolve the owning
+     * company) was accepted. `<name>` is restricted to lowercase-kebab-case, matching
+     * how every slug is actually used in a URL path segment
+     * (`/v1/deployments/{slug}/run`).
+     */
+    private function isValidSlug(string $slug): bool
+    {
+        $companyCode = $this->currentCompanyCode();
+        if ($companyCode === null) {
+            return false;
+        }
+
+        $pattern = '/^' . preg_quote($companyCode, '/') . '-[a-z0-9]+(-[a-z0-9]+)*$/';
+
+        return (bool) preg_match($pattern, $slug);
+    }
+
+    /**
+     * The `code` of the company bound to the current request's X-Company-Id, read from
+     * the authenticated user's own membership list (already populated by AuthMiddleware)
+     * rather than an extra `console.companies` query. Every caller of isValidSlug() has
+     * already passed requireWriteRole(), which 404s unless the user is a member of the
+     * current company, so this only returns null if that invariant is somehow broken.
+     */
+    private function currentCompanyCode(): ?string
+    {
+        $companyId = $this->getCompanyId();
+        $authUser = $this->getAuthUser();
+        if ($companyId === null || $authUser === null) {
+            return null;
+        }
+
+        foreach ($authUser['companies'] as $membership) {
+            if ($membership['company_id'] === $companyId) {
+                return $membership['company_code'];
+            }
+        }
+
+        return null;
     }
 
     private function isUniqueViolation(Throwable $exception): bool
