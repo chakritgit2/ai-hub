@@ -15,7 +15,17 @@ AI Language ships a dedicated `THPopulationIdentificationCode` PII entity). Each
 agent_spec`) pointing at a `console.connections` row of type `"azure_content_safety"` or
 `"azure_language"` holding the Azure resource's endpoint (`api_base`) and API key
 (secret, via the same `PUT /connections/{id}/secret` envelope-encryption every other
-connection already uses) - no new table, no dynamiq classes involved at all for these 3.
+connection already uses) - no dynamiq classes involved at all for these 3.
+
+Azure bills these 3 per request, not per token, so there's no automatic pricing source
+the way litellm's `cost_per_token()` gives real LLM cost - `GuardrailOutcome.
+azure_call_counts` (populated below) counts every *attempted* Azure call per check_type
+regardless of whether it triggered (a clean/non-triggered call still costs money and
+still needs counting, but only ever produces a `CheckEvent` when it *does* trigger - see
+`run_checks`'s own "if not triggered: continue"), so this is the only record of how many
+billable calls a run actually made. `app.services.runtime` combines this with each
+company's own `console.guardrail_detector_pricing` row (console-api's Settings >
+Guardrail pricing tab) to compute `logs.runs.guardrail_cost_usd`.
 
 Not `dynamiq.nodes.validators.RegexMatch` for `regex_blocklist`, despite the name:
 `RegexMatch.validate()` raises when its pattern does *not* match - it's an allowlist/
@@ -33,7 +43,7 @@ from dynamiq.nodes.validators.valid_json import ValidJSON
 from app.core.db import get_company_session
 from app.db.tables import guardrail_events_table
 from app.integrations.safe_http_client import SafeHttpClient, SafeHttpClientError
-from app.services.agent_spec import GuardrailCheckSpec
+from app.services.agent_spec import MODEL_BASED_CHECK_TYPES, GuardrailCheckSpec
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.connections import resolve_connection
 from app.services.egress_allowlist import EgressAllowlistEntry, list_egress_allowlist
@@ -126,6 +136,13 @@ class GuardrailOutcome:
     text: str  # original text, or masked, or unchanged if blocked (caller uses fallback_message instead)
     fallback_message: str | None
     events: list[CheckEvent] = field(default_factory=list)
+    # Count of real Azure API calls actually attempted per model-based check_type
+    # (prompt_injection/pii_model/content_moderation) - see this module's own docstring
+    # for why a triggered-only `events` list can't answer "how many billable calls did
+    # this run actually make". Empty for any run with no model-based checks configured
+    # (the overwhelming majority), so app.services.runtime can skip the pricing lookup
+    # entirely in that case.
+    azure_call_counts: dict[str, int] = field(default_factory=dict)
 
 
 async def run_checks(
@@ -162,8 +179,22 @@ async def run_checks(
     # (resolve_connection + decrypt_connection_secret + list_egress_allowlist, 3 DB round
     # trips) identical connection data once per check instead of once per call here.
     azure_cache: dict[str, tuple[str, str, list[EgressAllowlistEntry]]] = {}
+    azure_call_counts: dict[str, int] = {}
 
     for check in checks:
+        # Counted before the attempt, not after a successful response - the real Azure
+        # request already went out (and is presumably billable) the moment _run_one is
+        # called for one of these 3 types, regardless of whether it then succeeds,
+        # errors, or finds nothing. The one case this over-counts is an egress-allowlist
+        # rejection that stops the request before it ever leaves this process (never
+        # billed by Azure at all) - accepted as a rare, small overestimate rather than
+        # threading a second "did the request actually leave" signal through SafeHttpClient
+        # just for this. `company_id is not None` is excluded deliberately, not the same
+        # kind of accepted imprecision: _run_one raises synchronously, before any network
+        # I/O at all, the instant company_id is missing (see its own ValueError below) -
+        # counting that would charge for a call that provably never left this process.
+        if check.check_type in MODEL_BASED_CHECK_TYPES and company_id is not None:
+            azure_call_counts[check.check_type] = azure_call_counts.get(check.check_type, 0) + 1
         try:
             triggered, detail, masked_text = await _run_one(working_text, check, company_id, azure_cache)
             action = check.action if triggered else None
@@ -182,11 +213,14 @@ async def run_checks(
                 text=working_text,
                 fallback_message=check.fallback_message or DEFAULT_FALLBACK_MESSAGE,
                 events=events,
+                azure_call_counts=azure_call_counts,
             )
         if action == "mask" and masked_text is not None:
             working_text = masked_text
 
-    return GuardrailOutcome(blocked=False, text=working_text, fallback_message=None, events=events)
+    return GuardrailOutcome(
+        blocked=False, text=working_text, fallback_message=None, events=events, azure_call_counts=azure_call_counts
+    )
 
 
 async def _run_one(

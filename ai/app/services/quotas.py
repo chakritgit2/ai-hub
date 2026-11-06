@@ -1,4 +1,5 @@
-"""Rate limiting + quota reservation for the gateway (PRD §6.3).
+"""Rate limiting + quota reservation for the gateway (PRD §6.3), plus a process-wide
+concurrent-run semaphore (PRD §6.2, `Settings.MAX_CONCURRENT_RUNS`).
 
 Counts `rate_limit_per_min`, `daily_token_limit`, `daily_cost_limit_usd` in Redis,
 reset at midnight Asia/Bangkok. Before a run the gateway reserves quota for
@@ -8,6 +9,14 @@ reconciles to actual usage on completion - preventing concurrent requests from
 overshooting a shared daily budget between the optimistic reservation and the real
 result. If Redis is down: rate limiting fails open (log and allow), but quotas fail
 closed for deployments with a `daily_cost_limit_usd` set (PRD §6.3/§12 verbatim).
+
+`reserve_concurrency_slot`/`release_concurrency_slot` are a different shape from the
+above (a single global INCR/DECR pair bracketing a run's whole lifetime, not a per-
+deployment daily counter) - found unenforced 2026-11-06 (`MAX_CONCURRENT_RUNS` was
+defined in `Settings` but never read anywhere). Fails open on Redis errors, same as
+`check_rate_limit` - this limit exists to protect the process from being overwhelmed, and
+an unreachable Redis is already exactly that kind of distress, so blocking every run on
+top of it would make a bad situation worse, not better.
 """
 import logging
 import time
@@ -18,6 +27,7 @@ from zoneinfo import ZoneInfo
 import redis.exceptions
 from litellm import cost_per_token
 
+from app.core.config import get_settings
 from app.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
@@ -25,6 +35,7 @@ logger = logging.getLogger(__name__)
 _BANGKOK = ZoneInfo("Asia/Bangkok")
 _DEFAULT_MAX_TOKENS_ESTIMATE = 1000
 _KEY_PREFIX = "gw"
+_CONCURRENCY_KEY = f"{_KEY_PREFIX}:concurrency:runs"
 
 
 def _bangkok_today() -> str:
@@ -99,7 +110,10 @@ class QuotaExceededError(Exception):
     """Raised by `app.services.runtime.run_deployment_agent` when the rate limit or a
     daily quota rejects the request before anything runs - callers (app.main_gateway)
     map this to 429 with `reason`/`reset_at` (PRD §6.3: "exceeding returns
-    429 quota_exceeded")."""
+    429 quota_exceeded"). `reason` is one of: "rate_limit", "daily_token_limit",
+    "daily_cost_limit", "redis_unavailable" (quota paths, deployment-scoped), or
+    "max_concurrent_runs" (`reserve_concurrency_slot` below, process-wide - also raised
+    on the Playground path, which the other reasons never are)."""
 
     def __init__(self, reason: str, reset_at: datetime | None) -> None:
         super().__init__(reason)
@@ -381,3 +395,66 @@ async def read_usage_snapshot(deployment_id: str) -> UsageSnapshot:
         reset_at=reset_at,
         minute_reset_at=minute_reset_at,
     )
+
+
+async def reserve_concurrency_slot() -> None:
+    """Increments the single process-wide `_CONCURRENCY_KEY` and raises
+    `QuotaExceededError("max_concurrent_runs", reset_at=None)` if that pushes it over
+    `Settings.MAX_CONCURRENT_RUNS` - the slot this increment claimed is immediately
+    released again on rejection, so a rejected call never leaks a permanently-inflated
+    counter. `reset_at` is always `None`: unlike a daily quota's midnight reset or a
+    per-minute rate limit's next window, a concurrency slot frees the instant *any*
+    in-flight run finishes, not on a fixed clock boundary - there's no honest timestamp
+    to offer a caller deciding when to retry.
+
+    Call exactly once per run attempt, paired with exactly one `release_concurrency_slot`
+    call in a `finally` - see `app.services.runtime.execute_agent_run` and
+    `app.services.workflow_runtime.execute_workflow_run`, the only two call sites (every
+    HTTP/eval entry point funnels through one of those).
+
+    The EXPIRE is reissued on every single increment, not just the first (contrast
+    `check_rate_limit`'s "only set it when count==1" above) - this key's lifetime must
+    track the *most recently started* run, not the first one in a busy stretch, or a
+    long stretch of back-to-back runs would let the original TTL lapse out from under
+    still-in-flight ones and silently undercount concurrency exactly when the limit
+    matters most. The TTL itself is sized past the longest a single run can legitimately
+    take (`RUN_TIMEOUT_SECONDS` + `APPROVAL_TIMEOUT_SECONDS`, the write-tool-approval
+    extension `_effective_run_timeout` already accounts for) plus a buffer - it only
+    exists as a dead-process safety net (this pod got killed before its `finally` ever
+    ran), never as a normal-operation expiry.
+    """
+    settings = get_settings()
+    ttl = settings.RUN_TIMEOUT_SECONDS + settings.APPROVAL_TIMEOUT_SECONDS + 60
+
+    try:
+        redis_client = get_redis()
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.incr(_CONCURRENCY_KEY)
+            pipe.expire(_CONCURRENCY_KEY, ttl)
+            current, _ = await pipe.execute()
+    except redis.exceptions.RedisError:
+        logger.warning("concurrency slot check failed open: Redis unavailable", exc_info=True)
+        return
+
+    if current > settings.MAX_CONCURRENT_RUNS:
+        await release_concurrency_slot()
+        raise QuotaExceededError(reason="max_concurrent_runs", reset_at=None)
+
+
+async def release_concurrency_slot() -> None:
+    """Releases a slot `reserve_concurrency_slot` successfully claimed (never call this
+    after a rejected reservation - it already released its own slot before raising).
+    Floors the counter at 0 rather than letting it go negative: a release with no
+    matching successful reserve can only happen if the TTL safety net above already
+    expired the key out from under a very-long-running (or already-dead) run, and a
+    negative counter would silently grant extra concurrency headroom to every future run
+    until enough increments bring it back above zero - worse than the brief undercount
+    the TTL expiry itself already risked.
+    """
+    try:
+        redis_client = get_redis()
+        new_value = await redis_client.decr(_CONCURRENCY_KEY)
+        if new_value < 0:
+            await redis_client.set(_CONCURRENCY_KEY, 0)
+    except redis.exceptions.RedisError:
+        logger.warning("concurrency slot release skipped: Redis unavailable", exc_info=True)

@@ -31,6 +31,7 @@ import type {
 	EvalResult,
 	EvalRun,
 	EvalRunComparison,
+	GuardrailDetectorPricingEntry,
 	GuardrailEvent,
 	KbDocument,
 	KbImportResultItem,
@@ -621,6 +622,16 @@ export function getAlertThresholds(): Promise<AlertThresholds> {
 
 export function updateAlertThresholds(input: Partial<AlertThresholds>): Promise<AlertThresholds> {
 	return apiFetch<AlertThresholds>('/settings/alert-thresholds', { method: 'PUT', body: input });
+}
+
+export function getGuardrailPricing(): Promise<GuardrailDetectorPricingEntry[]> {
+	return apiFetch<GuardrailDetectorPricingEntry[]>('/settings/guardrail-pricing');
+}
+
+export function updateGuardrailPricing(
+	input: Partial<Record<string, number>>
+): Promise<GuardrailDetectorPricingEntry[]> {
+	return apiFetch<GuardrailDetectorPricingEntry[]>('/settings/guardrail-pricing', { method: 'PUT', body: input });
 }
 
 // ---- /settings/model-pricing (platform_admin) --------------------------------

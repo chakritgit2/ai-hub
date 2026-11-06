@@ -663,4 +663,119 @@ async def test_model_based_check_fails_closed_when_company_id_is_missing():
     outcome = await run_checks("irrelevant", [check], stage="input", company_id=None)
 
     assert outcome.blocked is True
-    assert "company_id" in outcome.events[0].detail["error"]
+    # Found by self-review: _run_one raises synchronously here, before any network I/O -
+    # no real Azure request was ever attempted, so this must not count as a billable call.
+    assert outcome.azure_call_counts == {}
+
+
+# --- azure_call_counts (guardrail_cost_usd billing) -------------------------------------
+
+
+@requires_postgres
+async def test_azure_call_counts_records_a_clean_non_triggering_call(
+    monkeypatch, make_connection, store_connection_secret
+):
+    """The whole reason azure_call_counts exists: a clean (non-triggering) Azure call
+    never produces a CheckEvent (see run_checks's own "if not triggered: continue"), but
+    it was still a real, presumably billable request - this must be counted regardless
+    of outcome.events being empty."""
+    import app.services.guardrails as guardrails_module
+
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(
+        company_id, connection_type="azure_content_safety", api_base="https://fake-resource.cognitiveservices.azure.com"
+    )
+    await store_connection_secret(company_id, connection_id, "fake-azure-key")
+
+    async def fake_request(self, method, url, **kwargs):
+        return _fake_azure_response(200, {"userPromptAnalysis": {"attackDetected": False}, "documentsAnalysis": []})
+
+    monkeypatch.setattr(guardrails_module.SafeHttpClient, "request", fake_request)
+    check = GuardrailCheckSpec(check_type="prompt_injection", action="block", connection_id=connection_id)
+
+    outcome = await run_checks("a perfectly normal message", [check], stage="input", company_id=company_id)
+
+    assert outcome.events == []  # nothing triggered
+    assert outcome.azure_call_counts == {"prompt_injection": 1}
+
+
+@requires_postgres
+async def test_azure_call_counts_tallies_multiple_check_types_separately(
+    monkeypatch, make_connection, store_connection_secret
+):
+    import app.services.guardrails as guardrails_module
+
+    company_id = str(uuid.uuid4())
+    content_safety_id = make_connection(
+        company_id,
+        connection_type="azure_content_safety",
+        name="content-safety-connection",
+        api_base="https://fake-resource.cognitiveservices.azure.com",
+    )
+    await store_connection_secret(company_id, content_safety_id, "fake-azure-key")
+    language_id = make_connection(
+        company_id,
+        connection_type="azure_language",
+        name="language-connection",
+        api_base="https://fake-resource.cognitiveservices.azure.com",
+    )
+    await store_connection_secret(company_id, language_id, "fake-azure-key")
+
+    async def fake_request(self, method, url, **kwargs):
+        if "shieldPrompt" in url:
+            return _fake_azure_response(200, {"userPromptAnalysis": {"attackDetected": False}, "documentsAnalysis": []})
+        if "analyze-text" in url:
+            return _fake_azure_response(200, {"results": {"documents": [{"id": "1", "entities": []}]}})
+        return _fake_azure_response(
+            200, {"categoriesAnalysis": [{"category": c, "severity": 0} for c in ["Hate", "SelfHarm", "Sexual", "Violence"]]}
+        )
+
+    monkeypatch.setattr(guardrails_module.SafeHttpClient, "request", fake_request)
+    checks = [
+        GuardrailCheckSpec(check_type="prompt_injection", action="flag", connection_id=content_safety_id),
+        GuardrailCheckSpec(check_type="content_moderation", action="flag", connection_id=content_safety_id),
+        GuardrailCheckSpec(check_type="pii_model", action="flag", connection_id=language_id),
+    ]
+
+    outcome = await run_checks("text", checks, stage="input", company_id=company_id)
+
+    assert outcome.azure_call_counts == {"prompt_injection": 1, "content_moderation": 1, "pii_model": 1}
+
+
+@requires_postgres
+async def test_azure_call_counts_counts_an_attempt_even_when_the_call_errors(
+    monkeypatch, make_connection, store_connection_secret
+):
+    """The real Azure request already went out the moment _run_one was called for a
+    model-based check - a failure afterward (bad response, network error) doesn't undo
+    that, so it must still count as an attempted (presumably billable) call."""
+    import app.services.guardrails as guardrails_module
+
+    company_id = str(uuid.uuid4())
+    connection_id = make_connection(
+        company_id, connection_type="azure_content_safety", api_base="https://fake-resource.cognitiveservices.azure.com"
+    )
+    await store_connection_secret(company_id, connection_id, "fake-azure-key")
+
+    async def failing_request(self, method, url, **kwargs):
+        return _fake_azure_response(500, {"error": "simulated Azure outage"})
+
+    monkeypatch.setattr(guardrails_module.SafeHttpClient, "request", failing_request)
+    check = GuardrailCheckSpec(check_type="prompt_injection", action="block", on_error="flag", connection_id=connection_id)
+
+    outcome = await run_checks("text", [check], stage="input", company_id=company_id)
+
+    assert outcome.azure_call_counts == {"prompt_injection": 1}
+
+
+async def test_azure_call_counts_stays_empty_for_non_model_based_checks():
+    """regex_blocklist/pii/max_length/valid_json/valid_choices never call Azure at all -
+    azure_call_counts must stay empty for them, not just low."""
+    checks = [
+        _check(check_type="max_length", action="block", max_length=5),
+        _check(check_type="regex_blocklist", action="flag", pattern=r"x", max_length=None),
+    ]
+
+    outcome = await run_checks("xxxxxxxxxx", checks, stage="input")
+
+    assert outcome.azure_call_counts == {}

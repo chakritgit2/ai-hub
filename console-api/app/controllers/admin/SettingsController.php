@@ -6,6 +6,7 @@ namespace ConsoleApi\Controllers\Admin;
 
 use ConsoleApi\Controllers\ControllerBase;
 use ConsoleApi\Services\AlertThresholds;
+use ConsoleApi\Services\GuardrailDetectorPricing;
 use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
 
@@ -317,6 +318,72 @@ class SettingsController extends ControllerBase
         );
 
         return $this->jsonResponse(AlertThresholds::format($row));
+    }
+
+    /**
+     * Any member can read (same visibility as every other cost/usage figure already
+     * shown to any role on the Dashboard/Run detail pages).
+     */
+    public function getGuardrailPricing(): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
+
+        return $this->jsonResponse(
+            $this->runInCompanyTransaction(static fn ($db) => GuardrailDetectorPricing::resolve($db))
+        );
+    }
+
+    /**
+     * Admin-only (same reasoning as updateAlertThresholds - this number feeds real cost
+     * accounting, not just this admin's own view of it). Body is a flat
+     * `{check_type: price_per_request_usd}` object, same shape updateAlertThresholds
+     * uses - every key optional, a partial update leaves this company's existing price
+     * for any check_type omitted.
+     */
+    public function updateGuardrailPricing(): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireAdminRole()) !== null) {
+            return $error;
+        }
+
+        $body = $this->request->getJsonRawBody(true) ?? [];
+        foreach (GuardrailDetectorPricing::CHECK_TYPES as $checkType) {
+            if (array_key_exists($checkType, $body) && (!is_numeric($body[$checkType]) || $body[$checkType] < 0)) {
+                return $this->jsonResponse(['error' => "invalid_{$checkType}"], 400);
+            }
+        }
+
+        $this->runInCompanyTransaction(function ($db) use ($body) {
+            foreach (GuardrailDetectorPricing::CHECK_TYPES as $checkType) {
+                if (!array_key_exists($checkType, $body)) {
+                    continue;
+                }
+                $db->execute(
+                    'INSERT INTO console.guardrail_detector_pricing (company_id, check_type, price_per_request_usd)
+                     VALUES (:company_id, :check_type, :price)
+                     ON CONFLICT (company_id, check_type) DO UPDATE SET
+                        price_per_request_usd = EXCLUDED.price_per_request_usd,
+                        updated_at = now()',
+                    [
+                        'company_id' => $this->getCompanyId(),
+                        'check_type' => $checkType,
+                        'price' => $body[$checkType],
+                    ]
+                );
+            }
+        });
+
+        return $this->jsonResponse(
+            $this->runInCompanyTransaction(static fn ($db) => GuardrailDetectorPricing::resolve($db))
+        );
     }
 
     /**

@@ -37,7 +37,14 @@ from app.services.compiler import BUILTIN_TOOL_TYPES, PYTHON_TOOL_TYPE, RETRIEVA
 from app.services.connection_secrets import decrypt_connection_secret
 from app.services.deployments import resolve_deployment
 from app.services.egress_allowlist import list_egress_allowlist
-from app.services.quotas import QuotaExceededError, check_quota_not_exceeded, check_rate_limit, record_actual_usage
+from app.services.quotas import (
+    QuotaExceededError,
+    check_quota_not_exceeded,
+    check_rate_limit,
+    record_actual_usage,
+    release_concurrency_slot,
+    reserve_concurrency_slot,
+)
 from app.services.runs import RunUsage, log_run
 
 # Reused as-is rather than duplicated - small, pure utilities with no workflow-specific
@@ -179,111 +186,120 @@ async def execute_workflow_run(
     trace_id = str(uuid4())
     started = time.monotonic()
 
-    # Resolution/compile/secret failures here are NOT logged to logs.runs - same
-    # convention runtime.py's own resolve_and_compile/pre-build_agent steps already
-    # follow (they raise straight to the caller, only the actual run attempt below gets
-    # a logged row on failure).
-    compiled_definition = await resolve_and_compile_workflow(company_id, workflow_version_id, role)
-    workflow_def = compiled_definition["workflow"]
-
-    manager_connection_id = workflow_def["manager"]["connection"]["connection_id"]
-    manager_secret = await decrypt_connection_secret(company_id, manager_connection_id)
-    if manager_secret is None:
-        raise ValueError(f"no secret stored for connection {manager_connection_id!r}")
-    manager = build_manager(workflow_def["manager"], manager_secret)
-
-    orchestrator = GraphOrchestrator(
-        manager=manager,
-        initial_state=workflow_def["initial_state"],
-        max_loops=workflow_def["max_loops"],
-    )
-
-    agents_by_state_id = {}
-    for state_def in workflow_def["states"]:
-        agents_by_state_id[state_def["id"]] = await _resolve_state_agent(
-            state_def["agent_compiled_definition"], company_id, run_id=run_id, allow_write_tools=allow_write_tools
-        )
-    wire_orchestrator_states(orchestrator, workflow_def, agents_by_state_id)
-
-    usage_collector = _UsageCollector()
-
-    # Same reasoning as runtime._execute_agent_run_body's own run_timeout: a write-tool
-    # call inside ANY state can pause this whole run for up to
-    # Settings.APPROVAL_TIMEOUT_SECONDS waiting on a human decision - checked across every
-    # state's tools, not just one, since the orchestrator can visit any of them.
-    all_state_tools = [
-        tool_def
-        for state_def in workflow_def["states"]
-        for tool_def in state_def["agent_compiled_definition"]["agent"].get("tools", [])
-    ]
-    run_timeout = _effective_run_timeout({"tools": all_state_tools}, get_settings())
+    # Same reserve-around-the-whole-attempt placement as runtime.execute_agent_run's own
+    # concurrency slot - covers this function's own compile/resolve steps too, not just
+    # the orchestrator.run() call, since those also consume real process resources
+    # (decrypting secrets, building N agents) under exactly the load spike this limit
+    # exists to protect against.
+    await reserve_concurrency_slot()
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                orchestrator.run,
-                input_data={"input": input_text},
-                config=RunnableConfig(callbacks=[usage_collector]),
-            ),
-            timeout=run_timeout,
+        # Resolution/compile/secret failures here are NOT logged to logs.runs - same
+        # convention runtime.py's own resolve_and_compile/pre-build_agent steps already
+        # follow (they raise straight to the caller, only the actual run attempt below gets
+        # a logged row on failure).
+        compiled_definition = await resolve_and_compile_workflow(company_id, workflow_version_id, role)
+        workflow_def = compiled_definition["workflow"]
+
+        manager_connection_id = workflow_def["manager"]["connection"]["connection_id"]
+        manager_secret = await decrypt_connection_secret(company_id, manager_connection_id)
+        if manager_secret is None:
+            raise ValueError(f"no secret stored for connection {manager_connection_id!r}")
+        manager = build_manager(workflow_def["manager"], manager_secret)
+
+        orchestrator = GraphOrchestrator(
+            manager=manager,
+            initial_state=workflow_def["initial_state"],
+            max_loops=workflow_def["max_loops"],
         )
-        if result.status != RunnableStatus.SUCCESS:
-            message = result.error.message if result.error else f"workflow run ended with status {result.status}"
-            raise RuntimeError(message)
-        # `run_flow` falls off the end with an implicit `None` if `max_loops` is
-        # exhausted before reaching END - still a SUCCESS RunnableResult, so this must be
-        # checked explicitly rather than trusting `status == SUCCESS` alone (confirmed
-        # against the installed dynamiq==0.65.0 source - a lone Agent run has no
-        # equivalent gap).
-        if not result.output or result.output.get("content") is None:
-            raise RuntimeError("workflow did not reach a final state within max_loops")
-    except Exception as exc:
+
+        agents_by_state_id = {}
+        for state_def in workflow_def["states"]:
+            agents_by_state_id[state_def["id"]] = await _resolve_state_agent(
+                state_def["agent_compiled_definition"], company_id, run_id=run_id, allow_write_tools=allow_write_tools
+            )
+        wire_orchestrator_states(orchestrator, workflow_def, agents_by_state_id)
+
+        usage_collector = _UsageCollector()
+
+        # Same reasoning as runtime._execute_agent_run_body's own run_timeout: a write-tool
+        # call inside ANY state can pause this whole run for up to
+        # Settings.APPROVAL_TIMEOUT_SECONDS waiting on a human decision - checked across every
+        # state's tools, not just one, since the orchestrator can visit any of them.
+        all_state_tools = [
+            tool_def
+            for state_def in workflow_def["states"]
+            for tool_def in state_def["agent_compiled_definition"]["agent"].get("tools", [])
+        ]
+        run_timeout = _effective_run_timeout({"tools": all_state_tools}, get_settings())
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    orchestrator.run,
+                    input_data={"input": input_text},
+                    config=RunnableConfig(callbacks=[usage_collector]),
+                ),
+                timeout=run_timeout,
+            )
+            if result.status != RunnableStatus.SUCCESS:
+                message = result.error.message if result.error else f"workflow run ended with status {result.status}"
+                raise RuntimeError(message)
+            # `run_flow` falls off the end with an implicit `None` if `max_loops` is
+            # exhausted before reaching END - still a SUCCESS RunnableResult, so this must be
+            # checked explicitly rather than trusting `status == SUCCESS` alone (confirmed
+            # against the installed dynamiq==0.65.0 source - a lone Agent run has no
+            # equivalent gap).
+            if not result.output or result.output.get("content") is None:
+                raise RuntimeError("workflow did not reach a final state within max_loops")
+        except Exception as exc:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            usage = usage_collector.total_usage()
+            # Lets a deployment caller (run_deployment_workflow) record real usage from a run
+            # that failed partway through, same convention runtime.execute_agent_run already
+            # attaches `partial_usage` for.
+            exc.partial_usage = usage
+            await log_run(
+                run_id=run_id,
+                company_id=company_id,
+                trace_id=trace_id,
+                status="error",
+                source=source,
+                workflow_version_id=workflow_version_id,
+                deployment_id=deployment_id,
+                usage=usage,
+                latency_ms=latency_ms,
+                input_text=input_text,
+                error=str(exc),
+            )
+            raise
+
+        output = result.output["content"]
         latency_ms = int((time.monotonic() - started) * 1000)
         usage = usage_collector.total_usage()
-        # Lets a deployment caller (run_deployment_workflow) record real usage from a run
-        # that failed partway through, same convention runtime.execute_agent_run already
-        # attaches `partial_usage` for.
-        exc.partial_usage = usage
+
         await log_run(
             run_id=run_id,
             company_id=company_id,
             trace_id=trace_id,
-            status="error",
+            status="success",
             source=source,
             workflow_version_id=workflow_version_id,
             deployment_id=deployment_id,
             usage=usage,
             latency_ms=latency_ms,
             input_text=input_text,
-            error=str(exc),
+            output_text=output,
         )
-        raise
 
-    output = result.output["content"]
-    latency_ms = int((time.monotonic() - started) * 1000)
-    usage = usage_collector.total_usage()
-
-    await log_run(
-        run_id=run_id,
-        company_id=company_id,
-        trace_id=trace_id,
-        status="success",
-        source=source,
-        workflow_version_id=workflow_version_id,
-        deployment_id=deployment_id,
-        usage=usage,
-        latency_ms=latency_ms,
-        input_text=input_text,
-        output_text=output,
-    )
-
-    return {
-        "output": output,
-        "trace_id": trace_id,
-        "latency_ms": latency_ms,
-        "tokens_in": usage.tokens_in,
-        "tokens_out": usage.tokens_out,
-        "cost_usd": usage.cost_usd,
-    }
+        return {
+            "output": output,
+            "trace_id": trace_id,
+            "latency_ms": latency_ms,
+            "tokens_in": usage.tokens_in,
+            "tokens_out": usage.tokens_out,
+            "cost_usd": usage.cost_usd,
+        }
+    finally:
+        await release_concurrency_slot()
 
 
 async def run_deployment_workflow(

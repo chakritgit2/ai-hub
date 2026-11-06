@@ -629,6 +629,11 @@ components:
         latency_min_ms: { type: integer }
         cost_multiplier: { type: number }
         cost_min_usd: { type: number }
+    GuardrailDetectorPricingEntry:
+      type: object
+      properties:
+        check_type: { type: string, enum: [prompt_injection, pii_model, content_moderation] }
+        price_per_request_usd: { type: number }
     RunConversation:
       type: object
       description: Metadata only (PRD §6.9) - message content lives in runtime.agent_memory, a separate, larger piece of work.
@@ -1633,6 +1638,17 @@ paths:
       parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
       requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/AlertThresholds' } } } }
       responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AlertThresholds' } } } } }
+  /settings/guardrail-pricing:
+    get:
+      operationId: getGuardrailPricing
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/GuardrailDetectorPricingEntry' } } } } } }
+    put:
+      operationId: updateGuardrailPricing
+      summary: Admin-only. Body is a flat {check_type:price_per_request_usd} object, every key optional - a partial body keeps this company's existing price for anything omitted.
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { type: object, additionalProperties: { type: number } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/GuardrailDetectorPricingEntry' } } } } } }
 
   /tenants:
     get:

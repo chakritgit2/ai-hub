@@ -797,5 +797,16 @@ export interface AlertThresholds {
 	cost_min_usd: number;
 }
 
+export type GuardrailDetectorCheckType = 'prompt_injection' | 'pii_model' | 'content_moderation';
+
+// Per-company $/request pricing for the 3 Azure-backed guardrail detectors
+// (console.guardrail_detector_pricing) - feeds logs.runs.guardrail_cost_usd for an actual
+// run. GET always returns exactly these 3 check_types (0 for anything never priced); PUT
+// takes a flat {check_type: price} object, every key optional.
+export interface GuardrailDetectorPricingEntry {
+	check_type: GuardrailDetectorCheckType;
+	price_per_request_usd: number;
+}
+
 // Phase 2/3/4 endpoints return a loosely-typed Placeholder body per the OpenAPI contract.
 export type Placeholder = Record<string, unknown>;

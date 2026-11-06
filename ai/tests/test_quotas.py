@@ -4,20 +4,45 @@ from datetime import datetime
 import pytest
 import redis.exceptions
 
+from app.core.config import get_settings
 from app.core.redis import get_redis
 from app.services.quotas import (
+    _CONCURRENCY_KEY,
+    QuotaExceededError,
     _bangkok_today,
     check_quota_not_exceeded,
     check_rate_limit,
     read_usage_snapshot,
-    record_actual_usage,
     reconcile_quota,
+    record_actual_usage,
+    release_concurrency_slot,
+    reserve_concurrency_slot,
     reserve_quota,
 )
 
 from .markers import requires_redis
 
 _MODEL = "gpt-4o-mini"
+
+
+@pytest.fixture
+async def _clean_concurrency_key():
+    """`_CONCURRENCY_KEY` is a single global key (unlike every other counter in this
+    file, which is parameterized by a per-test random `deployment_id`) - every
+    concurrency test below requests this explicitly (not autouse, so it doesn't touch
+    unrelated tests in this module) to reset it before and after, so these tests can't
+    leak state into each other."""
+    try:
+        redis_client = get_redis()
+        await redis_client.delete(_CONCURRENCY_KEY)
+    except redis.exceptions.RedisError:
+        pass
+    yield
+    try:
+        redis_client = get_redis()
+        await redis_client.delete(_CONCURRENCY_KEY)
+    except redis.exceptions.RedisError:
+        pass
 
 
 @pytest.fixture
@@ -314,3 +339,85 @@ async def test_read_usage_snapshot_reports_separate_minute_and_daily_reset_times
     assert snapshot.minute_reset_at != snapshot.reset_at
     assert snapshot.minute_reset_at < snapshot.reset_at
     assert (snapshot.minute_reset_at - datetime.now(snapshot.minute_reset_at.tzinfo)).total_seconds() <= 60
+
+
+@requires_redis
+async def test_reserve_concurrency_slot_allows_up_to_the_limit_then_blocks(_clean_concurrency_key, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "MAX_CONCURRENT_RUNS", 2)
+
+    await reserve_concurrency_slot()
+    await reserve_concurrency_slot()
+
+    with pytest.raises(QuotaExceededError) as exc_info:
+        await reserve_concurrency_slot()
+    assert exc_info.value.reason == "max_concurrent_runs"
+    assert exc_info.value.reset_at is None  # no fixed window to report, unlike a daily/rate quota
+
+    await release_concurrency_slot()
+    await release_concurrency_slot()
+
+
+@requires_redis
+async def test_reserve_concurrency_slot_does_not_leak_a_slot_on_rejection(_clean_concurrency_key, monkeypatch) -> None:
+    """The slot a rejected reservation claimed must come back off immediately - a
+    rejection must never permanently shrink the effective limit for every run after
+    it."""
+    monkeypatch.setattr(get_settings(), "MAX_CONCURRENT_RUNS", 1)
+
+    await reserve_concurrency_slot()
+    with pytest.raises(QuotaExceededError):
+        await reserve_concurrency_slot()
+
+    redis_client = get_redis()
+    assert int(await redis_client.get(_CONCURRENCY_KEY)) == 1  # not 2
+
+    await release_concurrency_slot()
+
+
+@requires_redis
+async def test_release_concurrency_slot_frees_a_slot_for_the_next_reservation(_clean_concurrency_key, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "MAX_CONCURRENT_RUNS", 1)
+
+    await reserve_concurrency_slot()
+    with pytest.raises(QuotaExceededError):
+        await reserve_concurrency_slot()
+
+    await release_concurrency_slot()
+    await reserve_concurrency_slot()  # the freed slot must be usable again
+
+    await release_concurrency_slot()
+
+
+@requires_redis
+async def test_release_concurrency_slot_floors_at_zero(_clean_concurrency_key) -> None:
+    """A release with no matching successful reserve (e.g. the TTL safety net already
+    expired the key out from under a long-dead run) must never push the counter
+    negative - a negative counter would silently grant extra concurrency headroom to
+    every future run until enough increments bring it back above zero."""
+    await release_concurrency_slot()
+
+    redis_client = get_redis()
+    assert int(await redis_client.get(_CONCURRENCY_KEY)) == 0
+
+
+@requires_redis
+async def test_reserve_concurrency_slot_fails_open_when_redis_unavailable(_clean_concurrency_key, monkeypatch) -> None:
+    class _BrokenRedis:
+        def pipeline(self, *_args, **_kwargs):
+            raise redis.exceptions.ConnectionError("simulated outage")
+
+    monkeypatch.setattr("app.services.quotas.get_redis", lambda: _BrokenRedis())
+    monkeypatch.setattr(get_settings(), "MAX_CONCURRENT_RUNS", 0)  # would reject every run if actually checked
+
+    await reserve_concurrency_slot()  # must not raise despite MAX_CONCURRENT_RUNS=0
+
+
+@requires_redis
+async def test_release_concurrency_slot_fails_open_when_redis_unavailable(_clean_concurrency_key, monkeypatch) -> None:
+    class _BrokenRedis:
+        async def decr(self, *_args, **_kwargs):
+            raise redis.exceptions.ConnectionError("simulated outage")
+
+    monkeypatch.setattr("app.services.quotas.get_redis", lambda: _BrokenRedis())
+
+    await release_concurrency_slot()  # must not raise

@@ -40,9 +40,17 @@ from app.services.connection_secrets import decrypt_connection_secret
 from app.services.conversations import get_or_create_conversation
 from app.services.deployments import resolve_deployment
 from app.services.egress_allowlist import list_egress_allowlist
+from app.services.guardrail_pricing import get_guardrail_detector_pricing
 from app.services.guardrails import CheckEvent, log_guardrail_events, output_checks_are_chunk_streamable, run_checks
 from app.services.identity import DelegatedIdentityContext
-from app.services.quotas import QuotaExceededError, check_rate_limit, reconcile_quota, reserve_quota
+from app.services.quotas import (
+    QuotaExceededError,
+    check_rate_limit,
+    reconcile_quota,
+    release_concurrency_slot,
+    reserve_concurrency_slot,
+    reserve_quota,
+)
 from app.services.run_steps import RunStep, guardrail_run_steps, log_run_steps
 from app.services.runs import RunUsage, log_run
 from app.services.streaming_events import extract_answer_delta, with_answer_delta
@@ -522,6 +530,13 @@ async def execute_agent_run(
     run_id = run_id or str(uuid4())
     trace_id = str(uuid4())
     started = time.monotonic()
+    # Raises QuotaExceededError("max_concurrent_runs", ...) before anything else here
+    # runs if the process is already at Settings.MAX_CONCURRENT_RUNS - covers every
+    # caller of this function (Playground, a deployment, and eval_runner's per-item
+    # calls alike), not just the two HTTP entry points, since they all funnel through
+    # here. No slot is held on rejection, so the matching release below only needs to
+    # run once this call has actually succeeded.
+    await reserve_concurrency_slot()
     try:
         return await _execute_agent_run_body(
             compiled_definition,
@@ -545,6 +560,7 @@ async def execute_agent_run(
     finally:
         if stream_handler is not None:
             stream_handler.done_event.set()
+        await release_concurrency_slot()
 
 
 def attach_stream_completion(
@@ -633,6 +649,21 @@ async def _relay_masked_output_stream(
     return "".join(parts), events
 
 
+async def _guardrail_cost_usd(company_id: str, *azure_call_counts: dict[str, int]) -> float:
+    """Combines however many `GuardrailOutcome.azure_call_counts` dicts a run produced
+    (input-only when blocked before the agent ever ran or when the live-streaming
+    masking relay handled output - see call sites below, input+output for a buffered
+    output check) into one `logs.runs.guardrail_cost_usd` figure, using this company's
+    own configured $/request price per detector type. Skips the pricing lookup (an extra
+    DB round trip) entirely when none of the counts show any model-based-check Azure
+    call - true for the overwhelming majority of runs, which don't configure any of the
+    3 Azure-backed checks at all."""
+    if not any(azure_call_counts):
+        return 0.0
+    pricing = await get_guardrail_detector_pricing(company_id)
+    return pricing.cost_for(*azure_call_counts)
+
+
 async def _execute_agent_run_body(
     compiled_definition: dict,
     guardrails: GuardrailsSpec,
@@ -703,6 +734,7 @@ async def _execute_agent_run_body(
             input_text=input_text,
             output_text=input_outcome.fallback_message,
             latency_ms=latency_ms,
+            guardrail_cost_usd=await _guardrail_cost_usd(company_id, input_outcome.azure_call_counts),
         )
         await log_guardrail_events(company_id, run_id=run_id, events=input_outcome.events)
         await log_run_steps(
@@ -907,6 +939,12 @@ async def _execute_agent_run_body(
             usage=usage,
             latency_ms=latency_ms,
             error=error,
+            # input-only: this path is only ever reached via the live-streaming masking
+            # relay (_relay_masked_output_stream), which structurally can never run a
+            # model-based output check (output_checks_are_chunk_streamable excludes them -
+            # see that function's own docstring), so output_events here can never include
+            # an Azure-backed check and there's nothing of theirs to price.
+            guardrail_cost_usd=await _guardrail_cost_usd(company_id, input_outcome.azure_call_counts),
         )
         await log_guardrail_events(company_id, run_id=run_id, events=[*input_outcome.events, *output_events])
         await log_run_steps(
@@ -1074,6 +1112,10 @@ async def _execute_agent_run_body(
             await _fail_run(exc, [])
             raise  # pragma: no cover - _fail_run always raises; keeps this branch's type complete
         output_blocked = False  # structurally guaranteed - see output_checks_are_chunk_streamable
+        # Always empty here, never a guess - a model-based output check can't reach this
+        # branch at all (see the comment just above), unlike the chunk-safe regex_blocklist/
+        # pii checks the relay does run, which never cost anything to begin with.
+        output_azure_call_counts: dict[str, int] = {}
     else:
         output = result.output.get("content") if result.output else None
         output_outcome = await run_checks(
@@ -1082,6 +1124,7 @@ async def _execute_agent_run_body(
         final_output = output_outcome.fallback_message if output_outcome.blocked else output_outcome.text
         output_events = output_outcome.events
         output_blocked = output_outcome.blocked
+        output_azure_call_counts = output_outcome.azure_call_counts
 
     latency_ms = int((time.monotonic() - started) * 1000)
     usage = usage_collector.total_usage()
@@ -1113,6 +1156,9 @@ async def _execute_agent_run_body(
         conversation_id=resolved_conversation_id,
         usage=usage,
         latency_ms=latency_ms,
+        guardrail_cost_usd=await _guardrail_cost_usd(
+            company_id, input_outcome.azure_call_counts, output_azure_call_counts
+        ),
     )
     await log_guardrail_events(company_id, run_id=run_id, events=[*input_outcome.events, *output_events])
     await log_run_steps(

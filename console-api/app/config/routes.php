@@ -173,6 +173,8 @@ return function (Router $router): void {
     $admin('DELETE', '/settings/model-pricing/{id:[^/]+}', 'Pricing', 'deleteModelPricing');
     $admin('GET', '/settings/alert-thresholds', 'Settings', 'getAlertThresholds');
     $admin('PUT', '/settings/alert-thresholds', 'Settings', 'updateAlertThresholds');
+    $admin('GET', '/settings/guardrail-pricing', 'Settings', 'getGuardrailPricing');
+    $admin('PUT', '/settings/guardrail-pricing', 'Settings', 'updateGuardrailPricing');
 
     // --- /tenants (platform_admin only; no X-Company-Id) --------------------------
     $admin('GET', '/tenants', 'Tenants', 'listTenants');

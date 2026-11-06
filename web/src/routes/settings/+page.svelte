@@ -9,6 +9,8 @@
 		deleteEgressAllowlistEntry,
 		getAlertThresholds,
 		updateAlertThresholds,
+		getGuardrailPricing,
+		updateGuardrailPricing,
 		listCompanies,
 		createCompany,
 		suspendCompany,
@@ -32,7 +34,8 @@
 		EgressAllowlistEntry,
 		ModelPricing,
 		AuditLogEntry,
-		AlertThresholds
+		AlertThresholds,
+		GuardrailDetectorPricingEntry
 	} from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
@@ -46,7 +49,7 @@
 
 	headerContent.set({ menu: 'Settings', title: 'Settings' });
 
-	type TabId = 'users' | 'egress' | 'alerts' | 'tenants' | 'companies' | 'pricing' | 'audit';
+	type TabId = 'users' | 'egress' | 'alerts' | 'guardrail-pricing' | 'tenants' | 'companies' | 'pricing' | 'audit';
 
 	let activeTab = $state<TabId>('users');
 
@@ -137,6 +140,68 @@
 						: 'Failed to save alert thresholds.';
 		} finally {
 			savingAlertThresholds = false;
+		}
+	}
+
+	// $/request pricing for the 3 Azure-backed guardrail detectors
+	// (console.guardrail_detector_pricing) - feeds logs.runs.guardrail_cost_usd. Same
+	// load-edit-save shape as the alert thresholds above, but the API returns/accepts a
+	// list of 3 {check_type, price_per_request_usd} entries rather than one object - the
+	// form keeps a flat Record<check_type, price> working copy instead, simpler to bind
+	// each input to than indexing into an array by check_type on every keystroke.
+	let guardrailPricing = $state<GuardrailDetectorPricingEntry[]>([]);
+	let guardrailPricingForm = $state<Record<string, number>>({});
+	let guardrailPricingLoading = $state(true);
+	let guardrailPricingError = $state<string | null>(null);
+	let savingGuardrailPricing = $state(false);
+	let guardrailPricingSaveError = $state<string | null>(null);
+	let guardrailPricingSaved = $state(false);
+
+	const GUARDRAIL_CHECK_TYPE_LABELS: Record<string, string> = {
+		prompt_injection: 'Prompt injection',
+		pii_model: 'PII (model-based)',
+		content_moderation: 'Content moderation'
+	};
+
+	function entriesToForm(entries: GuardrailDetectorPricingEntry[]): Record<string, number> {
+		return Object.fromEntries(entries.map((e) => [e.check_type, e.price_per_request_usd]));
+	}
+
+	async function loadGuardrailPricing() {
+		guardrailPricingLoading = true;
+		guardrailPricingError = null;
+		try {
+			guardrailPricing = await getGuardrailPricing();
+			guardrailPricingForm = entriesToForm(guardrailPricing);
+		} catch (e) {
+			guardrailPricingError = e instanceof Error ? e.message : 'Failed to load guardrail pricing.';
+		} finally {
+			guardrailPricingLoading = false;
+		}
+	}
+
+	function resetGuardrailPricingForm() {
+		guardrailPricingForm = entriesToForm(guardrailPricing);
+		guardrailPricingSaveError = null;
+	}
+
+	async function saveGuardrailPricing() {
+		savingGuardrailPricing = true;
+		guardrailPricingSaveError = null;
+		guardrailPricingSaved = false;
+		try {
+			guardrailPricing = await updateGuardrailPricing(guardrailPricingForm);
+			guardrailPricingForm = entriesToForm(guardrailPricing);
+			guardrailPricingSaved = true;
+		} catch (e) {
+			guardrailPricingSaveError =
+				e instanceof ApiError && e.status === 403
+					? 'You no longer have permission to do this.'
+					: e instanceof Error
+						? e.message
+						: 'Failed to save guardrail pricing.';
+		} finally {
+			savingGuardrailPricing = false;
 		}
 	}
 
@@ -619,6 +684,12 @@
 	});
 
 	$effect(() => {
+		if (activeTab === 'guardrail-pricing' && guardrailPricing.length === 0) {
+			loadGuardrailPricing();
+		}
+	});
+
+	$effect(() => {
 		if (activeTab === 'companies' && $currentUser?.is_platform_admin && companies.length === 0) {
 			loadCompanies();
 		}
@@ -658,6 +729,7 @@
 		{ id: 'users', label: 'Users' },
 		{ id: 'egress', label: 'Egress allowlist' },
 		{ id: 'alerts', label: 'Alerts' },
+		{ id: 'guardrail-pricing', label: 'Guardrail pricing' },
 		{ id: 'tenants', label: 'Tenants', platformAdminOnly: true },
 		{ id: 'companies', label: 'Companies', platformAdminOnly: true },
 		{ id: 'pricing', label: 'Model pricing', platformAdminOnly: true },
@@ -1170,6 +1242,96 @@
 							type="button"
 							class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
 							onclick={resetAlertThresholdsForm}
+						>
+							Reset
+						</button>
+					</div>
+				{/if}
+			</form>
+		{/if}
+	{:else if activeTab === 'guardrail-pricing'}
+		<div class="mb-4">
+			<h2 class="text-sm font-semibold text-neutral-900">Guardrail detector pricing</h2>
+			<p class="mt-1 text-sm text-neutral-400">
+				Azure bills the prompt injection, PII (model-based), and content moderation
+				guardrail checks per request, not per token — there's no automatic price the way
+				there is for LLM calls. Set your own Azure subscription's real rate here so Run
+				detail/Dashboard cost figures reflect it; a check left at $0 is simply never
+				charged for, not estimated.
+			</p>
+		</div>
+
+		{#if guardrailPricingLoading}
+			<p class="text-sm text-neutral-500" role="status">Loading guardrail pricing…</p>
+		{:else if guardrailPricingError}
+			<div class="rounded-md border border-danger/30 bg-danger/5 p-4">
+				<p class="text-sm font-medium text-danger">Could not load guardrail pricing</p>
+				<p class="mt-1 text-sm text-neutral-700">{guardrailPricingError}</p>
+				<button
+					type="button"
+					class="mt-3 rounded-md border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10"
+					onclick={loadGuardrailPricing}
+				>
+					Retry
+				</button>
+			</div>
+		{:else}
+			{#if !isAdmin}
+				<p class="mb-4 text-sm text-neutral-400">Admin access required to change these.</p>
+			{/if}
+			<form
+				class="max-w-md space-y-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm"
+				onsubmit={(e) => {
+					e.preventDefault();
+					saveGuardrailPricing();
+				}}
+			>
+				{#if guardrailPricingSaveError}
+					<div class="rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+						{guardrailPricingSaveError}
+					</div>
+				{/if}
+				{#if guardrailPricingSaved}
+					<div class="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-primary-700">
+						Saved.
+					</div>
+				{/if}
+
+				<fieldset disabled={!isAdmin} class="space-y-4">
+					{#each guardrailPricing as entry (entry.check_type)}
+						<label class="block">
+							<span class="text-sm text-neutral-700">
+								{GUARDRAIL_CHECK_TYPE_LABELS[entry.check_type] ?? entry.check_type}
+							</span>
+							<div class="mt-1 flex items-center gap-2">
+								<span class="text-sm text-neutral-400">$</span>
+								<input
+									type="number"
+									min="0"
+									step="0.0001"
+									bind:value={guardrailPricingForm[entry.check_type]}
+									class="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+								<span class="shrink-0 text-xs text-neutral-400">/ request</span>
+							</div>
+						</label>
+					{/each}
+				</fieldset>
+
+				{#if isAdmin}
+					<div class="flex gap-2 border-t border-neutral-100 pt-4">
+						<button
+							type="submit"
+							disabled={savingGuardrailPricing}
+							class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+						>
+							{savingGuardrailPricing ? 'Saving…' : 'Save'}
+						</button>
+						<button
+							type="button"
+							class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
+							onclick={resetGuardrailPricingForm}
 						>
 							Reset
 						</button>

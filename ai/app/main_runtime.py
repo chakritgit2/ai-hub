@@ -59,7 +59,7 @@ from app.services.connection_secrets import (
 from app.services.connections import resolve_connection
 from app.services.agent_versions import resolve_agent_version
 from app.services.deployments import resolve_deployment
-from app.services.quotas import read_usage_snapshot
+from app.services.quotas import QuotaExceededError, read_usage_snapshot
 from app.services.approvals import ApprovalAlreadyDecidedError, ApprovalNotFoundError, decide_approval
 from app.services.datasets import resolve_dataset
 from app.services.egress_allowlist import list_egress_allowlist
@@ -242,6 +242,21 @@ async def runPlayground(
             # `sub` (PRD §7.5) when no simulated external user was supplied.
             identity_sub=body.user.external_id if body.user else claims["user_id"],
         )
+    except QuotaExceededError as exc:
+        # The only QuotaExceededError reason reachable from Playground is
+        # "max_concurrent_runs" (app.services.quotas.reserve_concurrency_slot) - a
+        # process-wide limit, unlike the deployment-scoped daily/rate-limit reasons
+        # main_gateway.py's own matching except block exists for. Same 429 shape either
+        # way, so Playground gets a real "try again shortly" instead of this generic
+        # except Exception block's misleading 502.
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "quota_exceeded",
+                "reason": exc.reason,
+                "reset_at": exc.reset_at.isoformat() if exc.reset_at else None,
+            },
+        )
     except Exception as exc:  # surface as a clear upstream error, not a 500 crash
         logger.exception("playground run failed")
         return JSONResponse(status_code=502, content={"error": "upstream_error", "detail": str(exc)})
@@ -322,6 +337,21 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
 
         try:
             result = await run_task
+        except QuotaExceededError as exc:
+            # Same reasoning as runPlayground's matching except block - only reachable
+            # reason here is "max_concurrent_runs", same shape as main_gateway.py's own
+            # streaming QuotaExceededError handler.
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {
+                        "error": "quota_exceeded",
+                        "reason": exc.reason,
+                        "reset_at": exc.reset_at.isoformat() if exc.reset_at else None,
+                    }
+                ),
+            }
+            return
         except Exception as exc:  # surface as a clear upstream error, same shape as runPlayground's 502
             logger.exception("playground stream run failed")
             yield {"event": "error", "data": json.dumps({"error": "upstream_error", "detail": str(exc)})}
@@ -388,6 +418,19 @@ async def runPlaygroundWorkflow(body: WorkflowRunRequest, claims: RuntimeAuth) -
             role=claims["role"],
             input_text=body.input,
             source="playground",
+        )
+    except QuotaExceededError as exc:
+        # Same reasoning as runPlayground's matching except block - only reachable
+        # reason here is "max_concurrent_runs" (app.services.workflow_runtime.
+        # execute_workflow_run reserves the same process-wide slot runtime.
+        # execute_agent_run does).
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "quota_exceeded",
+                "reason": exc.reason,
+                "reset_at": exc.reset_at.isoformat() if exc.reset_at else None,
+            },
         )
     except Exception as exc:  # surface as a clear upstream error, not a 500 crash
         logger.exception("playground workflow run failed")
