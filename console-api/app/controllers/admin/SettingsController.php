@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ConsoleApi\Controllers\Admin;
 
 use ConsoleApi\Controllers\ControllerBase;
+use ConsoleApi\Services\AlertThresholds;
 use Phalcon\Db\Enum;
 use Phalcon\Http\Response;
 
@@ -208,6 +209,114 @@ class SettingsController extends ControllerBase
         }
 
         return $this->noContentResponse();
+    }
+
+    /**
+     * Any member can read the thresholds (same visibility as the Dashboard's other
+     * figures these drive) - AlertThresholds::resolve() returns the built-in defaults
+     * when this company has never customized them, so the response shape never has
+     * missing keys for the frontend to special-case.
+     */
+    public function getAlertThresholds(): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireMembership()) !== null) {
+            return $error;
+        }
+
+        return $this->jsonResponse(
+            $this->runInCompanyTransaction(static fn ($db) => AlertThresholds::resolve($db))
+        );
+    }
+
+    /**
+     * Admin-only (PRD §9.1-style scoping, same as every other mutator in this
+     * controller) - a wider/looser threshold here silences a real signal for the whole
+     * company, not just the caller's own view of it.
+     *
+     * Every field is optional in the request body (a partial update keeps this
+     * company's existing values for anything omitted, upsert-merged via the INSERT ...
+     * ON CONFLICT below reading the omitted field's current row value first) - but each
+     * field present must be numeric and non-negative, same validation shape
+     * createEgressAllowlistEntry already uses for its own numeric fields.
+     */
+    public function updateAlertThresholds(): Response
+    {
+        if (($error = $this->requireCompanyId()) !== null) {
+            return $error;
+        }
+        if (($error = $this->requireAdminRole()) !== null) {
+            return $error;
+        }
+
+        $body = $this->request->getJsonRawBody(true) ?? [];
+        $current = $this->runInCompanyTransaction(static fn ($db) => AlertThresholds::resolve($db));
+
+        $values = $current;
+        foreach (AlertThresholds::DEFAULTS as $key => $default) {
+            if (!array_key_exists($key, $body)) {
+                continue;
+            }
+            // Whether $default (the literal in AlertThresholds::DEFAULTS, e.g. 3 vs 80.0)
+            // is a PHP int tells us whether the matching DB column is integer or numeric
+            // - error_rate_min_errors/guardrail_min_count/latency_min_ms are integer
+            // columns (see the Phinx migration), so a fractional value like 2.5 must be
+            // rejected here with a clean 400, not reach Postgres and throw an uncaught
+            // PDOException (invalid input syntax for type integer) that would otherwise
+            // surface as a 500.
+            $valid = is_int($default)
+                ? is_int($body[$key]) && $body[$key] >= 0
+                : is_numeric($body[$key]) && $body[$key] >= 0;
+            if (!$valid) {
+                return $this->jsonResponse(['error' => "invalid_{$key}"], 400);
+            }
+            $values[$key] = $body[$key];
+        }
+
+        $row = $this->runInCompanyTransaction(
+            fn ($db) => $db->fetchOne(
+                'INSERT INTO console.alert_thresholds (
+                    company_id, quota_pct, error_rate_multiplier, error_rate_min_errors,
+                    error_rate_min_pct, guardrail_multiplier, guardrail_min_count,
+                    latency_multiplier, latency_min_ms, cost_multiplier, cost_min_usd
+                 ) VALUES (
+                    :company_id, :quota_pct, :error_rate_multiplier, :error_rate_min_errors,
+                    :error_rate_min_pct, :guardrail_multiplier, :guardrail_min_count,
+                    :latency_multiplier, :latency_min_ms, :cost_multiplier, :cost_min_usd
+                 )
+                 ON CONFLICT (company_id) DO UPDATE SET
+                    quota_pct = EXCLUDED.quota_pct,
+                    error_rate_multiplier = EXCLUDED.error_rate_multiplier,
+                    error_rate_min_errors = EXCLUDED.error_rate_min_errors,
+                    error_rate_min_pct = EXCLUDED.error_rate_min_pct,
+                    guardrail_multiplier = EXCLUDED.guardrail_multiplier,
+                    guardrail_min_count = EXCLUDED.guardrail_min_count,
+                    latency_multiplier = EXCLUDED.latency_multiplier,
+                    latency_min_ms = EXCLUDED.latency_min_ms,
+                    cost_multiplier = EXCLUDED.cost_multiplier,
+                    cost_min_usd = EXCLUDED.cost_min_usd,
+                    updated_at = now()
+                 RETURNING *',
+                Enum::FETCH_ASSOC,
+                [
+                    'company_id' => $this->getCompanyId(),
+                    'quota_pct' => $values['quota_pct'],
+                    'error_rate_multiplier' => $values['error_rate_multiplier'],
+                    'error_rate_min_errors' => $values['error_rate_min_errors'],
+                    'error_rate_min_pct' => $values['error_rate_min_pct'],
+                    'guardrail_multiplier' => $values['guardrail_multiplier'],
+                    'guardrail_min_count' => $values['guardrail_min_count'],
+                    'latency_multiplier' => $values['latency_multiplier'],
+                    'latency_min_ms' => $values['latency_min_ms'],
+                    'cost_multiplier' => $values['cost_multiplier'],
+                    'cost_min_usd' => $values['cost_min_usd'],
+                ]
+            )
+        );
+
+        return $this->jsonResponse(AlertThresholds::format($row));
     }
 
     /**

@@ -171,6 +171,8 @@ return function (Router $router): void {
     $admin('POST', '/settings/model-pricing', 'Pricing', 'createModelPricing');
     $admin('PATCH', '/settings/model-pricing/{id:[^/]+}', 'Pricing', 'updateModelPricing');
     $admin('DELETE', '/settings/model-pricing/{id:[^/]+}', 'Pricing', 'deleteModelPricing');
+    $admin('GET', '/settings/alert-thresholds', 'Settings', 'getAlertThresholds');
+    $admin('PUT', '/settings/alert-thresholds', 'Settings', 'updateAlertThresholds');
 
     // --- /tenants (platform_admin only; no X-Company-Id) --------------------------
     $admin('GET', '/tenants', 'Tenants', 'listTenants');

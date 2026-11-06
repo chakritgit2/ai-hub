@@ -7,6 +7,8 @@
 		listEgressAllowlist,
 		createEgressAllowlistEntry,
 		deleteEgressAllowlistEntry,
+		getAlertThresholds,
+		updateAlertThresholds,
 		listCompanies,
 		createCompany,
 		suspendCompany,
@@ -29,7 +31,8 @@
 		Tenant,
 		EgressAllowlistEntry,
 		ModelPricing,
-		AuditLogEntry
+		AuditLogEntry,
+		AlertThresholds
 	} from '$lib/api/types';
 	import { headerContent } from '$lib/stores/header';
 	import { currentUser, roleForCompany } from '$lib/stores/auth';
@@ -43,7 +46,7 @@
 
 	headerContent.set({ menu: 'Settings', title: 'Settings' });
 
-	type TabId = 'users' | 'egress' | 'tenants' | 'companies' | 'pricing' | 'audit';
+	type TabId = 'users' | 'egress' | 'alerts' | 'tenants' | 'companies' | 'pricing' | 'audit';
 
 	let activeTab = $state<TabId>('users');
 
@@ -83,6 +86,58 @@
 			return EGRESS_ERROR_MESSAGES[e.message] ?? e.message;
 		}
 		return e instanceof Error ? e.message : fallback;
+	}
+
+	// Dashboard's alert banner thresholds (console.alert_thresholds) - a single row per
+	// company, not a list, so this is a plain load-edit-save form rather than the
+	// egress/pricing tabs' add/delete-row pattern. `alertThresholdsForm` is a working
+	// copy the inputs bind to - kept separate from `alertThresholds` (the last-saved
+	// value) so "Reset" can discard unsaved edits without a re-fetch.
+	let alertThresholds = $state<AlertThresholds | null>(null);
+	let alertThresholdsForm = $state<AlertThresholds | null>(null);
+	let alertThresholdsLoading = $state(true);
+	let alertThresholdsError = $state<string | null>(null);
+	let savingAlertThresholds = $state(false);
+	let alertThresholdsSaveError = $state<string | null>(null);
+	let alertThresholdsSaved = $state(false);
+
+	async function loadAlertThresholds() {
+		alertThresholdsLoading = true;
+		alertThresholdsError = null;
+		try {
+			alertThresholds = await getAlertThresholds();
+			alertThresholdsForm = { ...alertThresholds };
+		} catch (e) {
+			alertThresholdsError = e instanceof Error ? e.message : 'Failed to load alert thresholds.';
+		} finally {
+			alertThresholdsLoading = false;
+		}
+	}
+
+	function resetAlertThresholdsForm() {
+		if (alertThresholds) alertThresholdsForm = { ...alertThresholds };
+		alertThresholdsSaveError = null;
+	}
+
+	async function saveAlertThresholds() {
+		if (!alertThresholdsForm) return;
+		savingAlertThresholds = true;
+		alertThresholdsSaveError = null;
+		alertThresholdsSaved = false;
+		try {
+			alertThresholds = await updateAlertThresholds(alertThresholdsForm);
+			alertThresholdsForm = { ...alertThresholds };
+			alertThresholdsSaved = true;
+		} catch (e) {
+			alertThresholdsSaveError =
+				e instanceof ApiError && e.status === 403
+					? 'You no longer have permission to do this.'
+					: e instanceof Error
+						? e.message
+						: 'Failed to save alert thresholds.';
+		} finally {
+			savingAlertThresholds = false;
+		}
 	}
 
 	let companies = $state<Company[]>([]);
@@ -558,6 +613,12 @@
 	});
 
 	$effect(() => {
+		if (activeTab === 'alerts' && alertThresholds === null) {
+			loadAlertThresholds();
+		}
+	});
+
+	$effect(() => {
 		if (activeTab === 'companies' && $currentUser?.is_platform_admin && companies.length === 0) {
 			loadCompanies();
 		}
@@ -596,6 +657,7 @@
 	const tabs: { id: TabId; label: string; platformAdminOnly?: boolean }[] = [
 		{ id: 'users', label: 'Users' },
 		{ id: 'egress', label: 'Egress allowlist' },
+		{ id: 'alerts', label: 'Alerts' },
 		{ id: 'tenants', label: 'Tenants', platformAdminOnly: true },
 		{ id: 'companies', label: 'Companies', platformAdminOnly: true },
 		{ id: 'pricing', label: 'Model pricing', platformAdminOnly: true },
@@ -881,6 +943,239 @@
 					</tbody>
 				</table>
 			</div>
+		{/if}
+	{:else if activeTab === 'alerts'}
+		<div class="mb-4">
+			<h2 class="text-sm font-semibold text-neutral-900">Dashboard alert thresholds</h2>
+			<p class="mt-1 text-sm text-neutral-400">
+				Controls the alert banner on the Dashboard page — each alert compares today's
+				activity against this company's own recent daily average, not a fixed number, so
+				these mostly need adjusting only if the banner fires too often or not often enough
+				for how this company actually runs.
+			</p>
+		</div>
+
+		{#if alertThresholdsLoading}
+			<p class="text-sm text-neutral-500" role="status">Loading alert thresholds…</p>
+		{:else if alertThresholdsError}
+			<div class="rounded-md border border-danger/30 bg-danger/5 p-4">
+				<p class="text-sm font-medium text-danger">Could not load alert thresholds</p>
+				<p class="mt-1 text-sm text-neutral-700">{alertThresholdsError}</p>
+				<button
+					type="button"
+					class="mt-3 rounded-md border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10"
+					onclick={loadAlertThresholds}
+				>
+					Retry
+				</button>
+			</div>
+		{:else if alertThresholdsForm}
+			{#if !isAdmin}
+				<p class="mb-4 text-sm text-neutral-400">Admin access required to change these.</p>
+			{/if}
+			<form
+				class="max-w-2xl space-y-6 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm"
+				onsubmit={(e) => {
+					e.preventDefault();
+					saveAlertThresholds();
+				}}
+			>
+				{#if alertThresholdsSaveError}
+					<div class="rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+						{alertThresholdsSaveError}
+					</div>
+				{/if}
+				{#if alertThresholdsSaved}
+					<div class="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-primary-700">
+						Saved.
+					</div>
+				{/if}
+
+				<fieldset disabled={!isAdmin} class="space-y-6">
+					<div>
+						<h3 class="text-sm font-medium text-neutral-800">Quota</h3>
+						<p class="mt-1 text-xs text-neutral-400">
+							Fires once this company has spent this share of its monthly budget (Settings has no
+							budget field itself yet — set via the Companies tab's own budget, platform_admin
+							only). No budget set means this alert never fires, regardless of this value.
+						</p>
+						<label class="mt-2 block max-w-xs">
+							<span class="text-sm text-neutral-700">Budget used (%)</span>
+							<input
+								type="number"
+								min="0"
+								max="100"
+								step="1"
+								bind:value={alertThresholdsForm.quota_pct}
+								class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+									focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+							/>
+						</label>
+					</div>
+
+					<div>
+						<h3 class="text-sm font-medium text-neutral-800">Error rate</h3>
+						<p class="mt-1 text-xs text-neutral-400">
+							Fires when today's error rate is at least this many times the usual rate, AND today
+							had at least this many errors, AND today's error rate is at least this percentage —
+							all three, so a single error on a quiet day doesn't trigger it.
+						</p>
+						<div class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-3">
+							<label class="block">
+								<span class="text-sm text-neutral-700">Multiple of usual (×)</span>
+								<input
+									type="number"
+									min="1"
+									step="0.1"
+									bind:value={alertThresholdsForm.error_rate_multiplier}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+							<label class="block">
+								<span class="text-sm text-neutral-700">Min. errors today</span>
+								<input
+									type="number"
+									min="0"
+									step="1"
+									bind:value={alertThresholdsForm.error_rate_min_errors}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+							<label class="block">
+								<span class="text-sm text-neutral-700">Min. error rate (%)</span>
+								<input
+									type="number"
+									min="0"
+									max="100"
+									step="1"
+									bind:value={alertThresholdsForm.error_rate_min_pct}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+						</div>
+					</div>
+
+					<div>
+						<h3 class="text-sm font-medium text-neutral-800">Guardrail triggers</h3>
+						<p class="mt-1 text-xs text-neutral-400">
+							Fires when today's guardrail checks (block + mask + flag combined) are at least this
+							many times the usual daily count, AND at least this many happened today.
+						</p>
+						<div class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
+							<label class="block">
+								<span class="text-sm text-neutral-700">Multiple of usual (×)</span>
+								<input
+									type="number"
+									min="1"
+									step="0.1"
+									bind:value={alertThresholdsForm.guardrail_multiplier}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+							<label class="block">
+								<span class="text-sm text-neutral-700">Min. triggers today</span>
+								<input
+									type="number"
+									min="0"
+									step="1"
+									bind:value={alertThresholdsForm.guardrail_min_count}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+						</div>
+					</div>
+
+					<div>
+						<h3 class="text-sm font-medium text-neutral-800">Latency</h3>
+						<p class="mt-1 text-xs text-neutral-400">
+							Fires when today's p95 latency is at least this many times the usual p95, AND at
+							least this many milliseconds — the floor keeps a jump between two already-fast times
+							(e.g. 50ms → 110ms) from counting as a spike.
+						</p>
+						<div class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
+							<label class="block">
+								<span class="text-sm text-neutral-700">Multiple of usual (×)</span>
+								<input
+									type="number"
+									min="1"
+									step="0.1"
+									bind:value={alertThresholdsForm.latency_multiplier}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+							<label class="block">
+								<span class="text-sm text-neutral-700">Min. p95 latency (ms)</span>
+								<input
+									type="number"
+									min="0"
+									step="100"
+									bind:value={alertThresholdsForm.latency_min_ms}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+						</div>
+					</div>
+
+					<div>
+						<h3 class="text-sm font-medium text-neutral-800">Cost</h3>
+						<p class="mt-1 text-xs text-neutral-400">
+							Fires when today's cost is at least this many times the usual daily cost, AND at
+							least this many dollars — the floor keeps a jump between two tiny amounts from
+							counting as a spike.
+						</p>
+						<div class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
+							<label class="block">
+								<span class="text-sm text-neutral-700">Multiple of usual (×)</span>
+								<input
+									type="number"
+									min="1"
+									step="0.1"
+									bind:value={alertThresholdsForm.cost_multiplier}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+							<label class="block">
+								<span class="text-sm text-neutral-700">Min. cost today ($)</span>
+								<input
+									type="number"
+									min="0"
+									step="0.01"
+									bind:value={alertThresholdsForm.cost_min_usd}
+									class="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm
+										focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+								/>
+							</label>
+						</div>
+					</div>
+				</fieldset>
+
+				{#if isAdmin}
+					<div class="flex gap-2 border-t border-neutral-100 pt-4">
+						<button
+							type="submit"
+							disabled={savingAlertThresholds}
+							class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600"
+						>
+							{savingAlertThresholds ? 'Saving…' : 'Save'}
+						</button>
+						<button
+							type="button"
+							class="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-50"
+							onclick={resetAlertThresholdsForm}
+						>
+							Reset
+						</button>
+					</div>
+				{/if}
+			</form>
 		{/if}
 	{:else if activeTab === 'tenants'}
 		{#if !$currentUser?.is_platform_admin}

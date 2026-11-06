@@ -7,6 +7,7 @@ import { apiFetch } from './client';
 import type {
 	Agent,
 	AgentVersion,
+	AlertThresholds,
 	AuditLogListResponse,
 	ApiKey,
 	ApiKeyCreated,
@@ -612,6 +613,14 @@ export function createEgressAllowlistEntry(input: {
 
 export function deleteEgressAllowlistEntry(id: string): Promise<void> {
 	return apiFetch<void>(`/settings/egress-allowlist/${id}`, { method: 'DELETE' });
+}
+
+export function getAlertThresholds(): Promise<AlertThresholds> {
+	return apiFetch<AlertThresholds>('/settings/alert-thresholds');
+}
+
+export function updateAlertThresholds(input: Partial<AlertThresholds>): Promise<AlertThresholds> {
+	return apiFetch<AlertThresholds>('/settings/alert-thresholds', { method: 'PUT', body: input });
 }
 
 // ---- /settings/model-pricing (platform_admin) --------------------------------

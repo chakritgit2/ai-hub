@@ -755,13 +755,46 @@ export interface GuardrailEvent {
 	created_at: string;
 }
 
+// The last 5 fields all cover the same trailing 14-full-days window (today excluded,
+// see DashboardController.php) - one consistent "last 14 days" story across every chart
+// on the page, rather than a different window per panel the reader has to track. This
+// page is also the in-console replacement for the external Grafana dashboard the
+// product decided (2026-11-06) not to depend on.
+export type DashboardAlertType = 'quota' | 'error_rate' | 'guardrail' | 'latency' | 'cost';
+
+export interface DashboardAlert {
+	type: DashboardAlertType;
+	message: string;
+}
+
 export interface DashboardSummary {
+	alerts: DashboardAlert[];
 	runs_today: number;
 	tokens_this_month: { in: number; out: number };
 	cost_this_month_usd: number;
 	error_rate: number;
 	guardrail_triggers: number;
-	runs_per_day: Array<{ date: string; count: number }>;
+	runs_per_day: Array<{ date: string; success: number; error: number; blocked: number; other: number }>;
+	latency_per_day: Array<{ date: string; p50_ms: number | null; p95_ms: number | null; p99_ms: number | null }>;
+	tokens_cost_per_day: Array<{ date: string; tokens_in: number; tokens_out: number; cost_usd: number }>;
+	guardrail_actions_per_day: Array<{ date: string; block: number; mask: number; flag: number }>;
+	top_agents: Array<{ name: string; run_count: number; cost_usd: number }>;
+}
+
+// Per-company tunables for DashboardSummary.alerts (console.alert_thresholds). GET
+// always returns every field (server-side defaults fill in anything never customized -
+// see AlertThresholds::resolve() in console-api); PUT accepts a partial body.
+export interface AlertThresholds {
+	quota_pct: number;
+	error_rate_multiplier: number;
+	error_rate_min_errors: number;
+	error_rate_min_pct: number;
+	guardrail_multiplier: number;
+	guardrail_min_count: number;
+	latency_multiplier: number;
+	latency_min_ms: number;
+	cost_multiplier: number;
+	cost_min_usd: number;
 }
 
 // Phase 2/3/4 endpoints return a loosely-typed Placeholder body per the OpenAPI contract.

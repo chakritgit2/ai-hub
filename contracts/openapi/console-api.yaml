@@ -552,7 +552,19 @@ components:
         created_at: { type: string, format: date-time }
     DashboardSummary:
       type: object
+      description: >-
+        Also the in-console replacement for the external Grafana dashboard (2026-11-06) -
+        the trend/breakdown fields below all cover the same trailing 14-full-days window
+        (today excluded), and `alerts` is this company's own current threshold breaches
+        (console.alert_thresholds, see AlertThresholds).
       properties:
+        alerts:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, enum: [quota, error_rate, guardrail, latency, cost] }
+              message: { type: string }
         runs_today: { type: integer }
         tokens_this_month: { type: object, properties: { in: { type: integer }, out: { type: integer } } }
         cost_this_month_usd: { type: number }
@@ -564,7 +576,59 @@ components:
             type: object
             properties:
               date: { type: string, format: date }
-              count: { type: integer }
+              success: { type: integer }
+              error: { type: integer }
+              blocked: { type: integer }
+              other: { type: integer }
+        latency_per_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              p50_ms: { type: number, nullable: true }
+              p95_ms: { type: number, nullable: true }
+              p99_ms: { type: number, nullable: true }
+        tokens_cost_per_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              tokens_in: { type: integer }
+              tokens_out: { type: integer }
+              cost_usd: { type: number }
+        guardrail_actions_per_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              block: { type: integer }
+              mask: { type: integer }
+              flag: { type: integer }
+        top_agents:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              run_count: { type: integer }
+              cost_usd: { type: number }
+    AlertThresholds:
+      type: object
+      description: Per-company tunables for DashboardSummary.alerts (console.alert_thresholds). Every field optional on PUT - a partial update keeps this company's existing value for anything omitted.
+      properties:
+        quota_pct: { type: number }
+        error_rate_multiplier: { type: number }
+        error_rate_min_errors: { type: integer }
+        error_rate_min_pct: { type: number }
+        guardrail_multiplier: { type: number }
+        guardrail_min_count: { type: integer }
+        latency_multiplier: { type: number }
+        latency_min_ms: { type: integer }
+        cost_multiplier: { type: number }
+        cost_min_usd: { type: number }
     RunConversation:
       type: object
       description: Metadata only (PRD §6.9) - message content lives in runtime.agent_memory, a separate, larger piece of work.
@@ -1558,6 +1622,17 @@ paths:
     delete:
       operationId: deleteModelPricing
       responses: { "204": { description: Deleted } }
+  /settings/alert-thresholds:
+    get:
+      operationId: getAlertThresholds
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AlertThresholds' } } } } }
+    put:
+      operationId: updateAlertThresholds
+      summary: Admin-only. Every field optional - a partial body keeps this company's existing value for anything omitted.
+      parameters: [{ $ref: '#/components/parameters/XCompanyId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/AlertThresholds' } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AlertThresholds' } } } } }
 
   /tenants:
     get:
