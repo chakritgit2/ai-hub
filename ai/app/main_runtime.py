@@ -83,7 +83,7 @@ from app.services.knowledge_bases import (
 from app.services import run_registry
 from app.services.conversations import get_conversation_messages
 from app.services.runtime import attach_stream_completion, resolve_and_compile, run_playground_agent
-from app.services.streaming_events import extract_answer_delta, extract_approval_required_event
+from app.services.streaming_events import extract_answer_delta, extract_approval_required_event, extract_guardrail_event
 from app.services.tool_secrets import decrypt_tool_secret, delete_tool_secret, upsert_tool_secret
 from app.services.tools import resolve_tool
 
@@ -286,6 +286,14 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
     `runtime.tool_approvals` row - see `app.main_gateway.streamDeployment`'s own docstring
     for the full explanation, shared identically by both streams.
 
+    Also emits PRD §6.4/§9.3's `guardrail` event (`{"stage": "input"|"output", "check":
+    <check_type>, "action": "block"|"mask"|"flag", "detail": {...}}`) for every triggered
+    guardrail check - `app.services.runtime._push_guardrail_events` pushes it onto
+    `stream_handler` the instant a check fires (input check, a live per-chunk output
+    mask/flag, or the buffered whole-output fallback check), so a blocked input/output
+    reaches the client as `guardrail` immediately followed by `final` with the fallback
+    message as `output`, matching PRD §6.4's "a mid-stream block emits guardrail + final".
+
     `run_started` (PRD Goal #6 "stop generating") fires first, before the agent run task
     is even created, carrying `{"run_id": <id>}` - the only way a client learns which id
     to later call `POST /ai/v1/runs/{id}/cancel` with, since nothing before this feature
@@ -330,6 +338,10 @@ async def runPlaygroundStream(body: RunRequest, claims: RuntimeAuth) -> EventSou
             approval_event = extract_approval_required_event(event.data)
             if approval_event:
                 yield {"event": "approval_required", "data": json.dumps(approval_event)}
+                continue
+            guardrail_event = extract_guardrail_event(event.data)
+            if guardrail_event:
+                yield {"event": "guardrail", "data": json.dumps(guardrail_event)}
                 continue
             delta = extract_answer_delta(event.data)
             if delta:

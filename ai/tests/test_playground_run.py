@@ -656,6 +656,107 @@ async def test_playground_stream_emits_approval_required_before_final(
 
 
 @requires_postgres
+async def test_playground_stream_emits_guardrail_event_for_a_blocked_input(
+    company_ids, resolvable_agent_version
+) -> None:
+    """PRD §6.4's "a mid-stream block emits guardrail + final" - an input block never
+    even reaches agent.run() (see execute_agent_run's own early return), so this needs no
+    fake agent at all, just a guardrail config the input actually trips."""
+    company_id = company_ids()
+    guardrails = {"input": [{"check_type": "max_length", "action": "block", "max_length": 5}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(
+        company_id, agent_version_id=version_id
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            resp = await client.post("/ai/v1/playground/stream", json={"input": "this input is too long"})
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+
+        guardrail_events = [e for e in events if e[0] == "guardrail"]
+        assert len(guardrail_events) == 1
+        assert guardrail_events[0][1]["stage"] == "input"
+        assert guardrail_events[0][1]["check"] == "max_length"
+        assert guardrail_events[0][1]["action"] == "block"
+
+        final_events = [e for e in events if e[0] == "final"]
+        assert len(final_events) == 1
+        assert events.index(guardrail_events[0]) < events.index(final_events[0])
+        assert final_events[0][1]["output"] == "I can't help with that request."
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+@requires_postgres
+async def test_playground_stream_emits_guardrail_event_live_for_a_masked_output_chunk(
+    fake_streaming_agent, company_ids, resolvable_agent_version
+) -> None:
+    """A chunk-safe, non-block output check (see output_checks_are_chunk_streamable) keeps
+    streaming live (_relay_masked_output_stream) - the guardrail event for the triggered
+    mask must still reach the client, interleaved with the masked token stream rather than
+    only surfacing at the end."""
+    company_id = company_ids()
+    guardrails = {"output": [{"check_type": "regex_blocklist", "action": "mask", "pattern": r"reply"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(
+        company_id, agent_version_id=version_id
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            resp = await client.post("/ai/v1/playground/stream", json={"input": "hi"})
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+
+        guardrail_events = [e for e in events if e[0] == "guardrail"]
+        assert len(guardrail_events) == 1
+        assert guardrail_events[0][1]["stage"] == "output"
+        assert guardrail_events[0][1]["check"] == "regex_blocklist"
+        assert guardrail_events[0][1]["action"] == "mask"
+
+        token_events = [e for e in events if e[0] == "token"]
+        assert "[REDACTED]" in "".join(e[1]["delta"] for e in token_events)
+        final_events = [e for e in events if e[0] == "final"]
+        assert len(final_events) == 1
+        assert events.index(guardrail_events[0]) < events.index(final_events[0])
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+@requires_postgres
+async def test_playground_stream_emits_guardrail_event_for_a_buffered_blocked_output(
+    fake_agent, company_ids, resolvable_agent_version
+) -> None:
+    """A block-capable output check forces the buffered (non-live) fallback path -
+    the guardrail event must still reach the client before `final`, even though nothing
+    was ever streamed live."""
+    company_id = company_ids()
+    guardrails = {"output": [{"check_type": "regex_blocklist", "action": "block", "pattern": r"reply"}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    runtime_app.dependency_overrides[require_runtime_auth] = fake_runtime_claims(
+        company_id, agent_version_id=version_id
+    )
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime_app), base_url="http://test") as client:
+            resp = await client.post("/ai/v1/playground/stream", json={"input": "hi"})
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+
+        guardrail_events = [e for e in events if e[0] == "guardrail"]
+        assert len(guardrail_events) == 1
+        assert guardrail_events[0][1]["stage"] == "output"
+        assert guardrail_events[0][1]["check"] == "regex_blocklist"
+        assert guardrail_events[0][1]["action"] == "block"
+
+        final_events = [e for e in events if e[0] == "final"]
+        assert len(final_events) == 1
+        assert events.index(guardrail_events[0]) < events.index(final_events[0])
+        assert final_events[0][1]["output"] == "I can't help with that request."
+    finally:
+        runtime_app.dependency_overrides.pop(require_runtime_auth, None)
+
+
+@requires_postgres
 async def test_playground_stream_emits_run_started_first(
     fake_streaming_agent, company_ids, resolvable_agent_version
 ) -> None:

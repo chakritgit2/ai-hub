@@ -68,6 +68,7 @@ from app.services.runtime import attach_stream_completion, run_deployment_agent
 from app.services.streaming_events import (
     extract_answer_delta,
     extract_approval_required_event,
+    extract_guardrail_event,
     extract_tool_step_event,
 )
 from app.services.workflow_runtime import run_deployment_workflow
@@ -454,6 +455,15 @@ async def streamDeployment(slug: str, body: RunRequest, identity: GatewayAuth, r
     Playground's own stream too (not gateway-only like `step` above) since the
     write-tool gate itself applies identically to both.
 
+    **Also streams PRD §6.4/§9.3's `guardrail` event** (`{"stage": "input"|"output",
+    "check": <check_type>, "action": "block"|"mask"|"flag", "detail": {...}}`) for every
+    triggered guardrail check - another synthetic event, parsed by
+    `extract_guardrail_event`, pushed by `app.services.runtime._push_guardrail_events` the
+    instant a check fires. Shared identically with Playground's stream too. A block (input
+    or output) means `guardrail` arrives immediately followed by `final` carrying the
+    fallback message as `output` - PRD §6.4's "a mid-stream block emits guardrail +
+    final".
+
     A workflow-backed deployment stays a 501 stub here - scoped out with the user:
     dynamiq's `GraphOrchestrator` streaming behavior was never researched (unlike the
     plain `Agent` streaming this reuses, which already went through that research for
@@ -524,6 +534,10 @@ async def streamDeployment(slug: str, body: RunRequest, identity: GatewayAuth, r
             approval_event = extract_approval_required_event(event.data)
             if approval_event:
                 yield {"event": "approval_required", "data": json.dumps(approval_event)}
+                continue
+            guardrail_event = extract_guardrail_event(event.data)
+            if guardrail_event:
+                yield {"event": "guardrail", "data": json.dumps(guardrail_event)}
                 continue
             delta = extract_answer_delta(event.data)
             if delta:

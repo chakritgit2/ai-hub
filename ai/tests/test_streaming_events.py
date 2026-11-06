@@ -1,7 +1,7 @@
 """`app.services.streaming_events` - first direct unit tests for this module (the
 pre-existing `extract_answer_delta`/`extract_tool_step_event` were only ever exercised
 indirectly through `test_playground_run.py`/`test_gateway_stream.py`)."""
-from app.services.streaming_events import extract_approval_required_event
+from app.services.streaming_events import extract_approval_required_event, extract_guardrail_event
 
 
 def test_extract_approval_required_event_returns_the_payload() -> None:
@@ -40,5 +40,57 @@ def test_extract_approval_required_event_degrades_to_none_on_a_malformed_marker(
         extract_approval_required_event(
             {"dynamiq_console_event": "approval_required", "approval_id": 123, "tool": "x"}
         )
+        is None
+    )
+
+
+def test_extract_guardrail_event_returns_the_payload() -> None:
+    event_data = {
+        "dynamiq_console_event": "guardrail",
+        "stage": "input",
+        "check": "pii",
+        "action": "mask",
+        "detail": {"categories": ["email"]},
+    }
+
+    assert extract_guardrail_event(event_data) == {
+        "stage": "input",
+        "check": "pii",
+        "action": "mask",
+        "detail": {"categories": ["email"]},
+    }
+
+
+def test_extract_guardrail_event_defaults_a_missing_detail_to_an_empty_dict() -> None:
+    event_data = {"dynamiq_console_event": "guardrail", "stage": "output", "check": "max_length", "action": "block"}
+
+    assert extract_guardrail_event(event_data) == {
+        "stage": "output",
+        "check": "max_length",
+        "action": "block",
+        "detail": {},
+    }
+
+
+def test_extract_guardrail_event_ignores_a_real_dynamiq_chunk() -> None:
+    dynamiq_chunk = {"choices": [{"delta": {"content": "hello", "step": "answer"}}]}
+
+    assert extract_guardrail_event(dynamiq_chunk) is None
+
+
+def test_extract_guardrail_event_ignores_an_approval_marker() -> None:
+    """The two synthetic marker types must stay mutually exclusive - a guardrail parser
+    seeing an approval_required marker (which has no stage/check/action keys) must return
+    None, not crash."""
+    assert extract_guardrail_event(
+        {"dynamiq_console_event": "approval_required", "approval_id": "a", "tool": "x"}
+    ) is None
+
+
+def test_extract_guardrail_event_degrades_to_none_on_a_malformed_marker() -> None:
+    assert extract_guardrail_event({"dynamiq_console_event": "guardrail"}) is None
+    assert extract_guardrail_event({"dynamiq_console_event": "guardrail", "stage": "input"}) is None
+    assert (
+        extract_guardrail_event({"dynamiq_console_event": "guardrail", "stage": "input", "check": 123, "action": "flag"})
         is None
     )

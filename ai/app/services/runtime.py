@@ -601,6 +601,40 @@ def attach_stream_completion(
     run_task.add_done_callback(_on_done)
 
 
+def _push_guardrail_events(
+    stream_handler: AsyncStreamingIteratorCallbackHandler | None, events: list[CheckEvent]
+) -> None:
+    """Pushes PRD §6.4/§9.3's `guardrail` SSE event for every triggered check, the same
+    `dynamiq_console_event` marker convention `app.integrations.write_tool_gate`'s
+    `approval_required` push uses - paired with `app.services.streaming_events.
+    extract_guardrail_event` on the unwrap side. No-op when `stream_handler` is None (the
+    run isn't being streamed) or `events` is empty (the overwhelming majority of checks,
+    which never trigger).
+
+    Called from 3 places, all on the same coroutine/event loop that owns `stream_handler`
+    (never a worker thread) - unlike write_tool_gate's `_notify_pending`, which needs the
+    thread-safe `send_to_queue` because it fires from a tool-execution callback that may
+    run on a different thread, every call site here is plain `await`ed code in
+    `_execute_agent_run_body`/`_relay_masked_output_stream`, so `queue.put_nowait` (the
+    same method `_relay_masked_output_stream` already uses to forward masked chunks) is
+    correct and consistent.
+    """
+    if stream_handler is None:
+        return
+    for event in events:
+        stream_handler.queue.put_nowait(
+            StreamingEventMessage(
+                data={
+                    "dynamiq_console_event": "guardrail",
+                    "stage": event.stage,
+                    "check": event.check,
+                    "action": event.action,
+                    "detail": event.detail,
+                }
+            )
+        )
+
+
 async def _relay_masked_output_stream(
     raw_handler: AsyncStreamingIteratorCallbackHandler,
     stream_handler: AsyncStreamingIteratorCallbackHandler,
@@ -642,6 +676,7 @@ async def _relay_masked_output_stream(
             continue
         outcome = await run_checks(delta, output_checks, stage="output", default_on_error=default_on_error)
         events.extend(outcome.events)
+        _push_guardrail_events(stream_handler, outcome.events)
         if outcome.text:
             parts.append(outcome.text)
             masked_event = event.model_copy(update={"data": with_answer_delta(event.data, outcome.text)})
@@ -717,6 +752,7 @@ async def _execute_agent_run_body(
     input_outcome = await run_checks(
         input_text, guardrails.input, stage="input", default_on_error=default_on_error, company_id=company_id
     )
+    _push_guardrail_events(stream_handler, input_outcome.events)
     if input_outcome.blocked:
         latency_ms = int((time.monotonic() - started) * 1000)
         # logs.runs row must exist before logs.guardrail_events.run_id can reference it
@@ -1121,6 +1157,7 @@ async def _execute_agent_run_body(
         output_outcome = await run_checks(
             output or "", guardrails.output, stage="output", default_on_error=default_on_error, company_id=company_id
         )
+        _push_guardrail_events(stream_handler, output_outcome.events)
         final_output = output_outcome.fallback_message if output_outcome.blocked else output_outcome.text
         output_events = output_outcome.events
         output_blocked = output_outcome.blocked

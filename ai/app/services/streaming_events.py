@@ -144,6 +144,30 @@ def extract_approval_required_event(event_data: Any) -> dict[str, Any] | None:
     return {"approval_id": approval_id, "tool": tool}
 
 
+def extract_guardrail_event(event_data: Any) -> dict[str, Any] | None:
+    """PRD §6.4/§9.3's `guardrail` SSE event ("a mid-stream block emits guardrail +
+    final", PRD §6.4) - same synthetic-marker convention as
+    `extract_approval_required_event` above: `app.services.runtime._push_guardrail_events`
+    pushes one of these directly onto the run's `stream_handler` for every triggered
+    `app.services.guardrails.CheckEvent` (input block/mask/flag, or an output check
+    triggered either live per-chunk or in the buffered whole-output fallback), the
+    `dynamiq_console_event` marker telling it apart from a real dynamiq chunk the same way
+    `approval_required` already does.
+
+    Reads every field with `.get()`/`isinstance` checks, same defensive style as the other
+    extractors in this module - a malformed marker degrades to `None` (silently dropped)
+    rather than raising and aborting the whole SSE response."""
+    if not isinstance(event_data, dict) or event_data.get("dynamiq_console_event") != "guardrail":
+        return None
+    stage = event_data.get("stage")
+    check = event_data.get("check")
+    action = event_data.get("action")
+    if not isinstance(stage, str) or not isinstance(check, str) or not isinstance(action, str):
+        return None
+    detail = event_data.get("detail")
+    return {"stage": stage, "check": check, "action": action, "detail": detail if isinstance(detail, dict) else {}}
+
+
 _SOURCE_PATTERN = re.compile(r"^\[(.*?)\]\((.*?)\)")
 
 

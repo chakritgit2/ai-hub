@@ -488,6 +488,7 @@ async def test_stream_preserves_event_order_with_output_guardrail_and_approval_t
     events = _parse_sse_events(resp.text)
     token_events = [e for e in events if e[0] == "token"]
     approval_events = [e for e in events if e[0] == "approval_required"]
+    guardrail_events = [e for e in events if e[0] == "guardrail"]
 
     assert "".join(event[1]["delta"] for event in token_events) == "fake [REDACTED]"
     assert len(approval_events) == 1
@@ -495,3 +496,44 @@ async def test_stream_preserves_event_order_with_output_guardrail_and_approval_t
     # real production order - it must still land after them here, not race ahead because
     # it bypassed per-chunk masking (see this test's class docstring).
     assert events.index(approval_events[0]) > max(events.index(event) for event in token_events)
+    # The mask on the second ("reply") chunk must also surface as a guardrail event,
+    # landing before the approval marker that fires after both chunks.
+    assert len(guardrail_events) == 1
+    assert guardrail_events[0][1] == {
+        "stage": "output",
+        "check": "regex_blocklist",
+        "action": "mask",
+        "detail": {"pattern": r"reply", "matched": "reply"},
+    }
+    assert events.index(guardrail_events[0]) < events.index(approval_events[0])
+
+
+@requires_postgres
+async def test_stream_emits_guardrail_event_for_a_blocked_input(
+    gateway_async_client, company_ids, make_company, resolvable_agent_version, make_deployment, make_api_key
+) -> None:
+    company_id = company_ids()
+    make_company(company_id)
+    guardrails = {"input": [{"check_type": "max_length", "action": "block", "max_length": 5}]}
+    version_id = await resolvable_agent_version(company_id, guardrails=guardrails)
+    deployment_id, slug = make_deployment(company_id, version_id)
+    _key_id, full_key = make_api_key(company_id, [deployment_id])
+
+    resp = await gateway_async_client.post(
+        f"/v1/deployments/{slug}/stream",
+        json={"input": "this input is too long"},
+        headers={"Authorization": f"Bearer {full_key}"},
+    )
+
+    assert resp.status_code == 200
+    events = _parse_sse_events(resp.text)
+    guardrail_events = [e for e in events if e[0] == "guardrail"]
+    final_events = [e for e in events if e[0] == "final"]
+
+    assert len(guardrail_events) == 1
+    assert guardrail_events[0][1]["stage"] == "input"
+    assert guardrail_events[0][1]["check"] == "max_length"
+    assert guardrail_events[0][1]["action"] == "block"
+    assert len(final_events) == 1
+    assert events.index(guardrail_events[0]) < events.index(final_events[0])
+    assert final_events[0][1]["output"] == "I can't help with that request."
