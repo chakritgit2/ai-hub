@@ -32,11 +32,13 @@
 	// PRD §6.9 phase 3+ — nav entries only, disabled, no routes exist yet.
 	const laterPhaseItems: NavItem[] = [];
 
-	function isActive(href: string): boolean {
-		return $page.url.pathname === href || $page.url.pathname.startsWith(`${href}/`);
-	}
+	// A plain function called from inside a keyed {#each} only ever runs once per row in
+	// Svelte 5 - it doesn't re-track $page as a per-row dependency, so the highlighted item
+	// got stuck on whichever page loaded first. Read $page here (once, at the component's own
+	// reactive scope) and compare it per row with {@const} instead, which does track correctly.
+	let activePath = $derived($page.url.pathname);
 
-	$: role = roleForCompany($currentUser, $companyId) ?? 'viewer';
+	let role = $derived(roleForCompany($currentUser, $companyId) ?? 'viewer');
 </script>
 
 <nav
@@ -53,12 +55,13 @@
 		</p>
 		<ul class="mt-1 space-y-0.5">
 			{#each workspaceItems as item (item.href)}
+				{@const active = activePath === item.href || activePath.startsWith(`${item.href}/`)}
 				<li>
 					<a
 						href={item.href}
-						aria-current={isActive(item.href) ? 'page' : undefined}
+						aria-current={active ? 'page' : undefined}
 						class="flex items-center rounded-md px-3 py-2 text-sm transition-colors
-							{isActive(item.href)
+							{active
 							? 'bg-primary/20 text-white font-medium'
 							: 'text-neutral-300 hover:bg-white/5 hover:text-white'}"
 					>
@@ -102,7 +105,7 @@
 				</div>
 				<button
 					type="button"
-					on:click={logout}
+					onclick={logout}
 					class="shrink-0 text-xs text-neutral-400 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
 				>
 					Logout
